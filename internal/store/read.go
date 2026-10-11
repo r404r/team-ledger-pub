@@ -63,17 +63,20 @@ func (r reader) Security(ctx context.Context, hash []byte, org, employee string)
 	if err != nil {
 		return authz.Snapshot{}, safeError(err)
 	}
+	var grantIDs []string
+	var approvalIndexes []int
 	rows, err = r.db.QueryContext(ctx, r.sql(
-		"SELECT capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required,relation_kind,reporting_line_id,membership_id,relation_actor_employee_id FROM access_grant WHERE org_id=? AND subject_id=? LIMIT 1001",
-		"SELECT capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required,relation_kind,reporting_line_id,membership_id,relation_actor_employee_id FROM access_grant WHERE org_id=$1 AND subject_id=$2 LIMIT 1001"), s.OrgID, s.SubjectID)
+		"SELECT id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required,relation_kind,reporting_line_id,membership_id,relation_actor_employee_id,object_kind,object_ref FROM access_grant WHERE org_id=? AND subject_id=? LIMIT 1001",
+		"SELECT id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required,relation_kind,reporting_line_id,membership_id,relation_actor_employee_id,object_kind,object_ref FROM access_grant WHERE org_id=$1 AND subject_id=$2 LIMIT 1001"), s.OrgID, s.SubjectID)
 	if err != nil {
 		return authz.Snapshot{}, safeError(err)
 	}
 	for rows.Next() {
 		var g authz.Grant
 		var from, to dbTime
-		var kind, reporting, membership, actor sql.NullString
-		if err = rows.Scan(&g.Capability, &g.Category, &g.ScopeKind, &g.ScopeID, &g.Purpose, &from, &to, &g.Revoked, &g.RelationBound, &g.MFARequired, &kind, &reporting, &membership, &actor); err != nil {
+		var id string
+		var kind, reporting, membership, actor, objectKind, objectID sql.NullString
+		if err = rows.Scan(&id, &g.Capability, &g.Category, &g.ScopeKind, &g.ScopeID, &g.Purpose, &from, &to, &g.Revoked, &g.RelationBound, &g.MFARequired, &kind, &reporting, &membership, &actor, &objectKind, &objectID); err != nil {
 			rows.Close()
 			return authz.Snapshot{}, safeError(err)
 		}
@@ -87,6 +90,13 @@ func (r reader) Security(ctx context.Context, hash []byte, org, employee string)
 			}
 			g.RelationRef = &authz.RelationReference{Kind: kind.String, ID: id}
 		}
+		if objectKind.Valid {
+			g.ObjectRef = &authz.ObjectReference{Kind: objectKind.String, ID: objectID.String}
+		}
+		if g.Capability == "note.publish" || g.Capability == "action.write" {
+			grantIDs = append(grantIDs, id)
+			approvalIndexes = append(approvalIndexes, len(s.Grants))
+		}
 		s.Grants = append(s.Grants, g)
 		if len(s.Grants) > 1000 {
 			rows.Close()
@@ -97,6 +107,15 @@ func (r reader) Security(ctx context.Context, hash []byte, org, employee string)
 	rows.Close()
 	if err != nil {
 		return authz.Snapshot{}, safeError(err)
+	}
+	approvals, err := r.sourceApprovals(ctx, s.OrgID, grantIDs)
+	if err != nil {
+		return authz.Snapshot{}, err
+	}
+	for i, id := range grantIDs {
+		g := &s.Grants[approvalIndexes[i]]
+		g.ApprovedSourceRefs = approvals[id].refs
+		g.ApprovedSourceEmployees = approvals[id].employees
 	}
 	var actor sql.NullString
 	err = r.db.QueryRowContext(ctx, r.sql(

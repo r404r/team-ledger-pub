@@ -358,6 +358,7 @@ onBeforeUnmount(() => { alive = false; window.removeEventListener('popstate', re
       <a :href="dated(`/orgs/${orgID}/tree`)" @click="navigate($event, dated(`/orgs/${orgID}/tree`))">组织树</a>
       <a :href="dated(`/orgs/${orgID}/employees`)" @click="navigate($event, dated(`/orgs/${orgID}/employees`))">员工目录</a>
       <a v-if="employeeID" :href="dated(`/employees/${employeeID}`)" @click="navigate($event, dated(`/employees/${employeeID}`))">员工资料</a>
+      <a v-if="employeeID && history" :href="`/employees/${employeeID}/interviews`" @click="navigate($event, `/employees/${employeeID}/interviews`)">员工面谈（独立授权）</a>
     </nav>
     <p>查询日期只决定业务投影；授权始终按组织当前业务日重新判断。团队层级、任职、经理和身份映射不自动授予权限。</p>
     <form aria-label="组织查询" @submit.prevent="refresh()">
@@ -406,6 +407,7 @@ onBeforeUnmount(() => { alive = false; window.removeEventListener('popstate', re
         <p>员工 {{ employee.id }} · [{{ employee.lifecycle.valid_from }}, {{ employee.lifecycle.valid_to ?? '∞' }})</p>
         <a :href="dated(`/employees/${employee.id}`)" @click="navigate($event, dated(`/employees/${employee.id}`))">资料与任职</a>
         <a :href="`/employees/${employee.id}/organization-history`" @click="navigate($event, `/employees/${employee.id}/organization-history`)">组织历史</a>
+        <a :href="`/employees/${employee.id}/interviews`" @click="navigate($event, `/employees/${employee.id}/interviews`)">员工面谈（独立授权）</a>
         <template v-for="group in [{ kind: 'membership', label: '团队任职', items: employee.memberships }, { kind: 'position', label: '职位任职', items: employee.positions }, { kind: 'reporting_line', label: '经理关系', items: employee.reporting_lines }]" :key="group.kind">
           <h4>{{ group.label }}</h4><p v-if="!group.items?.length">查询日无获准{{ group.label }}；不推测当前团队或经理。</p>
           <ul><li v-for="relation in group.items" :key="relation.id">原关系 {{ relation.id }} · {{ relation.team_id ?? relation.manager_employee_id ?? '' }} {{ relation.kind ?? '' }} · [{{ relation.valid_from }}, {{ relation.valid_to ?? '∞' }})<span v-if="relation.position"> · {{ relation.position.title }} {{ relation.position.position_code }} {{ relation.position.description }}</span>

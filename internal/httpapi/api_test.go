@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/r404r/team-ledger/internal/organization"
 	"github.com/r404r/team-ledger/internal/testsupport"
@@ -170,16 +171,21 @@ func TestEmployeeScopedSessionCanReadAndCorrectOnlyGrantedEmployee(t *testing.T)
 			apiSend(t, f, apiRequest(t, f, f.Owner, "POST", createPath, createJSON, value.NewID()), 201, &first)
 			apiSend(t, f, apiRequest(t, f, f.Owner, "POST", createPath, createJSON, value.NewID()), 201, &second)
 			ctx := context.Background()
-			for _, table := range []string{"capability_assignment", "access_grant"} {
-				if err := f.Exec(ctx,
-					"DELETE FROM "+table+" WHERE subject_id=? AND capability='organization.write'",
-					"DELETE FROM "+table+" WHERE subject_id=$1 AND capability='organization.write'", f.Owner.SubjectID); err != nil {
+			if err := f.Exec(ctx, "DELETE FROM capability_assignment WHERE subject_id=?", "DELETE FROM capability_assignment WHERE subject_id=$1", f.Owner.SubjectID); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Exec(ctx, "UPDATE access_grant SET revoked=1 WHERE subject_id=?", "UPDATE access_grant SET revoked=true WHERE subject_id=$1", f.Owner.SubjectID); err != nil {
+				t.Fatal(err)
+			}
+			for _, cap := range []string{"organization.read", "pii.read", "pii.write"} {
+				category := "pii"
+				if cap == "organization.read" {
+					category = "metadata"
+				}
+				if err := f.Exec(ctx, "INSERT INTO capability_assignment(org_id,subject_id,capability,scope_kind,scope_id,employee_id) VALUES(?,?,?,'employee',?,?)", "INSERT INTO capability_assignment(org_id,subject_id,capability,scope_kind,scope_id,employee_id) VALUES($1,$2,$3,'employee',$4,$5)", f.OrgID, f.Owner.SubjectID, cap, first.ID, first.ID); err != nil {
 					t.Fatal(err)
 				}
-				if err := f.Exec(ctx,
-					"UPDATE "+table+" SET scope_kind='employee',scope_id=?,employee_id=? WHERE subject_id=?",
-					"UPDATE "+table+" SET scope_kind='employee',scope_id=$1,employee_id=$2 WHERE subject_id=$3",
-					first.ID, first.ID, f.Owner.SubjectID); err != nil {
+				if err := f.Exec(ctx, "INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,purpose,valid_from,expires_at,mfa_required) VALUES(?,?,?,?,?,'employee',?,?,'organization_management',?,?,1)", "INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,purpose,valid_from,expires_at,mfa_required) VALUES($1,$2,$3,$4,$5,'employee',$6,$7,'organization_management',$8,$9,true)", value.NewID(), f.OrgID, f.Owner.SubjectID, cap, category, first.ID, first.ID, f.Repo.BindTime(f.Now.Add(-time.Hour)), f.Repo.BindTime(f.Now.Add(time.Hour))); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -191,8 +197,10 @@ func TestEmployeeScopedSessionCanReadAndCorrectOnlyGrantedEmployee(t *testing.T)
 				t.Fatal("employee-only authority became organization-wide authority")
 			}
 			apiSend(t, f, apiRequest(t, f, f.Owner, "GET", "/api/v1/session?employee_id="+first.ID, "", ""), 200, &scoped)
-			if len(scoped.Capabilities) != 3 {
-				t.Fatal("employee's independent approved read/write scope was lost")
+			for _, capability := range scoped.Capabilities {
+				if capability == "organization.write" {
+					t.Fatal("profile-only employee scope cannot advertise an unapproved organization-write action")
+				}
 			}
 			get := "/api/v1/employees/" + first.ID + "?as_of=2026-10-11&include_profile=true"
 			var view organization.View

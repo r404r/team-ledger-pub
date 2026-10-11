@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue'
+import { grantCapabilities as capabilities, validGrantPair, validGrantObject, validSourceApproval, type ObjectReference } from './grantPairs'
 
-const emit = defineEmits<{ 'session-expired': [] }>()
+const emit = defineEmits<{ 'session-expired': []; 'grant-result': [kind: 'issue' | 'revoke'] }>()
 
 type Scope = { kind: 'org' | 'team' | 'employee'; id: string }
 type RelationReference = { kind: 'reporting_line' | 'team_membership'; id: string }
@@ -13,12 +14,12 @@ type Authority = {
 }
 type Session = {
   subject_id: string; org_id: string; auth_epoch: string; capabilities: string[]; csrf_token: string
-  grant_authorities: Authority[]; mfa_recent: boolean; mfa_valid_until: string
+  grant_authorities: Authority[]; mfa_recent: boolean; mfa_valid_until: string; sensitivity_valid_until?: string
 }
 type Grant = {
   id: string; org_id: string; subject_id: string; capability: string; category: string; scope: Scope; purpose: string
   valid_from: string; expires_at: string; mfa_required: boolean; relation_bound: boolean
-  relation_ref: RelationReference | null; object_ref: null; revision: string; status: 'current' | 'future' | 'expired' | 'revoked'
+  relation_ref: RelationReference | null; object_ref: ObjectReference | null; approved_source_refs?: ObjectReference[] | null; revision: string; status: 'current' | 'future' | 'expired' | 'revoked'
   authority_id: string | null; policy_version: string | null; approved_by: string | null; approved_at: string | null
   issued_by: string | null; issued_at: string | null; revoked_by: string | null; revoked_at: string | null; revoke_reason: string | null
 }
@@ -30,7 +31,6 @@ type Preview = { body: string; context: Session; authority: Authority }
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const revision = /^[1-9][0-9]*$/
-const capabilities = ['organization.read', 'organization.write', 'pii.read', 'pii.write']
 const session = shallowRef<Session | null>(null)
 const currentList = shallowRef<GrantList | null>(null)
 const details = shallowRef<Grant | null>(null)
@@ -42,14 +42,15 @@ const uncertain = ref(false)
 const phase = ref<'idle' | 'loading' | 'submitting' | 'verifying'>('idle')
 const error = ref<string | null>(null)
 const notice = ref<string | null>(null)
-const filters = reactive({ subject: '', scopeKind: '', scopeID: '', category: '', purpose: '', state: '', grantID: '', limit: '20' })
+const filters = reactive({ subject: '', scopeKind: '', scopeID: '', category: '', purpose: '', state: '', grantID: '', capability: '', objectKind: '', objectID: '', limit: '20' })
 const form = reactive({ authorityID: '', subject: '', scopeKind: 'employee', scopeID: '', validFrom: '', expiresAt: '', mfa: true,
-  relationKind: '', relationID: '' })
+  relationKind: '', relationID: '', objectKind: '', objectID: '', sourceIDs: '' })
 let appliedFilters = ''
 let generation = 0
 let controller: AbortController | null = null
 let alive = false
 let lastCommand: Command | null = null
+let expiryTimer: ReturnType<typeof setInterval> | null = null
 
 const busy = computed(() => phase.value !== 'idle')
 const manageable = computed(() => Boolean(session.value?.capabilities.includes('access_grant.manage') &&
@@ -86,8 +87,8 @@ function validRelation(bound: boolean, ref: RelationReference | null, scope: Sco
 }
 function validAuthority(value: Authority): boolean {
   return Boolean(value && uuid.test(value.id) && capabilities.includes(value.capability) &&
-    value.category === (value.capability.startsWith('pii.') ? 'pii' : 'metadata') && validScope(value.scope) &&
-    value.purpose === 'organization_management' && timestamp(value.valid_from) && timestamp(value.expires_at) &&
+    validGrantPair(value.capability, value.category, value.purpose) && validScope(value.scope) &&
+    timestamp(value.valid_from) && timestamp(value.expires_at) &&
     timestamp(value.valid_from)! < timestamp(value.expires_at)! && typeof value.mfa_required === 'boolean' &&
     uuid.test(value.approved_by) && timestamp(value.approved_at) && typeof value.policy_version === 'string' && value.policy_version.length > 0 &&
     Array.isArray(value.delegable_scopes) && value.delegable_scopes.length > 0 && value.delegable_scopes.length <= 1000 &&
@@ -108,6 +109,7 @@ function clearData() {
   revokeReason.value = 'access_no_longer_required'
   form.authorityID = ''; form.subject = ''; form.scopeKind = 'employee'; form.scopeID = ''
   form.validFrom = ''; form.expiresAt = ''; form.mfa = true; form.relationKind = ''; form.relationID = ''
+  form.objectKind = ''; form.objectID = ''; form.sourceIDs = ''
   lastCommand = null; uncertain.value = false; notice.value = null
 }
 function cancelOperation() {
@@ -145,6 +147,8 @@ async function readSession(operation: Operation, expected?: Session, replay = fa
     clearData(); session.value = null
     throw new ApiFailure(503)
   }
+  if (next.sensitivity_valid_until !== undefined && !timestamp(next.sensitivity_valid_until)) throw new ApiFailure(503)
+  if (next.sensitivity_valid_until && timestamp(next.sensitivity_valid_until)! <= timestamp(new Date().toISOString())!) throw new ApiFailure(403)
   const wrongContext = expected && (replay
     ? expected.subject_id !== next.subject_id || expected.org_id !== next.org_id
     : !sameContext(expected, next))
@@ -156,11 +160,12 @@ async function readSession(operation: Operation, expected?: Session, replay = fa
 }
 function validGrant(value: Grant): boolean {
   if (!value || !uuid.test(value.id) || value.org_id !== session.value?.org_id || !uuid.test(value.subject_id) ||
-      !capabilities.includes(value.capability) || value.category !== (value.capability.startsWith('pii.') ? 'pii' : 'metadata') ||
-      !validScope(value.scope) || value.purpose !== 'organization_management' || !timestamp(value.valid_from) || !timestamp(value.expires_at) ||
+      !validGrantPair(value.capability, value.category, value.purpose) ||
+      !validScope(value.scope) || !timestamp(value.valid_from) || !timestamp(value.expires_at) ||
       timestamp(value.valid_from)! >= timestamp(value.expires_at)! || typeof value.mfa_required !== 'boolean' ||
       typeof value.relation_bound !== 'boolean' || !validRelation(value.relation_bound, value.relation_ref, value.scope) ||
-      value.object_ref !== null || !validRevision(value.revision) ||
+      !validGrantObject(value.object_ref, value.capability, value.category, value.purpose) ||
+      !validSourceApproval(value.approved_source_refs ?? [], value.capability, value.category) || !validRevision(value.revision) ||
       !['current', 'future', 'expired', 'revoked'].includes(value.status)) return false
   for (const field of ['authority_id', 'approved_by', 'issued_by', 'revoked_by'] as const) {
     if (value[field] !== null && (typeof value[field] !== 'string' || !uuid.test(value[field]!))) return false
@@ -211,12 +216,19 @@ async function applyFilters() {
   if (busy.value || uncertain.value) return
   if ((filters.subject && !uuid.test(filters.subject)) || (filters.grantID && !uuid.test(filters.grantID)) ||
       Boolean(filters.scopeKind) !== Boolean(filters.scopeID) || (filters.scopeID && !uuid.test(filters.scopeID)) ||
+      filters.scopeKind && !['org', 'team', 'employee'].includes(filters.scopeKind) ||
+      filters.category && !['metadata', 'pii', 'shared', 'manager_private', 'hr_confidential'].includes(filters.category) ||
+      filters.purpose && !['organization_management', 'interview_followup'].includes(filters.purpose) ||
+      filters.capability && !capabilities.includes(filters.capability) ||
+      filters.state && !['current', 'future', 'expired', 'revoked'].includes(filters.state) ||
+      Boolean(filters.objectKind) !== Boolean(filters.objectID) ||
+      filters.objectKind && (!['interview', 'note_head', 'note_version', 'action_item'].includes(filters.objectKind) || !uuid.test(filters.objectID)) ||
       !/^[1-9][0-9]*$/.test(filters.limit) || Number(filters.limit) > 100) {
     error.value = '筛选 ID 须为规范 UUID，scope 须成对，页大小须为 1..100。'; return
   }
   const query = new URLSearchParams({ limit: filters.limit })
   for (const [key, value] of Object.entries({ subject_id: filters.subject, scope_kind: filters.scopeKind, scope_id: filters.scopeID,
-    category: filters.category, purpose: filters.purpose, state: filters.state, grant_id: filters.grantID })) if (value) query.set(key, value)
+    category: filters.category, purpose: filters.purpose, state: filters.state, grant_id: filters.grantID, capability: filters.capability, object_kind: filters.objectKind, object_id: filters.objectID })) if (value) query.set(key, value)
   appliedFilters = query.toString(); await refresh()
 }
 async function nextPage() {
@@ -239,13 +251,15 @@ function chooseAuthority() {
   const selected = selectedAuthority.value
   if (!selected) return
   const scope = selected.delegable_scopes[0]!
-  form.scopeKind = scope.kind; form.scopeID = scope.id; form.mfa = selected.mfa_required
+  form.scopeKind = scope.kind; form.scopeID = scope.id
+  form.mfa = selected.mfa_required || ['note.publish', 'sensitive.export'].includes(selected.capability)
 }
 function newGrant() {
   if (busy.value || uncertain.value || !manageable.value) return
   details.value = null; editing.value = true; preview.value = null; revokeConfirm.value = false; error.value = null; notice.value = null
   form.authorityID = currentList.value!.authorities[0]!.id; form.subject = ''; form.validFrom = ''; form.expiresAt = ''
   form.relationKind = ''; form.relationID = ''
+  form.objectKind = ''; form.objectID = ''; form.sourceIDs = ''
   chooseAuthority()
 }
 function previewGrant() {
@@ -265,11 +279,19 @@ function previewGrant() {
       (authority.mfa_required && !form.mfa)) {
     preview.value = null; error.value = '请使用已批准的范围、非自身主体、RFC3339 UTC 时间（最多六位小数）及批准期限；不得降低 MFA 要求。'; return
   }
+  const object = form.objectKind ? { kind: form.objectKind, id: form.objectID } as ObjectReference : null
+  const sources: ObjectReference[] = form.sourceIDs.trim() ? form.sourceIDs.trim().split(/\s+/).map(id => ({ kind: 'note_version', id })) : []
+  if ((!form.objectKind && form.objectID) || !validGrantObject(object, authority.capability, authority.category, authority.purpose) ||
+      !validSourceApproval(sources, authority.capability, authority.category) ||
+      sources.length > 0 && form.scopeKind !== 'employee' ||
+      ['note.publish', 'sensitive.export'].includes(authority.capability) && !form.mfa) {
+    preview.value = null; error.value = '对象须为当前类别允许的明确类型与 UUID，并仍满足已批准范围；来源批准须为最多十个唯一 note_version，仅用于 note.publish 或 shared action.write。发布与导出必须 MFA。'; return
+  }
   preview.value = { context: session.value, authority, body: JSON.stringify({
     subject_id: form.subject, capability: authority.capability, category: authority.category,
     scope: { kind: form.scopeKind, id: form.scopeID }, purpose: authority.purpose,
     valid_from: form.validFrom, expires_at: form.expiresAt, mfa_required: form.mfa,
-    relation_bound: relation !== null, relation_ref: relation, object_ref: null, authority_id: authority.id, expected_revision: session.value.auth_epoch,
+    relation_bound: relation !== null, relation_ref: relation, object_ref: object, approved_source_refs: sources, authority_id: authority.id, expected_revision: session.value.auth_epoch,
   }) }
   error.value = null; editing.value = false
 }
@@ -300,6 +322,7 @@ async function execute(command: Command, replay = false) {
         !['current', 'future', 'expired', 'revoked'].includes(result.status) ||
         (command.kind === 'revoke' && (command.path !== `/access-grants/${result.id}/revoke` || result.status !== 'revoked'))) throw new ApiFailure(503)
     committed = true
+    emit('grant-result', command.kind)
     clearData(); phase.value = 'verifying'
     // The immutable receipt confirms this command, not the current epoch or status.
     // Fresh authorized reads may include later writes; never recreate the command.
@@ -324,8 +347,23 @@ function routeChanged() {
   if (/^\/security\/grants\/?$/.test(location.pathname)) void refresh()
   else { cancelOperation(); clearData(); session.value = null }
 }
-onMounted(() => { alive = true; window.addEventListener('popstate', routeChanged); void refresh() })
-onBeforeUnmount(() => { alive = false; window.removeEventListener('popstate', routeChanged); cancelOperation(); clearData(); session.value = null })
+function clearExpiredContext() {
+  if (!session.value) return
+  const now = timestamp(new Date().toISOString())!
+  if (timestamp(session.value.mfa_valid_until)! > now && (!session.value.sensitivity_valid_until || timestamp(session.value.sensitivity_valid_until)! > now)) return
+  cancelOperation(); clearData(); session.value = null
+  error.value = '当前敏感显示期限或 MFA 已到期，授权内容、表单与原命令已清空。请重新核对可信会话。'
+}
+function suspend() { cancelOperation(); clearData(); session.value = null }
+onMounted(() => {
+  alive = true; window.addEventListener('popstate', routeChanged); window.addEventListener('pagehide', suspend)
+  expiryTimer = setInterval(clearExpiredContext, 1000); void refresh()
+})
+onBeforeUnmount(() => {
+  alive = false; window.removeEventListener('popstate', routeChanged); window.removeEventListener('pagehide', suspend)
+  if (expiryTimer) clearInterval(expiryTimer)
+  cancelOperation(); clearData(); session.value = null
+})
 </script>
 
 <template>
@@ -355,10 +393,13 @@ onBeforeUnmount(() => { alive = false; window.removeEventListener('popstate', ro
           <label for="grant-filter-subject">筛选主体 ID</label><input id="grant-filter-subject" v-model="filters.subject" />
           <label for="grant-filter-scope-kind">筛选 scope 类型</label><select id="grant-filter-scope-kind" v-model="filters.scopeKind"><option value="">全部</option><option value="org">org</option><option value="team">team</option><option value="employee">employee</option></select>
           <label for="grant-filter-scope-id">筛选 scope ID</label><input id="grant-filter-scope-id" v-model="filters.scopeID" />
-          <label for="grant-filter-category">筛选类别</label><select id="grant-filter-category" v-model="filters.category"><option value="">全部</option><option value="metadata">metadata</option><option value="pii">pii</option></select>
-          <label for="grant-filter-purpose">筛选目的</label><select id="grant-filter-purpose" v-model="filters.purpose"><option value="">全部</option><option value="organization_management">organization_management</option></select>
+          <label for="grant-filter-category">筛选类别</label><select id="grant-filter-category" v-model="filters.category"><option value="">全部</option><option v-for="category in ['metadata', 'pii', 'shared', 'manager_private', 'hr_confidential']" :key="category" :value="category">{{ category }}</option></select>
+          <label for="grant-filter-purpose">筛选目的</label><select id="grant-filter-purpose" v-model="filters.purpose"><option value="">全部</option><option value="organization_management">organization_management</option><option value="interview_followup">interview_followup</option></select>
           <label for="grant-filter-state">筛选状态</label><select id="grant-filter-state" v-model="filters.state"><option value="">全部</option><option value="current">current</option><option value="future">future</option><option value="expired">expired</option><option value="revoked">revoked</option></select>
           <label for="grant-filter-id">筛选授权 ID</label><input id="grant-filter-id" v-model="filters.grantID" />
+          <label for="grant-filter-capability">筛选能力</label><select id="grant-filter-capability" v-model="filters.capability"><option value="">全部</option><option v-for="capability in capabilities" :key="capability" :value="capability">{{ capability }}</option></select>
+          <label for="grant-filter-object-kind">筛选对象类型（须与 ID 成对）</label><select id="grant-filter-object-kind" v-model="filters.objectKind"><option value="">全部</option><option v-for="kind in ['interview', 'note_head', 'note_version', 'action_item']" :key="kind" :value="kind">{{ kind }}</option></select>
+          <label for="grant-filter-object-id">筛选具体对象 ID</label><input id="grant-filter-object-id" v-model="filters.objectID" />
           <label for="grant-filter-limit">每页条数</label><input id="grant-filter-limit" v-model="filters.limit" type="number" min="1" max="100" />
           <button type="submit">应用筛选</button>
         </fieldset>
@@ -385,7 +426,8 @@ onBeforeUnmount(() => { alive = false; window.removeEventListener('popstate', ro
         <dt>范围</dt><dd>{{ details.scope.kind }} {{ details.scope.id }}</dd><dt>期限（半开）</dt><dd>[{{ details.valid_from }}, {{ details.expires_at }})</dd>
         <dt>revision</dt><dd>{{ details.revision }}</dd><dt>状态</dt><dd>{{ details.status }}</dd>
         <dt>MFA</dt><dd>{{ details.mfa_required ? '必须' : '按会话策略' }}</dd>
-        <dt>绑定</dt><dd>{{ details.relation_bound ? `${details.relation_ref?.kind} ${details.relation_ref?.id}` : '独立授权；无关系引用' }}；无对象引用</dd>
+        <dt>绑定</dt><dd>{{ details.relation_bound ? `${details.relation_ref?.kind} ${details.relation_ref?.id}` : '独立授权；无关系引用' }}；{{ details.object_ref ? `${details.object_ref.kind} ${details.object_ref.id}（仅此对象的合法谱系，不授全部历史）` : '无对象限制' }}</dd>
+        <dt>独立批准的最小来源版本</dt><dd>{{ details.approved_source_refs?.map(ref => ref.id).join(' · ') || '无' }}；仅追溯与人工最小化，不向目标读者授予源正文权。</dd>
         <dt>原批准依据</dt><dd>{{ details.authority_id ?? '历史未知' }}</dd><dt>policy version</dt><dd>{{ details.policy_version ?? '历史未知' }}</dd>
         <dt>批准者 / 时间</dt><dd>{{ details.approved_by ?? '历史未知' }} / {{ details.approved_at ?? '历史未知' }}</dd>
         <dt>签发者 / 时间</dt><dd>{{ details.issued_by ?? '历史未知' }} / {{ details.issued_at ?? '历史未知' }}</dd>
@@ -403,11 +445,15 @@ onBeforeUnmount(() => { alive = false; window.removeEventListener('popstate', ro
         <label for="grant-scope-id">授权 scope ID</label><input id="grant-scope-id" v-model="form.scopeID" required autocomplete="off" />
         <label for="grant-start">生效时间（RFC3339 UTC，最多六位小数）</label><input id="grant-start" v-model="form.validFrom" placeholder="YYYY-MM-DDTHH:mm:ss.ffffffZ" required autocomplete="off" />
         <label for="grant-end">到期时间（RFC3339 UTC，最多六位小数）</label><input id="grant-end" v-model="form.expiresAt" placeholder="YYYY-MM-DDTHH:mm:ss.ffffffZ" required autocomplete="off" />
-        <label for="grant-mfa"><input id="grant-mfa" v-model="form.mfa" type="checkbox" :disabled="selectedAuthority?.mfa_required" />被授予人使用此授权须 MFA</label>
+        <label for="grant-mfa"><input id="grant-mfa" v-model="form.mfa" type="checkbox" :disabled="selectedAuthority?.mfa_required || ['note.publish', 'sensitive.export'].includes(selectedAuthority?.capability ?? '')" />被授予人使用此授权须 MFA（发布与导出不可降低）</label>
         <label for="grant-relation-kind">关系绑定类型（可留空）</label>
         <select id="grant-relation-kind" v-model="form.relationKind" @change="form.relationID = ''"><option value="">独立授权</option><option value="reporting_line">reporting_line（经理任职）</option><option value="team_membership">team_membership（团队任职）</option></select>
         <label v-if="form.relationKind" for="grant-relation-id">原任职关系 ID（不可猜测或自动填入）</label>
         <input v-if="form.relationKind" id="grant-relation-id" v-model="form.relationID" required autocomplete="off" />
+        <label for="grant-object-kind">对象类型（可留空；具体历史版本只批准该版本）</label><select id="grant-object-kind" v-model="form.objectKind" @change="form.objectID = ''"><option value="">无对象限制</option><option v-for="kind in ['interview', 'note_head', 'note_version', 'action_item']" :key="kind" :value="kind">{{ kind }}</option></select>
+        <label v-if="form.objectKind" for="grant-object-id">明确对象 ID</label><input v-if="form.objectKind" id="grant-object-id" v-model="form.objectID" required autocomplete="off" />
+        <label for="grant-source-ids">独立批准的最小来源版本 ID（note_version，空白分隔，最多十个；不填源正文）</label><textarea id="grant-source-ids" v-model="form.sourceIDs" autocomplete="off" />
+        <p>源批准者仍须当前源读取权与目标委派权。这里只独立授予权限，不发布笔记；授予成功后发布失败是不同结果，不自动复制私有文字。</p>
         <p>服务器核对目标主体的已批准员工映射、当前原任职与范围。换任职、结束或更正不使旧引用复活；不自动授经理或团队权限。</p>
         <button type="submit">预览授权</button>
         <button type="button" @click="editing = false; form.subject = ''; form.validFrom = ''; form.expiresAt = ''">取消新建</button>
@@ -418,6 +464,7 @@ onBeforeUnmount(() => { alive = false; window.removeEventListener('popstate', ro
       <p>受授权主体 {{ form.subject }} · {{ preview.authority.capability }} / {{ preview.authority.category }} / {{ preview.authority.purpose }}</p>
       <p>{{ form.scopeKind }} {{ form.scopeID }} · [{{ form.validFrom }}, {{ form.expiresAt }}) · MFA {{ form.mfa ? '必须' : '按会话策略' }}</p>
       <p>{{ form.relationKind ? `${form.relationKind} ${form.relationID}` : '独立授权' }} · 批准依据 {{ preview.authority.id }} · 批准者 {{ preview.authority.approved_by }} · {{ preview.authority.approved_at }} · policy {{ preview.authority.policy_version }} · expected epoch {{ preview.context.auth_epoch }}</p>
+      <p>对象 {{ form.objectKind ? `${form.objectKind} ${form.objectID}` : '无对象限制' }} · 最小来源版本 {{ form.sourceIDs || '无' }}。批准特定历史版本不批准其余历史。</p>
       <p>这会向已有资格的主体开放上述范围；不授角色。请逐项确认真实批准范围。</p>
       <button type="button" :disabled="busy || uncertain" @click="confirmIssue">确认授予</button>
       <button type="button" :disabled="busy || uncertain" @click="preview = null; editing = true">返回修改</button>

@@ -105,7 +105,7 @@ func (r reader) Authorities(ctx context.Context, org, subject string, now time.T
 	return items, safeError(rows.Err())
 }
 
-const grantColumns = "g.id,g.org_id,g.subject_id,g.capability,g.category,g.scope_kind,g.scope_id,g.purpose,g.valid_from,g.expires_at,g.mfa_required,g.relation_bound,g.revision,g.revoked,g.authority_id,a.policy_version,a.approved_by,a.approved_at,g.issued_by,g.issued_at,g.revoked_by,g.revoked_at,g.revoke_reason,g.relation_kind,g.reporting_line_id,g.membership_id,g.relation_actor_employee_id"
+const grantColumns = "g.id,g.org_id,g.subject_id,g.capability,g.category,g.scope_kind,g.scope_id,g.purpose,g.valid_from,g.expires_at,g.mfa_required,g.relation_bound,g.revision,g.revoked,g.authority_id,a.policy_version,a.approved_by,a.approved_at,g.issued_by,g.issued_at,g.revoked_by,g.revoked_at,g.revoke_reason,g.relation_kind,g.reporting_line_id,g.membership_id,g.relation_actor_employee_id,g.object_kind,g.object_ref"
 const grantJoin = " FROM access_grant g LEFT JOIN delegation_authority a ON a.org_id=g.org_id AND a.id=g.authority_id"
 
 type grantScanner interface{ Scan(...any) error }
@@ -144,9 +144,9 @@ func scanGrant(row grantScanner, now time.Time) (authz.GrantDTO, error) {
 	var revoked bool
 	var from, to dbTime
 	var authority, policy, approver, issuer, revoker, reason sql.NullString
-	var relationKind, reportingID, membershipID, actorID sql.NullString
+	var relationKind, reportingID, membershipID, actorID, objectKind, objectID sql.NullString
 	var approved, issued, revokedAt nullDBTime
-	err := row.Scan(&g.ID, &g.OrgID, &g.SubjectID, &g.Capability, &g.Category, &g.Scope.Kind, &g.Scope.ID, &g.Purpose, &from, &to, &g.MFARequired, &g.RelationBound, &revision, &revoked, &authority, &policy, &approver, &approved, &issuer, &issued, &revoker, &revokedAt, &reason, &relationKind, &reportingID, &membershipID, &actorID)
+	err := row.Scan(&g.ID, &g.OrgID, &g.SubjectID, &g.Capability, &g.Category, &g.Scope.Kind, &g.Scope.ID, &g.Purpose, &from, &to, &g.MFARequired, &g.RelationBound, &revision, &revoked, &authority, &policy, &approver, &approved, &issuer, &issued, &revoker, &revokedAt, &reason, &relationKind, &reportingID, &membershipID, &actorID, &objectKind, &objectID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return authz.GrantDTO{}, fault.NotFound
 	}
@@ -168,6 +168,9 @@ func scanGrant(row grantScanner, now time.Time) (authz.GrantDTO, error) {
 		}
 		g.RelationRef = &authz.RelationReference{Kind: relationKind.String, ID: id}
 	}
+	if objectKind.Valid {
+		g.ObjectRef = &authz.ObjectReference{Kind: objectKind.String, ID: objectID.String}
+	}
 	switch {
 	case revoked:
 		g.Status = "revoked"
@@ -183,7 +186,8 @@ func scanGrant(row grantScanner, now time.Time) (authz.GrantDTO, error) {
 
 func (r reader) Grant(ctx context.Context, org, id string) (authz.GrantDTO, error) {
 	q := "SELECT " + grantColumns + grantJoin + r.sql(" WHERE g.org_id=? AND g.id=?", " WHERE g.org_id=$1 AND g.id=$2")
-	return scanGrant(r.db.QueryRowContext(ctx, q, org, id), time.Now().UTC())
+	g, err := scanGrant(r.db.QueryRowContext(ctx, q, org, id), time.Now().UTC())
+	return r.grantApprovals(ctx, g, err)
 }
 
 func (r reader) OwnsScope(ctx context.Context, org string, scope authz.Scope) (bool, error) {
@@ -345,7 +349,7 @@ func (r reader) VisibleGrants(ctx context.Context, org string, authorities []aut
 		q.WriteByte(')')
 	}
 	q.WriteByte(')')
-	for _, part := range []struct{ column, value string }{{"subject_id", filter.SubjectID}, {"scope_kind", filter.ScopeKind}, {"scope_id", filter.ScopeID}, {"category", filter.Category}, {"purpose", filter.Purpose}, {"id", filter.GrantID}} {
+	for _, part := range []struct{ column, value string }{{"subject_id", filter.SubjectID}, {"scope_kind", filter.ScopeKind}, {"scope_id", filter.ScopeID}, {"category", filter.Category}, {"purpose", filter.Purpose}, {"id", filter.GrantID}, {"capability", filter.Capability}, {"object_kind", filter.ObjectKind}, {"object_ref", filter.ObjectID}} {
 		if part.value != "" {
 			q.WriteString(" AND g." + part.column + "=" + bind(part.value))
 		}
@@ -377,7 +381,29 @@ func (r reader) VisibleGrants(ctx context.Context, org string, authorities []aut
 		}
 		items = append(items, g)
 	}
-	return items, safeError(rows.Err())
+	if err := rows.Err(); err != nil {
+		return nil, safeError(err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, safeError(err)
+	}
+	var ids []string
+	for _, item := range items {
+		if item.Capability == "note.publish" || item.Capability == "action.write" {
+			ids = append(ids, item.ID)
+		}
+	}
+	approvals, err := r.sourceApprovals(ctx, org, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		items[i].ApprovedSourceRefs = approvals[items[i].ID].refs
+		if items[i].ApprovedSourceRefs == nil {
+			items[i].ApprovedSourceRefs = []authz.ObjectReference{}
+		}
+	}
+	return items, nil
 }
 
 func (t *transaction) InsertGrant(ctx context.Context, g authz.GrantDTO) error {
@@ -414,10 +440,45 @@ func (t *transaction) InsertGrant(ctx context.Context, g authz.GrantDTO) error {
 	} else if g.RelationRef != nil {
 		return fault.Invalid
 	}
+	var objectKind, objectID, objectEmployee, interviewID, headID, versionID, actionID any
+	if g.ObjectRef != nil {
+		if !authz.ValidObjectReference(*g.ObjectRef) || !authz.ObjectPair(g.Capability, g.Category, g.ObjectRef.Kind) || !value.ValidID(g.ObjectEmployeeID) {
+			return fault.Invalid
+		}
+		objectKind, objectID, objectEmployee = g.ObjectRef.Kind, g.ObjectRef.ID, g.ObjectEmployeeID
+		switch g.ObjectRef.Kind {
+		case "interview":
+			interviewID = g.ObjectRef.ID
+		case "note_head":
+			headID = g.ObjectRef.ID
+		case "note_version":
+			versionID = g.ObjectRef.ID
+		case "action_item":
+			actionID = g.ObjectRef.ID
+		}
+	}
 	_, err := t.tx.ExecContext(ctx, t.sql(
-		"INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,purpose,valid_from,expires_at,mfa_required,authority_id,issued_by,issued_at,team_id,relation_bound,relation_kind,reporting_line_id,membership_id,relation_actor_employee_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-		"INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,purpose,valid_from,expires_at,mfa_required,authority_id,issued_by,issued_at,team_id,relation_bound,relation_kind,reporting_line_id,membership_id,relation_actor_employee_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)"), g.ID, g.OrgID, g.SubjectID, g.Capability, g.Category, g.Scope.Kind, g.Scope.ID, employee, g.Purpose, t.bindTime(g.ValidFrom), t.bindTime(g.ExpiresAt), g.MFARequired, *g.AuthorityID, *g.IssuedBy, t.bindTime(*g.IssuedAt), team, g.RelationBound, relationKind, reportingID, membershipID, actor)
-	return safeError(err)
+		"INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,purpose,valid_from,expires_at,mfa_required,authority_id,issued_by,issued_at,team_id,relation_bound,relation_kind,reporting_line_id,membership_id,relation_actor_employee_id,object_kind,object_ref,object_employee_id,interview_id,note_head_id,note_version_id,action_item_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,purpose,valid_from,expires_at,mfa_required,authority_id,issued_by,issued_at,team_id,relation_bound,relation_kind,reporting_line_id,membership_id,relation_actor_employee_id,object_kind,object_ref,object_employee_id,interview_id,note_head_id,note_version_id,action_item_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)"), g.ID, g.OrgID, g.SubjectID, g.Capability, g.Category, g.Scope.Kind, g.Scope.ID, employee, g.Purpose, t.bindTime(g.ValidFrom), t.bindTime(g.ExpiresAt), g.MFARequired, *g.AuthorityID, *g.IssuedBy, t.bindTime(*g.IssuedAt), team, g.RelationBound, relationKind, reportingID, membershipID, actor, objectKind, objectID, objectEmployee, interviewID, headID, versionID, actionID)
+	if err != nil {
+		return safeError(err)
+	}
+	for _, ref := range g.ApprovedSourceRefs {
+		result, err := t.tx.ExecContext(ctx, t.sql(
+			"INSERT INTO access_grant_source_approval(org_id,grant_id,source_note_version_id,employee_id,source_category) SELECT org_id,?,id,employee_id,category FROM note_version WHERE org_id=? AND id=? AND employee_id=? AND status='published'",
+			"INSERT INTO access_grant_source_approval(org_id,grant_id,source_note_version_id,employee_id,source_category) SELECT org_id,$1,id,employee_id,category FROM note_version WHERE org_id=$2 AND id=$3 AND employee_id=$4 AND status='published'"), g.ID, g.OrgID, ref.ID, g.Scope.ID)
+		if err != nil {
+			return safeError(err)
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return safeError(err)
+		}
+		if count != 1 {
+			return fault.Forbidden
+		}
+	}
+	return nil
 }
 
 func (t *transaction) RevokeGrant(ctx context.Context, org, id string, revision int64, actor string, at time.Time, reason string) error {
@@ -526,7 +587,8 @@ func (t *transaction) LockScope(ctx context.Context, org string, scope authz.Sco
 
 func (t *transaction) Grant(ctx context.Context, org, id string) (authz.GrantDTO, error) {
 	q := "SELECT " + grantColumns + grantJoin + t.sql(" WHERE g.org_id=? AND g.id=?", " WHERE g.org_id=$1 AND g.id=$2 FOR UPDATE OF g")
-	return scanGrant(t.tx.QueryRowContext(ctx, q, org, id), time.Now().UTC())
+	g, err := scanGrant(t.tx.QueryRowContext(ctx, q, org, id), time.Now().UTC())
+	return t.reader.grantApprovals(ctx, g, err)
 }
 
 func (t *transaction) Employee(ctx context.Context, id string) (organization.Employee, error) {

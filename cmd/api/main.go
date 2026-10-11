@@ -21,6 +21,7 @@ import (
 	"github.com/r404r/team-ledger/internal/configfile"
 	"github.com/r404r/team-ledger/internal/httpapi"
 	"github.com/r404r/team-ledger/internal/identity"
+	"github.com/r404r/team-ledger/internal/interview"
 	"github.com/r404r/team-ledger/internal/organization"
 	"github.com/r404r/team-ledger/internal/sensitive"
 	"github.com/r404r/team-ledger/internal/store"
@@ -56,7 +57,7 @@ func secret(name string, size int) ([]byte, error) {
 }
 
 func run() error {
-	names := []string{"BACKEND", "DSN", "LISTEN", "PUBLIC_ORIGIN", "TLS_CERT_FILE", "TLS_KEY_FILE", "KMS_URL", "KMS_KEY", "WEB_DIR"}
+	names := []string{"BACKEND", "DSN", "LISTEN", "PUBLIC_ORIGIN", "TLS_CERT_FILE", "TLS_KEY_FILE", "KMS_URL", "KMS_KEY", "INTERVIEW_KMS_URL", "INTERVIEW_KMS_KEY", "WEB_DIR"}
 	cfg := map[string]string{}
 	for _, name := range names {
 		v, e := required(name)
@@ -118,6 +119,11 @@ func run() error {
 	if e != nil {
 		return errors.New("invalid KMS configuration")
 	}
+	interviewWrapper, closeInterviewKeys, e := interviewKeyService(cfg, tokenText)
+	if e != nil {
+		return e
+	}
+	defer closeInterviewKeys()
 	keyPEM, e := configfile.Read(cfg["TLS_KEY_FILE"], 64<<10, true)
 	if e != nil {
 		return e
@@ -154,6 +160,7 @@ func run() error {
 		return errors.New("invalid database schema")
 	}
 	service := &organization.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, DigestKey: digest, CursorKey: cursor, Now: time.Now}
+	interviews := &interview.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: interviewWrapper}, DigestKey: digest, CursorKey: cursor, Now: time.Now}
 	grants := &authz.Service{Store: repo, DigestKey: digest, CursorKey: cursor, Now: time.Now}
 	oidcConfig, closeIdentity, e := identityConfiguration(cfg["PUBLIC_ORIGIN"], csrf, digest, cursor)
 	if e != nil {
@@ -166,7 +173,7 @@ func run() error {
 	if e != nil {
 		return errors.New("identity unavailable")
 	}
-	handler, e := httpapi.New(service, grants, identities, csrf, cfg["PUBLIC_ORIGIN"], cfg["WEB_DIR"])
+	handler, e := httpapi.New(service, interviews, grants, identities, csrf, cfg["PUBLIC_ORIGIN"], cfg["WEB_DIR"])
 	if e != nil {
 		return e
 	}

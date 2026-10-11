@@ -17,6 +17,7 @@ import (
 	"github.com/r404r/team-ledger/internal/authz"
 	"github.com/r404r/team-ledger/internal/httpapi"
 	"github.com/r404r/team-ledger/internal/identity"
+	"github.com/r404r/team-ledger/internal/interview"
 	"github.com/r404r/team-ledger/internal/organization"
 	"github.com/r404r/team-ledger/internal/sensitive"
 	"github.com/r404r/team-ledger/internal/store"
@@ -30,11 +31,13 @@ type Credential struct {
 type Fixture struct {
 	Repo                                  *store.Repository
 	Service                               *organization.Service
+	Interviews                            *interview.Service
 	Authz                                 *authz.Service
 	AuthorityIDs                          map[string]string
 	Manager, Reader, Approver             Credential
 	CursorKey                             []byte
 	KMS                                   *VaultFixture
+	InterviewKMS                          *VaultFixture
 	Server                                *httptest.Server
 	OrgID, OtherOrgID, DSN, Backend       string
 	CSRFKey, DigestKey                    []byte
@@ -114,7 +117,7 @@ func NewFixture(ctx context.Context, backend, dsn string) (_ *Fixture, err error
 	if err = f.seed(ctx); err != nil {
 		return nil, err
 	}
-	f.KMS, err = NewVaultFixture()
+	f.KMS, err = NewVaultFixture("dev002-pii")
 	if err != nil {
 		return nil, err
 	}
@@ -122,6 +125,15 @@ func NewFixture(ctx context.Context, backend, dsn string) (_ *Fixture, err error
 	if err != nil {
 		return nil, err
 	}
+	f.InterviewKMS, err = NewVaultFixture("dev008-interview")
+	if err != nil {
+		return nil, err
+	}
+	interviewWrapper, err := f.InterviewKMS.Wrapper()
+	if err != nil {
+		return nil, err
+	}
+	f.Interviews = &interview.Service{Store: f.Repo, Cipher: sensitive.Cipher{Wrapper: interviewWrapper}, DigestKey: f.DigestKey, CursorKey: f.CursorKey, Now: func() time.Time { return f.Now }}
 	f.Service = &organization.Service{Store: f.Repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, DigestKey: f.DigestKey, CursorKey: f.CursorKey, Now: func() time.Time { return f.Now }}
 	f.Authz = &authz.Service{Store: f.Repo, DigestKey: f.DigestKey, CursorKey: f.CursorKey, Now: func() time.Time { return f.Now }}
 	return f, nil
@@ -132,6 +144,9 @@ func (f *Fixture) Close() {
 	}
 	if f.KMS != nil {
 		f.KMS.Close()
+	}
+	if f.InterviewKMS != nil {
+		f.InterviewKMS.Close()
 	}
 	if f.Repo != nil {
 		f.Repo.Close()
@@ -210,6 +225,9 @@ func (f *Fixture) seed(ctx context.Context) error {
 			return err
 		}
 	}
+	if err = f.seedInterviews(ctx, tx); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -264,7 +282,7 @@ func NewHarness(t testing.TB, backend string) *Fixture {
 		t.Fatal(err)
 	}
 	identities.Now = f.Service.Now
-	handler, err := httpapi.New(f.Service, f.Authz, identities, f.CSRFKey, "https://"+server.Listener.Addr().String(), dir)
+	handler, err := httpapi.New(f.Service, f.Interviews, f.Authz, identities, f.CSRFKey, "https://"+server.Listener.Addr().String(), dir)
 	if err != nil {
 		server.Close()
 		t.Fatal(err)
@@ -286,6 +304,9 @@ func NewHarness(t testing.TB, backend string) *Fixture {
 }
 func (f *Fixture) Request(c Credential) organization.Request {
 	return organization.Request{TokenHash: c.Hash, Purpose: "organization_management", Key: value.NewID(), RequestID: value.NewID()}
+}
+func (f *Fixture) InterviewRequest(c Credential) interview.Request {
+	return interview.Request{TokenHash: c.Hash, Purpose: "interview_followup", Key: value.NewID(), RequestID: value.NewID()}
 }
 func (f *Fixture) Exec(ctx context.Context, sq, pg string, args ...any) error {
 	q := sq

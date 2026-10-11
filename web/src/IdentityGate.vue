@@ -8,6 +8,7 @@ type SessionHint = {
   csrf_token: string
   mfa_recent: boolean
   identity_available?: boolean
+  sensitivity_valid_until?: string
 }
 type Phase = 'checking' | 'authenticated' | 'logged-out' | 'expired' | 'changed' | 'unavailable' |
   'logging-out' | 'logout-failed' | 'mfa-starting' | 'mfa-redirecting' | 'mfa-failed' | 'login-redirecting'
@@ -18,16 +19,19 @@ const revision = /^[1-9][0-9]*$/
 const phase = ref<Phase>('checking')
 const session = shallowRef<SessionHint | null>(null)
 const returnTo = ref(knownReturnRoute())
+const interviewIntent = ref<'note.publish' | 'sensitive.export'>('note.publish')
 const protectedGeneration = ref(0)
 let alive = false
 let generation = 0
 let controller: AbortController | null = null
 let logoutCSRF: string | null = null
+let expiryTimer: ReturnType<typeof setInterval> | null = null
 
 const loginURL = computed(() => `/api/v1/auth/login?${new URLSearchParams({ return_to: returnTo.value })}`)
 const identityAvailable = computed(() => session.value?.identity_available !== false)
 const canLogout = computed(() => session.value !== null && !['logging-out', 'logout-failed', 'login-redirecting'].includes(phase.value))
-const stepUpAction = computed(() => returnTo.value.split('?')[0] === '/security/grants' ? 'access_grant.manage' : 'pii.write')
+const interviewRoute = computed(() => /^\/interviews(?:\/|$)/.test(returnTo.value) || /^\/employees\/[^/]+\/interviews$/.test(returnTo.value))
+const stepUpAction = computed(() => returnTo.value.split('?')[0] === '/security/grants' ? 'access_grant.manage' : interviewRoute.value ? interviewIntent.value : 'pii.write')
 
 function validDate(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
@@ -40,9 +44,14 @@ function knownReturnRoute() {
   const employee = /^\/employees\/([0-9a-f-]+)(?:\/profile)?\/?$/.exec(url.pathname)
   const history = /^\/employees\/([0-9a-f-]+)\/organization-history\/?$/.exec(url.pathname)
   const organization = /^\/orgs\/([0-9a-f-]+)\/(tree|employees)\/?$/.exec(url.pathname)
+  const interview = /^\/interviews\/([0-9a-f-]+)\/?$/.exec(url.pathname)
+  const employeeInterviews = /^\/employees\/([0-9a-f-]+)\/interviews\/?$/.exec(url.pathname)
   if (employee && uuid.test(employee[1]!)) path = `/employees/${employee[1]}`
   else if (history && uuid.test(history[1]!)) path = `/employees/${history[1]}/organization-history`
   else if (organization && uuid.test(organization[1]!)) path = `/orgs/${organization[1]}/${organization[2]}`
+  else if (interview && uuid.test(interview[1]!)) path = `/interviews/${interview[1]}`
+  else if (employeeInterviews && uuid.test(employeeInterviews[1]!)) path = `/employees/${employeeInterviews[1]}/interviews`
+  else if (/^\/interviews\/?$/.test(url.pathname)) path = '/interviews'
   else if (/^\/security\/grants\/?$/.test(url.pathname)) path = '/security/grants'
   else if (url.pathname === '/') path = '/'
   else return '/'
@@ -50,7 +59,7 @@ function knownReturnRoute() {
   if (history && query.length === 2 && url.searchParams.getAll('from').length === 1 && url.searchParams.getAll('to').length === 1) {
     const from = url.searchParams.get('from')!, to = url.searchParams.get('to')!
     if (validDate(from) && validDate(to) && from < to) return `${path}?${new URLSearchParams({ from, to })}`
-  } else if (!history && query.length === 1 && query[0]![0] === 'as_of' && validDate(query[0]![1])) {
+  } else if (!history && !interview && !employeeInterviews && path !== '/interviews' && query.length === 1 && query[0]![0] === 'as_of' && validDate(query[0]![1])) {
     return `${path}?${new URLSearchParams({ as_of: query[0]![1] })}`
   }
   return path
@@ -80,10 +89,16 @@ function sessionHint(value: unknown): SessionHint | null {
       typeof next.csrf_token !== 'string' || !next.csrf_token ||
       typeof next.mfa_recent !== 'boolean' ||
       (next.identity_available !== undefined && typeof next.identity_available !== 'boolean')) return null
+  if (next.sensitivity_valid_until !== undefined) {
+    if (typeof next.sensitivity_valid_until !== 'string') return null
+    const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d{1,6})?Z$/.exec(next.sensitivity_valid_until)
+    if (!match || Number.isNaN(Date.parse(next.sensitivity_valid_until)) || new Date(`${match[1]}Z`).toISOString().slice(0, 19) !== match[1]) return null
+  }
   // Do not retain the response's business capabilities, authorities or unrelated fields.
   return {
     subject_id: next.subject_id, org_id: next.org_id, auth_epoch: next.auth_epoch,
     csrf_token: next.csrf_token, mfa_recent: next.mfa_recent, identity_available: next.identity_available,
+    sensitivity_valid_until: next.sensitivity_valid_until,
   }
 }
 function sameIdentity(left: SessionHint, right: SessionHint) {
@@ -112,7 +127,7 @@ async function checkSession() {
     const next = sessionHint(await response.json())
     if (!isCurrent(operation)) return
     if (!next) throw new Error('Session unavailable')
-    if (previous && !sameIdentity(previous, next)) {
+    if (previous && !sameIdentity(previous, next) || next.sensitivity_valid_until && Date.parse(next.sensitivity_valid_until) <= Date.now()) {
       session.value = null
       phase.value = 'changed'
       return
@@ -205,12 +220,19 @@ function suspend() {
   protectedGeneration.value += 1
   phase.value = 'checking'
 }
+function clearExpiredSensitivity() {
+  const deadline = session.value?.sensitivity_valid_until
+  if (!deadline || !['authenticated', 'mfa-starting'].includes(phase.value) || Date.parse(deadline) > Date.now()) return
+  cancelOperation(); protectedGeneration.value += 1; session.value = null; logoutCSRF = null
+  phase.value = 'changed'
+}
 onMounted(() => {
   alive = true
   window.addEventListener('popstate', routeChanged)
   window.addEventListener('focus', resume)
   window.addEventListener('pageshow', resume)
   window.addEventListener('pagehide', suspend)
+  expiryTimer = setInterval(clearExpiredSensitivity, 1000)
   void checkSession()
 })
 onBeforeUnmount(() => {
@@ -219,6 +241,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('focus', resume)
   window.removeEventListener('pageshow', resume)
   window.removeEventListener('pagehide', suspend)
+  if (expiryTimer) clearInterval(expiryTimer)
   cancelOperation()
   session.value = null
   logoutCSRF = null
@@ -230,13 +253,16 @@ onBeforeUnmount(() => {
     <template v-if="phase === 'authenticated'">
       <p>会话已核对。{{ session?.mfa_recent ? '近期 MFA 已由身份设施验证。' : '敏感操作可能需要重新完成可信 MFA。' }} 身份摘要不是业务访问许可。</p>
       <button type="button" @click="checkSession">重新核对会话（清空当前页面）</button>
-      <button v-if="identityAvailable" type="button" @click="stepUp">{{ stepUpAction === 'access_grant.manage' ? '重新验证授权管理 MFA' : '重新验证资料写入 MFA' }}</button>
-      <p v-else>可信登录与 MFA 设施未启用，不能在本地完成验证。</p>
+      <label v-if="interviewRoute && identityAvailable" for="interview-stepup-intent">重新验证意图</label>
+      <select v-if="interviewRoute && identityAvailable" id="interview-stepup-intent" v-model="interviewIntent"><option value="note.publish">发布笔记</option><option value="sensitive.export">敏感导出</option></select>
+      <button v-if="identityAvailable" type="button" @click="stepUp">{{ stepUpAction === 'access_grant.manage' ? '重新验证授权管理 MFA' : stepUpAction === 'note.publish' ? '重新验证笔记发布 MFA' : stepUpAction === 'sensitive.export' ? '重新验证敏感导出 MFA' : '重新验证资料写入 MFA' }}</button>
+      <p v-if="interviewRoute">MFA 是会话级近期认证；所选意图不是动作票据，不自动发布或导出。</p>
+      <p v-if="!identityAvailable">可信登录与 MFA 设施未启用，不能在本地完成验证。</p>
     </template>
     <p v-else-if="phase === 'checking'" role="status">正在核对服务端会话；受保护页面尚未开放。</p>
     <p v-else-if="phase === 'logged-out'" role="status">服务端已确认撤销本会话，当前页面资料已清空。未请求外部身份站点的全局登出。</p>
     <p v-else-if="phase === 'expired'" role="alert">会话不存在或已失效，受保护页面与表单已清空。请通过可信身份设施登录。</p>
-    <p v-else-if="phase === 'changed'" role="alert">主体、组织或授权 epoch 已改变。旧页面已销毁；请重新核对会话后再操作。</p>
+    <p v-else-if="phase === 'changed'" role="alert">主体、组织、授权上下文或当前敏感显示期限已改变。旧页面已销毁；请重新核对会话后再操作。</p>
     <p v-else-if="phase === 'unavailable'" role="alert">无法核对会话，受保护页面保持关闭。可手动重新核对。</p>
     <p v-else-if="phase === 'logging-out'" role="status">页面资料已清空，正在等待服务端撤销会话的确认。</p>
     <p v-else-if="phase === 'logout-failed'" role="alert">页面资料已清空，但服务端撤销尚未确认。不能视为已注销；可重试撤销本会话。</p>

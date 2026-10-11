@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Mock } from 'vitest'
 import App from './App.vue'
 import ProfilePage from './ProfilePage.vue'
+import IdentityGate from './IdentityGate.vue'
 
 const ORG = '10000000-0000-4000-8000-000000000001'
 const SUBJECT = '10000000-0000-4000-8000-000000000002'
@@ -20,6 +21,7 @@ const initialSession = {
   capabilities: ['organization.read', 'organization.write', 'pii.read', 'pii.write'],
   scope_kind: 'org', scope_id: ORG, mfa_recent: false, mfa_valid_until: '2026-10-11T00:00:00Z',
   grant_authorities: [], identity_available: true,
+  sensitivity_valid_until: undefined as string | undefined,
 }
 function profile(name = SAVED_NAME, org = ORG) {
   return {
@@ -137,7 +139,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   for (const page of pages) page.unmount()
-  document.body.replaceChildren(); vi.unstubAllGlobals(); vi.restoreAllMocks()
+  document.body.replaceChildren(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers()
   expect(api.unexpected, 'Configure all external HTTP boundaries').toEqual([])
 })
 
@@ -410,5 +412,50 @@ describe('shared protected identity interaction', () => {
     expect(target.searchParams.get('return_to')).toBe(expected)
     expect(target.href).not.toContain('synthetic-private-name')
     expect(api.requests).toHaveLength(1)
+  })
+})
+
+describe('R3 session-wide interview MFA intents', () => {
+  it.each([
+    ['/interviews', 'note.publish', '重新验证笔记发布 MFA'],
+    [`/employees/${EMPLOYEE}/interviews`, 'sensitive.export', '重新验证敏感导出 MFA'],
+    [`/interviews/${OTHER}`, 'note.publish', '重新验证笔记发布 MFA'],
+  ])('retains legal return route %s and submits only current session intent %s', async (route, intent, label) => {
+    history.replaceState({}, '', `${route}?untrusted_body=must-not-return`)
+    const page = mount(IdentityGate, { attachTo: document.body, slots: { default: '<p>受保护业务插槽</p>' } }); pages.push(page)
+    await settled()
+    await page.get('#interview-stepup-intent').setValue(intent)
+    const starting = api.defer('POST', '/api/v1/auth/step-up')
+    await action(page, new RegExp(`^${label}$`)).trigger('click'); await settled()
+    expect(JSON.parse(api.matching('POST', '/api/v1/auth/step-up')[0]!.body!)).toEqual({ action: intent, return_to: route })
+    expect(page.text()).not.toContain('受保护业务插槽')
+    starting.resolve(200, { authorization_url: PROVIDER_URL }); await settled()
+    expect(providerNavigation).toHaveBeenCalledOnce()
+    expect(api.requests.filter(request => request.method === 'POST')).toHaveLength(1)
+    expect(api.requests.some(request => request.url.pathname.includes('note-versions') || request.url.pathname.includes('sensitive-exports'))).toBe(false)
+  })
+  it('does not falsely report missing identity facilities on legal interview route', async () => {
+    history.replaceState({}, '', '/interviews')
+    const page = mount(IdentityGate, { attachTo: document.body }); pages.push(page); await settled()
+    expect(page.text()).toContain('MFA 是会话级近期认证')
+    expect(page.text()).not.toContain('可信登录与 MFA 设施未启用')
+  })
+})
+
+describe('shared gate current sensitivity clock boundary', () => {
+  it('destroys real protected profile and aborts pending write at server expiry without locally inventing token validity', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] }); vi.setSystemTime(new Date('2026-10-11T12:00:00Z'))
+    api.session = { ...initialSession, sensitivity_valid_until: '2026-10-11T12:00:02Z' }
+    api.reply('GET', PROFILE_PATH, 200, profile())
+    const page = await open(); await edit(page)
+    const pending = api.defer('PATCH', `${PROFILE_PATH}/profile`)
+    await submit(page)
+    const command = api.matching('PATCH', `${PROFILE_PATH}/profile`)[0]!
+    const readsBeforeBoundary = api.matching('GET', '/api/v1/session').length
+    vi.advanceTimersByTime(2000); await settled()
+    expect(identityState(page)).toBe('changed'); closed(page); expect(command.signal?.aborted).toBe(true)
+    pending.resolve(200, { id: EMPLOYEE, profile_revision: '2', profile: profile().profile }); await settled()
+    closed(page)
+    expect(api.matching('GET', '/api/v1/session')).toHaveLength(readsBeforeBoundary)
   })
 })

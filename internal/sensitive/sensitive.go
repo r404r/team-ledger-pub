@@ -218,10 +218,11 @@ func newDEKID() (string, error) {
 }
 
 func canonicalAAD(binding Context) ([]byte, error) {
-	if binding.Purpose != "pii" || binding.SchemaVersion != 1 {
+	if binding.SchemaVersion != 1 {
 		return nil, ErrInvalid
 	}
 	employeeOwned := false
+	purpose := "pii"
 	switch binding.ObjectKind {
 	case "employee_profile":
 		if binding.SchemaType != "pii.profile.v1" {
@@ -241,7 +242,28 @@ func canonicalAAD(binding Context) ([]byte, error) {
 		if binding.SchemaType != "org.structure.reason.v1" {
 			return nil, ErrInvalid
 		}
+	case "interview_note_shared", "interview_note_manager_private", "interview_note_hr_confidential":
+		if binding.SchemaType != "interview.note.v1" {
+			return nil, ErrInvalid
+		}
+		purpose = "interview"
+		employeeOwned = true
+	case "interview_action":
+		if binding.SchemaType != "interview.action.v1" {
+			return nil, ErrInvalid
+		}
+		purpose = "interview"
+		employeeOwned = true
+	case "interview_reason":
+		if binding.SchemaType != "interview.reason.v1" {
+			return nil, ErrInvalid
+		}
+		purpose = "interview"
+		employeeOwned = true
 	default:
+		return nil, ErrInvalid
+	}
+	if binding.Purpose != purpose {
 		return nil, ErrInvalid
 	}
 	if !employeeOwned && binding.EmployeeID != "" {

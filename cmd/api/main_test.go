@@ -46,6 +46,12 @@ func TestAPIStartupRequiresProtectedCredentialFiles(t *testing.T) {
 				{"cursor_equals_digest", "cursor.key", 0600, false},
 				{"public_kms_token", "kms.token", 0666, false},
 				{"public_tls_private_key", "api.key", 0644, false},
+				{"public_interview_token", "interview.token", 0644, false},
+				{"missing_interview_token", "", 0600, false},
+				{"interview_token_equals_pii", "", 0600, false},
+				{"interview_key_equals_pii", "", 0600, false},
+				{"public_writable_interview_ca", "interview-cert.pem", 0666, false},
+				{"public_readable_interview_ca", "interview-cert.pem", 0644, true},
 				{"public_read_only_ca", "cert.pem", 0444, true},
 				{"public_readable_ca", "cert.pem", 0644, true},
 				{"group_writable_ca", "cert.pem", 0660, false},
@@ -60,8 +66,17 @@ func TestAPIStartupRequiresProtectedCredentialFiles(t *testing.T) {
 					}
 					defer clear(key)
 					cert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Certificate[0]})
-					files := map[string][]byte{"csrf.key": f.CSRFKey, "digest.key": f.DigestKey, "cursor.key": f.CursorKey, "kms.token": []byte(f.KMS.Token), "api.key": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: key}), "cert.pem": cert, "index.html": []byte("<!doctype html><title>Fixture</title>")}
+					interviewCert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: f.InterviewKMS.Server.TLS.Certificates[0].Certificate[0]})
+					files := map[string][]byte{"csrf.key": f.CSRFKey, "digest.key": f.DigestKey, "cursor.key": f.CursorKey, "kms.token": []byte(f.KMS.Token), "interview.token": []byte(f.InterviewKMS.Token), "interview-cert.pem": interviewCert, "api.key": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: key}), "cert.pem": cert, "index.html": []byte("<!doctype html><title>Fixture</title>")}
 					for name, data := range files {
+						if name == "interview.token" {
+							if tc.name == "missing_interview_token" {
+								continue
+							}
+							if tc.name == "interview_token_equals_pii" {
+								data = []byte(f.KMS.Token)
+							}
+						}
 						if name == "cursor.key" {
 							switch tc.name {
 							case "missing_cursor":
@@ -110,6 +125,13 @@ func TestAPIStartupRequiresProtectedCredentialFiles(t *testing.T) {
 					command := exec.CommandContext(ctx, executable, "-test.run=^TestAPIStartupChildProcess$")
 					env := map[string]string{"BACKEND": backend, "DSN": f.DSN, "LISTEN": address, "PUBLIC_ORIGIN": origin, "TLS_CERT_FILE": filepath.Join(dir, "cert.pem"), "TLS_KEY_FILE": filepath.Join(dir, "api.key"), "CSRF_KEY_FILE": filepath.Join(dir, "csrf.key"), "DIGEST_KEY_FILE": filepath.Join(dir, "digest.key"), "KMS_URL": f.KMS.Server.URL, "KMS_KEY": "dev002-pii", "KMS_TOKEN_FILE": filepath.Join(dir, "kms.token"), "KMS_CA_FILE": filepath.Join(dir, "cert.pem"), "WEB_DIR": dir, "TEST_API_CHILD": "1"}
 					env["CURSOR_KEY_FILE"] = filepath.Join(dir, "cursor.key")
+					env["INTERVIEW_KMS_URL"] = f.InterviewKMS.Server.URL
+					env["INTERVIEW_KMS_KEY"] = f.InterviewKMS.KeyName
+					env["INTERVIEW_KMS_TOKEN_FILE"] = filepath.Join(dir, "interview.token")
+					env["INTERVIEW_KMS_CA_FILE"] = filepath.Join(dir, "interview-cert.pem")
+					if tc.name == "interview_key_equals_pii" {
+						env["INTERVIEW_KMS_KEY"] = f.KMS.KeyName
+					}
 					command.Env = os.Environ()
 					for name, value := range env {
 						command.Env = append(command.Env, "TEAMLEDGER_"+name+"="+value)
@@ -148,7 +170,7 @@ func TestAPIStartupRequiresProtectedCredentialFiles(t *testing.T) {
 							if err == nil || command.ProcessState.ExitCode() == 0 {
 								t.Fatal("insecure file must fail startup")
 							}
-							for _, private := range []string{dir, f.DSN, f.KMS.Token, string(f.CSRFKey), string(f.DigestKey), string(f.CursorKey), "-----BEGIN PRIVATE KEY-----"} {
+							for _, private := range []string{dir, f.DSN, f.KMS.Token, f.InterviewKMS.Token, string(f.CSRFKey), string(f.DigestKey), string(f.CursorKey), "-----BEGIN PRIVATE KEY-----"} {
 								if strings.Contains(output.String(), private) {
 									t.Fatal("startup error disclosed private configuration")
 								}

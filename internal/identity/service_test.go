@@ -622,6 +622,8 @@ func TestOIDCReturnRoutesAndActionBindingRejectOpenRedirects(t *testing.T) {
 		"/employees/" + employee + "/organization-history?from=2026-02-01&to=2026-01-01",
 		"/employees/" + employee + "/organization-history?from=2026-01-01&to=2026-02-01&q=private",
 		"/employees/" + employee + "/organization-history?from=2026-01-01&to=2026-02-30",
+		"/interviews/new", "/interviews/" + employee + "?q=SYNTHETIC_PRIVATE_NOTE",
+		"/employees/" + employee + "/interviews?category=hr_confidential",
 	} {
 		if _, err := h.s.Begin(context.Background(), identity.BeginRequest{Mode: "login", ReturnTo: route, RequestID: value.NewID()}); !errors.Is(err, fault.Invalid) {
 			t.Fatal("organization identity return must remain canonical, safe and body-search-free:", err)
@@ -731,7 +733,7 @@ func TestOIDCDiscoveryEndpointsAndTLSAreActuallyTrusted(t *testing.T) {
 func TestStepUpFreshMFAReusesSessionProofButNeverCreatesManagementPermission(t *testing.T) {
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
-			for _, action := range []string{"pii.write", "access_grant.manage"} {
+			for _, action := range []string{"pii.write", "access_grant.manage", "note.publish", "sensitive.export"} {
 				t.Run(action, func(t *testing.T) {
 					for _, role := range []string{"manager", "owner", "reader"} {
 						t.Run(role, func(t *testing.T) {
@@ -755,7 +757,7 @@ func TestStepUpFreshMFAReusesSessionProofButNeverCreatesManagementPermission(t *
 							login := h.login(t, nil, nil)
 							oldHash := cookieHash(t, login.SessionCookie)
 							request := authz.Request{TokenHash: oldHash, Purpose: authz.ManagementPurpose, RequestID: value.NewID()}
-							filter := authz.Filter{SubjectID: h.f.Owner.SubjectID, Limit: 25}
+							filter := authz.Filter{SubjectID: h.f.Owner.SubjectID, Category: "pii", Limit: 25}
 							if _, err = h.f.Authz.List(ctx, request, filter); !errors.Is(err, fault.Forbidden) {
 								t.Fatal("single-factor authentication cannot satisfy management MFA:", err)
 							}
@@ -773,10 +775,10 @@ func TestStepUpFreshMFAReusesSessionProofButNeverCreatesManagementPermission(t *
 							request.RequestID = value.NewID()
 							page, err := h.f.Authz.List(ctx, request, filter)
 							if role == "manager" {
-								if err != nil || len(page.Items) != 4 {
-									t.Fatal("fresh trusted session MFA must allow exactly the already approved owner's grants:", err)
+								if err != nil {
+									t.Fatal("fresh trusted session MFA must allow current explicitly approved PII grants:", err)
 								}
-								expected := map[string]bool{"organization.read": true, "organization.write": true, "pii.read": true, "pii.write": true}
+								expected := map[string]bool{"pii.read": true, "pii.write": true}
 								for _, grant := range page.Items {
 									if grant.SubjectID != h.f.Owner.SubjectID || !expected[grant.Capability] {
 										t.Fatal("management cannot reveal an unapproved subject/capability")

@@ -24,7 +24,7 @@ func (h *handler) grantRoute(w http.ResponseWriter, r *http.Request, req authz.R
 		}
 		for k, v := range q {
 			switch k {
-			case "subject_id", "scope_kind", "scope_id", "category", "purpose", "state", "grant_id", "cursor", "limit":
+			case "subject_id", "scope_kind", "scope_id", "category", "purpose", "state", "grant_id", "cursor", "limit", "capability", "object_kind", "object_id":
 			default:
 				h.fail(w, fault.Invalid, req.RequestID)
 				return
@@ -46,7 +46,7 @@ func (h *handler) grantRoute(w http.ResponseWriter, r *http.Request, req authz.R
 				return
 			}
 		}
-		result, e := h.grants.List(r.Context(), req, authz.Filter{SubjectID: q.Get("subject_id"), ScopeKind: q.Get("scope_kind"), ScopeID: q.Get("scope_id"), Category: q.Get("category"), Purpose: q.Get("purpose"), State: q.Get("state"), GrantID: q.Get("grant_id"), Cursor: q.Get("cursor"), Limit: limit})
+		result, e := h.grants.List(r.Context(), req, authz.Filter{SubjectID: q.Get("subject_id"), ScopeKind: q.Get("scope_kind"), ScopeID: q.Get("scope_id"), Category: q.Get("category"), Purpose: q.Get("purpose"), State: q.Get("state"), GrantID: q.Get("grant_id"), Cursor: q.Get("cursor"), Limit: limit, Capability: q.Get("capability"), ObjectKind: q.Get("object_kind"), ObjectID: q.Get("object_id")})
 		if e != nil {
 			h.fail(w, e, req.RequestID)
 			return

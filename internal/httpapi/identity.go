@@ -148,7 +148,7 @@ func (h *handler) authenticatedIdentityRoute(w http.ResponseWriter, r *http.Requ
 		h.fail(w, e, requestID)
 		return true
 	}
-	if !identity.AllowedReturn(command.ReturnTo) || (command.Action != "pii.write" && command.Action != "access_grant.manage") {
+	if !identity.AllowedReturn(command.ReturnTo) || !identity.AllowedStepUpAction(command.Action) {
 		h.fail(w, fault.Invalid, requestID)
 		return true
 	}

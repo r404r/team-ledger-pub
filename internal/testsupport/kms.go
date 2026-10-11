@@ -20,6 +20,7 @@ import (
 type VaultFixture struct {
 	Server           *httptest.Server
 	Token            string
+	KeyName          string
 	Fail             atomic.Bool
 	Calls            atomic.Int64
 	key              []byte
@@ -32,7 +33,10 @@ type VaultFixture struct {
 	encryptRelease   <-chan struct{}
 }
 
-func NewVaultFixture() (*VaultFixture, error) {
+func NewVaultFixture(keyName string) (*VaultFixture, error) {
+	if keyName != "dev002-pii" && keyName != "dev008-interview" {
+		return nil, sensitive.ErrInvalid
+	}
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		return nil, err
@@ -52,13 +56,13 @@ func NewVaultFixture() (*VaultFixture, error) {
 		clear(key)
 		return nil, err
 	}
-	f := &VaultFixture{key: key, aead: aead, Token: base64.RawURLEncoding.EncodeToString(token[:])}
+	f := &VaultFixture{key: key, aead: aead, KeyName: keyName, Token: base64.RawURLEncoding.EncodeToString(token[:])}
 	f.Server = httptest.NewTLSServer(http.HandlerFunc(f.serve))
 	return f, nil
 }
 
 func (f *VaultFixture) Wrapper() (sensitive.Wrapper, error) {
-	return sensitive.NewVaultWrapper(f.Server.URL, "dev002-pii", f.Token, f.Server.Client())
+	return sensitive.NewVaultWrapper(f.Server.URL, f.KeyName, f.Token, f.Server.Client())
 }
 func (f *VaultFixture) Close() { f.Server.Close(); clear(f.key) }
 func (f *VaultFixture) BlockNextDecrypt(arrived chan struct{}, release <-chan struct{}) {
@@ -92,7 +96,7 @@ func (f *VaultFixture) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	switch r.URL.Path {
-	case "/v1/transit/encrypt/dev002-pii":
+	case "/v1/transit/encrypt/" + f.KeyName:
 		dek, err := base64.StdEncoding.Strict().DecodeString(body.Plaintext)
 		if err != nil || len(dek) != 32 {
 			clear(dek)
@@ -121,10 +125,10 @@ func (f *VaultFixture) serve(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		wrapped := f.aead.Seal(nil, nil, dek, []byte("dev002-pii:v1"))
+		wrapped := f.aead.Seal(nil, nil, dek, []byte(f.KeyName+":v1"))
 		clear(dek)
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]string{"ciphertext": "vault:v1:" + base64.StdEncoding.EncodeToString(wrapped)}})
-	case "/v1/transit/decrypt/dev002-pii":
+	case "/v1/transit/decrypt/" + f.KeyName:
 		f.mu.Lock()
 		arrived, release := f.arrived, f.release
 		f.arrived = nil
@@ -147,7 +151,7 @@ func (f *VaultFixture) serve(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(400)
 			return
 		}
-		dek, err := f.aead.Open(nil, nil, wrapped, []byte("dev002-pii:v1"))
+		dek, err := f.aead.Open(nil, nil, wrapped, []byte(f.KeyName+":v1"))
 		if err != nil || len(dek) != 32 {
 			clear(dek)
 			w.WriteHeader(400)

@@ -20,9 +20,9 @@ func filterDigest(f Filter) [32]byte {
 	// Cursor itself is not a filter. The limit is bound: changing the query is
 	// an explicit new search, never continuing a cursor in another context.
 	b, _ := json.Marshal(struct {
-		Subject, Kind, Scope, Category, Purpose, State, Grant string
-		Limit                                                 int
-	}{f.SubjectID, f.ScopeKind, f.ScopeID, f.Category, f.Purpose, f.State, f.GrantID, f.Limit})
+		Subject, Kind, Scope, Category, Purpose, State, Grant, Capability, ObjectKind, ObjectID string
+		Limit                                                                                   int
+	}{f.SubjectID, f.ScopeKind, f.ScopeID, f.Category, f.Purpose, f.State, f.GrantID, f.Capability, f.ObjectKind, f.ObjectID, f.Limit})
 	return sha256.Sum256(b)
 }
 

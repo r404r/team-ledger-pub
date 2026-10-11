@@ -67,10 +67,14 @@ func TestGrantEmployeeManagementSQLFiltersBeforePaging(t *testing.T) {
 				hidden = r
 			}
 		}
-		for _, table := range []string{"capability_assignment", "access_grant"} {
-			if err := f.Exec(ctx, "UPDATE "+table+" SET scope_kind='employee',scope_id=?,employee_id=? WHERE org_id=? AND subject_id=? AND capability='access_grant.manage'", "UPDATE "+table+" SET scope_kind='employee',scope_id=$1,employee_id=$2 WHERE org_id=$3 AND subject_id=$4 AND capability='access_grant.manage'", first, first, f.OrgID, f.Manager.SubjectID); err != nil {
-				t.Fatal(err)
-			}
+		if err := f.Exec(ctx, "UPDATE capability_assignment SET scope_kind='employee',scope_id=?,employee_id=? WHERE org_id=? AND subject_id=? AND capability='access_grant.manage'", "UPDATE capability_assignment SET scope_kind='employee',scope_id=$1,employee_id=$2 WHERE org_id=$3 AND subject_id=$4 AND capability='access_grant.manage'", first, first, f.OrgID, f.Manager.SubjectID); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Exec(ctx, "UPDATE access_grant SET revoked=1 WHERE org_id=? AND subject_id=? AND capability='access_grant.manage'", "UPDATE access_grant SET revoked=true WHERE org_id=$1 AND subject_id=$2 AND capability='access_grant.manage'", f.OrgID, f.Manager.SubjectID); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Exec(ctx, "INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,purpose,valid_from,expires_at,mfa_required) VALUES(?,?,?,'access_grant.manage','audit','employee',?,?,'security_administration',?,?,1)", "INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,purpose,valid_from,expires_at,mfa_required) VALUES($1,$2,$3,'access_grant.manage','audit','employee',$4,$5,'security_administration',$6,$7,true)", value.NewID(), f.OrgID, f.Manager.SubjectID, first, first, f.Repo.BindTime(f.Now.Add(-time.Hour)), f.Repo.BindTime(f.Now.Add(time.Hour))); err != nil {
+			t.Fatal(err)
 		}
 		page, err := f.Authz.List(ctx, managementRequest(f), authz.Filter{SubjectID: f.Reader.SubjectID, Limit: 1})
 		if err != nil || len(page.Items) != 1 || page.Items[0].ID != eligible.ID || page.NextCursor != nil {
@@ -537,7 +541,7 @@ func TestGrantRevisionIntervalAndReferenceBoundaries(t *testing.T) {
 				t.Fatal("epoch must be exact canonical positive int64 decimal", err)
 			}
 		}
-		nonNull := "synthetic-ref"
+		nonNull := authz.ObjectReference{Kind: "note_version", ID: value.NewID()}
 		for _, alter := range []func(*authz.IssueCommand){
 			func(c *authz.IssueCommand) { c.ExpiresAt = c.ValidFrom },
 			func(c *authz.IssueCommand) { c.ValidFrom = "2026-10-11T00:00:00.1234567Z" },

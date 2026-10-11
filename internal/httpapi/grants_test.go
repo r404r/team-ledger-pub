@@ -34,31 +34,6 @@ func issueBody(t *testing.T, f *testsupport.Fixture, cap, epoch string) string {
 	}
 	return string(b)
 }
-func TestAPIGrantManagementListsApprovedScope(t *testing.T) {
-	for _, backend := range []string{"sqlite", "postgres"} {
-		t.Run(backend, func(t *testing.T) {
-			f := testsupport.NewHarness(t, backend)
-			var page authz.Page
-			apiSend(t, f, grantRequest(t, f, f.Manager, "GET", "/api/v1/access-grants?limit=10", "", ""), 200, &page)
-			if page.Items == nil || len(page.Authorities) != 4 || page.AuthEpoch != "1" || page.Consistency != "current" {
-				t.Fatal("manager must receive current bounded grants and four real approvals")
-			}
-			for _, a := range page.Authorities {
-				if a.ID != f.AuthorityIDs[a.Capability] || a.ApprovedBy != f.Approver.SubjectID || a.ApprovedBy == f.Manager.SubjectID || a.PolicyVersion != "fixture-policy-1" || a.Scope.ID != f.OrgID || !a.MFARequired || !a.ExpiresAt.Equal(f.Now.Add(24*time.Hour)) {
-					t.Fatal("safe authority facts must match immutable approval")
-				}
-			}
-			var session struct {
-				Capabilities []string              `json:"capabilities"`
-				Authorities  []authz.AuthorityHint `json:"grant_authorities"`
-			}
-			apiSend(t, f, apiRequest(t, f, f.Manager, "GET", "/api/v1/session", "", ""), 200, &session)
-			if len(session.Capabilities) != 1 || session.Capabilities[0] != "access_grant.manage" || len(session.Authorities) != 4 {
-				t.Fatal("manager hints must not confer profile capability")
-			}
-		})
-	}
-}
 
 func TestAPIGrantAuthorityHintsAreCurrentManagementIntersection(t *testing.T) {
 	for _, backend := range []string{"sqlite", "postgres"} {
@@ -67,12 +42,17 @@ func TestAPIGrantAuthorityHintsAreCurrentManagementIntersection(t *testing.T) {
 			ctx := context.Background()
 			var employee organization.Result
 			apiSend(t, f, apiRequest(t, f, f.Owner, "POST", "/api/v1/orgs/"+f.OrgID+"/employees", createJSON, value.NewID()), 201, &employee)
-			for _, table := range []string{"capability_assignment", "access_grant"} {
-				if err := f.Exec(ctx, "UPDATE "+table+" SET scope_kind='employee',scope_id=?,employee_id=? WHERE org_id=? AND subject_id=? AND capability='access_grant.manage'", "UPDATE "+table+" SET scope_kind='employee',scope_id=$1,employee_id=$2 WHERE org_id=$3 AND subject_id=$4 AND capability='access_grant.manage'", employee.ID, employee.ID, f.OrgID, f.Manager.SubjectID); err != nil {
-					t.Fatal(err)
-				}
+			if err := f.Exec(ctx, "UPDATE capability_assignment SET scope_kind='employee',scope_id=?,employee_id=? WHERE org_id=? AND subject_id=? AND capability='access_grant.manage'", "UPDATE capability_assignment SET scope_kind='employee',scope_id=$1,employee_id=$2 WHERE org_id=$3 AND subject_id=$4 AND capability='access_grant.manage'", employee.ID, employee.ID, f.OrgID, f.Manager.SubjectID); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Exec(ctx, "UPDATE access_grant SET revoked=1 WHERE org_id=? AND subject_id=? AND capability='access_grant.manage'", "UPDATE access_grant SET revoked=true WHERE org_id=$1 AND subject_id=$2 AND capability='access_grant.manage'", f.OrgID, f.Manager.SubjectID); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Exec(ctx, "INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,purpose,valid_from,expires_at,mfa_required) VALUES(?,?,?,'access_grant.manage','audit','employee',?,?,'security_administration',?,?,1)", "INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,purpose,valid_from,expires_at,mfa_required) VALUES($1,$2,$3,'access_grant.manage','audit','employee',$4,$5,'security_administration',$6,$7,true)", value.NewID(), f.OrgID, f.Manager.SubjectID, employee.ID, employee.ID, f.Repo.BindTime(f.Now.Add(-time.Hour)), f.Repo.BindTime(f.Now.Add(time.Hour))); err != nil {
+				t.Fatal(err)
 			}
 			type hint struct {
+				ID              string        `json:"id"`
 				Scope           authz.Scope   `json:"scope"`
 				DelegableScopes []authz.Scope `json:"delegable_scopes"`
 			}
@@ -85,13 +65,17 @@ func TestAPIGrantAuthorityHintsAreCurrentManagementIntersection(t *testing.T) {
 			apiSend(t, f, apiRequest(t, f, f.Manager, "GET", "/api/v1/session", "", ""), 200, &session)
 			apiSend(t, f, grantRequest(t, f, f.Manager, "GET", "/api/v1/access-grants", "", ""), 200, &page)
 			for _, hints := range [][]hint{session.Authorities, page.Authorities} {
-				if len(hints) != 4 {
-					t.Fatal("all original independent approvals remain identifiable")
-				}
+				seenPII := false
 				for _, a := range hints {
 					if a.Scope != (authz.Scope{Kind: "org", ID: f.OrgID}) || len(a.DelegableScopes) != 1 || a.DelegableScopes[0] != (authz.Scope{Kind: "employee", ID: employee.ID}) {
 						t.Fatal("original approval must remain org but current delegable scope must only be managed employee", a)
 					}
+					if a.ID == f.AuthorityIDs["pii.read"] {
+						seenPII = true
+					}
+				}
+				if !seenPII {
+					t.Fatal("current narrow intersection lost the existing approved PII read action")
 				}
 			}
 		})

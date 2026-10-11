@@ -40,17 +40,18 @@ func (r *Repository) checkStructure(ctx context.Context, db queryer, version int
 				nameIndex = 3
 			}
 			name := strings.Split(strings.Fields(statement)[nameIndex], "(")[0]
-			for _, suffix := range []string{"_v2", "_v3", "_v4", "_v5"} {
+			for _, suffix := range []string{"_v2", "_v3", "_v4", "_v5", "_v6"} {
 				if strings.HasSuffix(name, suffix) {
 					finalName := strings.TrimSuffix(name, suffix)
 					statement = strings.Replace(statement, "CREATE TABLE "+name+"(", "CREATE TABLE "+finalName+"(", 1)
 					name = finalName
 				}
 			}
-			// v5 rebuilds mutually referenced authorization tables together.
-			// Renames rewrite their references as well as their declarations.
+			// Authorization table rebuilds rename their declarations and every
+			// mutual reference, preserving the complete existing foreign-key graph.
 			for _, table := range []string{"delegation_authority", "access_grant", "grant_command_receipt", "audit_event"} {
 				statement = strings.ReplaceAll(statement, table+"_v5", table)
+				statement = strings.ReplaceAll(statement, table+"_v6", table)
 			}
 			expected[name] = compactSQL(statement)
 		}
@@ -133,7 +134,7 @@ func (r *Repository) checkPostgresStructure(ctx context.Context, db queryer, ver
 		}
 		for _, statement := range migrationStatements(ddl) {
 			statement = strings.Replace(statement, "CREATE TABLE ", "CREATE TEMP TABLE ", 1)
-			for _, function := range []string{"delegation_authority_immutable", "structure_fact_immutable", "structure_relation_immutable", "structure_item_owner"} {
+			for _, function := range []string{"delegation_authority_immutable", "structure_fact_immutable", "structure_relation_immutable", "structure_item_owner", "interview_fact_immutable", "interview_owner_immutable", "interview_source_approval", "interview_source_limit", "interview_transition_guard", "action_transition_guard"} {
 				statement = strings.Replace(statement, "CREATE FUNCTION "+function, "CREATE FUNCTION pg_temp."+function, 1)
 				statement = strings.Replace(statement, "EXECUTE FUNCTION "+function, "EXECUTE FUNCTION pg_temp."+function, 1)
 			}

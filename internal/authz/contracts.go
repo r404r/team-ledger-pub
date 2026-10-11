@@ -17,6 +17,18 @@ type RelationReference struct {
 	ID   string `json:"id"`
 }
 
+type ObjectReference struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
+}
+
+type ObjectInfo struct {
+	Reference                      ObjectReference
+	EmployeeID, Category, Revision string
+	Published                      bool
+	Lineage                        []ObjectReference
+}
+
 type Authority struct {
 	ID            string    `json:"id"`
 	Capability    string    `json:"capability"`
@@ -50,7 +62,9 @@ type GrantDTO struct {
 	RelationBound           bool               `json:"relation_bound"`
 	RelationRef             *RelationReference `json:"relation_ref"`
 	RelationActorEmployeeID string             `json:"-"`
-	ObjectRef               *string            `json:"object_ref"`
+	ObjectRef               *ObjectReference   `json:"object_ref"`
+	ObjectEmployeeID        string             `json:"-"`
+	ApprovedSourceRefs      []ObjectReference  `json:"approved_source_refs"`
 	Revision                string             `json:"revision"`
 	Status                  string             `json:"status"`
 	AuthorityID             *string            `json:"authority_id"`
@@ -65,19 +79,20 @@ type GrantDTO struct {
 }
 
 type IssueCommand struct {
-	SubjectID        string             `json:"subject_id"`
-	Capability       string             `json:"capability"`
-	Category         string             `json:"category"`
-	Scope            Scope              `json:"scope"`
-	Purpose          string             `json:"purpose"`
-	ValidFrom        string             `json:"valid_from"`
-	ExpiresAt        string             `json:"expires_at"`
-	MFARequired      bool               `json:"mfa_required"`
-	RelationBound    bool               `json:"relation_bound"`
-	RelationRef      *RelationReference `json:"relation_ref"`
-	ObjectRef        *string            `json:"object_ref"`
-	AuthorityID      string             `json:"authority_id"`
-	ExpectedRevision string             `json:"expected_revision"`
+	SubjectID          string             `json:"subject_id"`
+	Capability         string             `json:"capability"`
+	Category           string             `json:"category"`
+	Scope              Scope              `json:"scope"`
+	Purpose            string             `json:"purpose"`
+	ValidFrom          string             `json:"valid_from"`
+	ExpiresAt          string             `json:"expires_at"`
+	MFARequired        bool               `json:"mfa_required"`
+	RelationBound      bool               `json:"relation_bound"`
+	RelationRef        *RelationReference `json:"relation_ref"`
+	ObjectRef          *ObjectReference   `json:"object_ref"`
+	ApprovedSourceRefs []ObjectReference  `json:"approved_source_refs,omitempty"`
+	AuthorityID        string             `json:"authority_id"`
+	ExpectedRevision   string             `json:"expected_revision"`
 }
 
 type RevokeCommand struct {
@@ -95,6 +110,7 @@ type Result struct {
 
 type Filter struct {
 	SubjectID, ScopeKind, ScopeID, Category, Purpose, State, GrantID, Cursor string
+	Capability, ObjectKind, ObjectID                                         string
 	Limit                                                                    int
 }
 
@@ -128,6 +144,7 @@ type Reader interface {
 	Security(context.Context, []byte, string, string) (Snapshot, error)
 	Authorities(context.Context, string, string, time.Time) ([]Authority, error)
 	Grant(context.Context, string, string) (GrantDTO, error)
+	Object(context.Context, string, ObjectReference) (ObjectInfo, error)
 	VisibleGrants(context.Context, string, []Authority, Filter, string, time.Time) ([]GrantDTO, error)
 	Qualified(context.Context, string, string, string, Scope, time.Time) (bool, error)
 	ScopeCovered(context.Context, string, Scope, Scope, time.Time) (bool, error)

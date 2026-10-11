@@ -158,7 +158,8 @@ func AllowedReturn(raw string) bool {
 	employeePage := len(parts) == 2 && parts[0] == "employees" && value.ValidID(parts[1])
 	historyPage := len(parts) == 3 && parts[0] == "employees" && value.ValidID(parts[1]) && parts[2] == "organization-history"
 	orgPage := len(parts) == 3 && parts[0] == "orgs" && value.ValidID(parts[1]) && (parts[2] == "tree" || parts[2] == "employees")
-	if u.Path != "/" && u.Path != "/security/grants" && !employeePage && !historyPage && !orgPage {
+	interviewPage := u.Path == "/interviews" || len(parts) == 2 && parts[0] == "interviews" && value.ValidID(parts[1]) || len(parts) == 3 && parts[0] == "employees" && value.ValidID(parts[1]) && parts[2] == "interviews"
+	if u.Path != "/" && u.Path != "/security/grants" && !employeePage && !historyPage && !orgPage && !interviewPage {
 		return false
 	}
 	if strings.Contains(raw, "?") {
@@ -174,6 +175,11 @@ func AllowedReturn(raw string) bool {
 		}
 	}
 	return true
+}
+
+// AllowedStepUpAction records intent only; recent MFA remains session-wide.
+func AllowedStepUpAction(action string) bool {
+	return action == "pii.write" || action == "access_grant.manage" || action == "note.publish" || action == "sensitive.export"
 }
 func randomToken() (string, []byte, error) {
 	raw := make([]byte, 32)
@@ -210,7 +216,7 @@ func (s *Service) Begin(ctx context.Context, request BeginRequest) (Authorizatio
 	if !s.Available() {
 		return Authorization{}, fault.Unavailable
 	}
-	if !value.ValidID(request.RequestID) || !AllowedReturn(request.ReturnTo) || (request.Mode != "login" && request.Mode != "step_up") || request.Mode == "login" && request.Action != "" || request.Mode == "step_up" && request.Action != "pii.write" && request.Action != "access_grant.manage" {
+	if !value.ValidID(request.RequestID) || !AllowedReturn(request.ReturnTo) || (request.Mode != "login" && request.Mode != "step_up") || request.Mode == "login" && request.Action != "" || request.Mode == "step_up" && !AllowedStepUpAction(request.Action) {
 		return Authorization{}, fault.Invalid
 	}
 	now := s.now()

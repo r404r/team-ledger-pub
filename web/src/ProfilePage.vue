@@ -454,6 +454,7 @@ onBeforeUnmount(() => {
         <p v-else>当前只获准查看元数据，未提供个人资料。</p>
         <nav aria-label="员工组织导航">
           <a :href="`/employees/${details.id}/organization-history`" @click="navigate($event, `/employees/${details.id}/organization-history`)">组织历史</a>
+          <a :href="`/employees/${details.id}/interviews`" @click="navigate($event, `/employees/${details.id}/interviews`)">员工面谈（独立授权）</a>
           <a :href="`/orgs/${details.org_id}/tree?as_of=${details.as_of}`" @click="navigate($event, `/orgs/${details.org_id}/tree?as_of=${details.as_of}`)">组织树</a>
           <a :href="`/orgs/${details.org_id}/employees?as_of=${details.as_of}`" @click="navigate($event, `/orgs/${details.org_id}/employees?as_of=${details.as_of}`)">员工目录</a>
         </nav>

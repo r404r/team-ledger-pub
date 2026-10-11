@@ -3,6 +3,7 @@ import type { VueWrapper } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
+import { validGrantPair, validGrantObject, validSourceApproval } from './grantPairs'
 
 const ORG = '10000000-0000-4000-8000-000000000001'
 const MANAGER = '10000000-0000-4000-8000-000000000002'
@@ -124,7 +125,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   for (const page of pages) page.unmount()
-  document.body.replaceChildren(); vi.unstubAllGlobals(); vi.restoreAllMocks()
+  document.body.replaceChildren(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers()
   expect(api.unexpected, 'Only configured external HTTP boundaries may be contacted').toEqual([])
 })
 
@@ -516,5 +517,88 @@ describe('P-SEC-01 current independent grant management', () => {
     expect(JSON.parse(api.commands()[0]!.body!).scope).toEqual({ kind: 'employee', id: EMPLOYEE })
     expect(api.requests.some((request) => request.url.pathname.includes('/employees'))).toBe(false)
     expect(page.text()).not.toMatch(/授予成功/)
+  })
+})
+
+describe('R3 finite typed object and source approval consumers', () => {
+  it.each([
+    ['interview.read', 'metadata'], ['interview.write', 'metadata'],
+    ...['shared', 'manager_private', 'hr_confidential'].flatMap(category => ['note.read', 'note.write', 'note.publish'].map(capability => [capability, category])),
+    ['action.read', 'shared'], ['action.write', 'shared'],
+    ...['metadata', 'shared', 'manager_private', 'hr_confidential'].map(category => ['sensitive.export', category]),
+  ])('accepts exactly approved %s/%s interview purpose and rejects untrusted purpose', (capability, category) => {
+    expect(validGrantPair(capability!, category!, 'interview_followup')).toBe(true)
+    expect(validGrantPair(capability!, category!, 'organization_management')).toBe(false)
+    expect(validGrantPair(capability!, category!, 'untrusted_purpose')).toBe(false)
+  })
+  it.each([
+    ['finance.read', 'shared'], ['compensation.read', 'salary'], ['note.write', 'metadata'], ['action.write', 'manager_private'], ['interview.read', 'shared'], ['sensitive.export', 'pii'],
+  ])('rejects future or mismatched capability/category %s/%s', (capability, category) => {
+    expect(validGrantPair(capability!, category!, 'interview_followup')).toBe(false)
+  })
+  it('keeps immutable historical version restriction distinct from head write and future finance objects', () => {
+    expect(validGrantObject({ kind: 'note_version', id: OTHER }, 'note.read', 'shared', 'interview_followup')).toBe(true)
+    expect(validGrantObject({ kind: 'note_version', id: OTHER }, 'note.write', 'shared', 'interview_followup')).toBe(false)
+    expect(validGrantObject({ kind: 'note_version', id: OTHER }, 'note.publish', 'shared', 'interview_followup')).toBe(false)
+    expect(validGrantObject({ kind: 'action_item', id: OTHER }, 'sensitive.export', 'manager_private', 'interview_followup')).toBe(false)
+    expect(validSourceApproval([{ kind: 'note_version', id: OTHER }], 'note.publish', 'shared')).toBe(true)
+    expect(validSourceApproval([{ kind: 'note_version', id: OTHER }, { kind: 'note_version', id: OTHER }], 'note.publish', 'shared')).toBe(false)
+    expect(validSourceApproval([{ kind: 'note_version', id: OTHER }], 'note.read', 'shared')).toBe(false)
+  })
+  it('submits typed head and independent source approval without publishing or fetching private content', async () => {
+    const targetAuthority = { ...authority, capability: 'note.publish', category: 'shared', purpose: 'interview_followup' }
+    api.session = { ...session, grant_authorities: [targetAuthority] }
+    api.replies = []; api.reply('GET', '/api/v1/access-grants', 200, { ...list([]), authorities: [targetAuthority] })
+    const page = await open()
+    await action(page, /^新建授权$/).trigger('click')
+    await field(page, /受授权主体/).setValue(READER)
+    await field(page, /生效时间/).setValue(START); await field(page, /到期时间/).setValue(END)
+    await page.get('#grant-object-kind').setValue('note_head'); await page.get('#grant-object-id').setValue(OTHER); await page.get('#grant-source-ids').setValue(GRANT)
+    await action(page, /^预览授权$/).trigger('click'); await settle()
+    api.reply('POST', '/api/v1/access-grants', 403, { code: 'forbidden' })
+    await action(page, /^确认授予$/).trigger('click'); await settle()
+    expect(JSON.parse(api.commands()[0]!.body!)).toMatchObject({
+      capability: 'note.publish', category: 'shared', purpose: 'interview_followup',
+      object_ref: { kind: 'note_head', id: OTHER }, approved_source_refs: [{ kind: 'note_version', id: GRANT }],
+    })
+    expect(api.requests.some(request => request.url.pathname.includes('note-versions') || request.url.pathname.includes('interviews'))).toBe(false)
+    expect(page.text()).not.toContain('授予成功')
+  })
+  it('renders approved specific historical version and never advertises all-history rights', async () => {
+    const targetAuthority = { ...authority, capability: 'note.read', category: 'shared', purpose: 'interview_followup' }
+    const exactGrant = { ...grant(), capability: 'note.read', category: 'shared', purpose: 'interview_followup', object_ref: { kind: 'note_version', id: OTHER }, approved_source_refs: [] }
+    api.session = { ...session, grant_authorities: [targetAuthority] }
+    api.replies = []; api.reply('GET', '/api/v1/access-grants', 200, { ...list([]), items: [exactGrant], authorities: [targetAuthority] })
+    const page = await open()
+    api.reply('GET', '/api/v1/access-grants', 200, { ...list([]), items: [exactGrant], authorities: [targetAuthority] })
+    await action(page, new RegExp(`查看授权 ${GRANT}`)).trigger('click'); await settle()
+    const facts = page.get('[aria-label="授权详情"]').text()
+    expect(facts).toContain(`note_version ${OTHER}`); expect(facts).toContain('不授全部历史')
+  })
+  it('allows typed object under approved org scope while independent source approval still requires employee target', async () => {
+    const targetAuthority = { ...authority, capability: 'note.read', category: 'shared', purpose: 'interview_followup', scope: { kind: 'org', id: ORG }, delegable_scopes: [{ kind: 'org', id: ORG }] }
+    api.session = { ...session, grant_authorities: [targetAuthority] }
+    api.replies = []; api.reply('GET', '/api/v1/access-grants', 200, { ...list([]), authorities: [targetAuthority] })
+    const page = await open()
+    await action(page, /^新建授权$/).trigger('click'); await field(page, /受授权主体/).setValue(READER)
+    await field(page, /生效时间/).setValue(START); await field(page, /到期时间/).setValue(END)
+    await page.get('#grant-object-kind').setValue('note_version'); await page.get('#grant-object-id').setValue(OTHER)
+    await action(page, /^预览授权$/).trigger('click'); await settle()
+    expect(page.find('[aria-label="授权预览"]').exists()).toBe(true)
+    expect(page.get('[aria-label="授权预览"]').text()).toContain('org')
+  })
+})
+
+describe('P-SEC-01 current sensitivity deadline', () => {
+  it('clears preview and in-flight grant at the server deadline before MFA expiry and rejects late committed response', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] }); vi.setSystemTime(new Date('2026-10-11T12:00:00Z'))
+    api.session = { ...session, sensitivity_valid_until: '2026-10-11T12:00:02Z' }
+    const page = await open(); await draft(page)
+    const pending = api.defer('POST', '/api/v1/access-grants')
+    await action(page, /^确认授予$/).trigger('click'); await settle()
+    vi.advanceTimersByTime(2000); await settle(); cleared(page)
+    pending.resolve(201, { id: GRANT, revision: '1', status: 'current', auth_epoch: NEXT_EPOCH }); await settle()
+    cleared(page); expect(page.text()).not.toContain('授予成功')
+    expect(api.commands()).toHaveLength(1)
   })
 })

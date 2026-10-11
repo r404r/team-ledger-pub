@@ -9,6 +9,9 @@ type Grant struct {
 	Revoked, RelationBound, MFARequired               bool
 	RelationRef                                       *RelationReference
 	RelationActorEmployeeID                           string
+	ObjectRef                                         *ObjectReference
+	ApprovedSourceRefs                                []ObjectReference
+	ApprovedSourceEmployees                           map[string]string
 }
 
 // Tenure retains the approved interval separately from its effective projection.
@@ -117,7 +120,7 @@ func (s Snapshot) relationQualified(g Grant, now time.Time) bool {
 }
 
 func (s Snapshot) Allows(capability, category, employee, purpose string, now time.Time) bool {
-	return s.allows(capability, category, employee, "", purpose, now)
+	return s.allows(capability, category, employee, "", purpose, now, nil, nil)
 }
 
 func (s Snapshot) AllowsTeam(capability, category, team, purpose string, now time.Time) bool {
@@ -127,11 +130,11 @@ func (s Snapshot) AllowsTeam(capability, category, team, purpose string, now tim
 	if _, ok := s.day(now); !ok {
 		return false
 	}
-	return s.allows(capability, category, "", team, purpose, now)
+	return s.allows(capability, category, "", team, purpose, now, nil, nil)
 }
 
-func (s Snapshot) allows(capability, category, employee, team, purpose string, now time.Time) bool {
-	if !s.Valid(now) || !SupportedPair(capability, category, purpose) || capability == "access_grant.manage" && !now.Before(s.MFAUntil) {
+func (s Snapshot) allows(capability, category, employee, team, purpose string, now time.Time, lineage []ObjectReference, source *ObjectReference) bool {
+	if !s.Valid(now) || !SupportedPair(capability, category, purpose) || requiresMFA(capability) && !now.Before(s.MFAUntil) {
 		return false
 	}
 	assigned := false
@@ -145,7 +148,7 @@ func (s Snapshot) allows(capability, category, employee, team, purpose string, n
 		return false
 	}
 	for _, g := range s.Grants {
-		if g.Capability == capability && g.Category == category && g.Purpose == purpose && !g.Revoked && !now.Before(g.ValidFrom) && now.Before(g.ExpiresAt) && (!g.MFARequired || now.Before(s.MFAUntil)) && s.scopeMatches(g.ScopeKind, g.ScopeID, employee, team, now) && s.relationQualified(g, now) {
+		if g.Capability == capability && g.Category == category && g.Purpose == purpose && !g.Revoked && !now.Before(g.ValidFrom) && now.Before(g.ExpiresAt) && (!g.MFARequired || now.Before(s.MFAUntil)) && s.scopeMatches(g.ScopeKind, g.ScopeID, employee, team, now) && s.relationQualified(g, now) && objectMatches(g.ObjectRef, capability, category, lineage) && sourceMatches(g, employee, source) {
 			return true
 		}
 	}
@@ -160,6 +163,14 @@ func SupportedPair(capability, category, purpose string) bool {
 		return category == "pii" && purpose == "organization_management"
 	case "access_grant.manage":
 		return category == "audit" && purpose == ManagementPurpose
+	case "interview.read", "interview.write":
+		return category == "metadata" && purpose == "interview_followup"
+	case "note.read", "note.write", "note.publish":
+		return noteCategory(category) && purpose == "interview_followup"
+	case "action.read", "action.write":
+		return category == "shared" && purpose == "interview_followup"
+	case "sensitive.export":
+		return (category == "metadata" || noteCategory(category)) && purpose == "interview_followup"
 	}
 	return false
 }
@@ -180,7 +191,7 @@ func (s Snapshot) ManagedScopes(now time.Time) []Scope {
 			continue
 		}
 		for _, g := range s.Grants {
-			if g.Capability != "access_grant.manage" || g.Category != "audit" || g.Purpose != ManagementPurpose || g.Revoked || now.Before(g.ValidFrom) || !now.Before(g.ExpiresAt) || !s.relationQualified(g, now) {
+			if g.ObjectRef != nil || g.Capability != "access_grant.manage" || g.Category != "audit" || g.Purpose != ManagementPurpose || g.Revoked || now.Before(g.ValidFrom) || !now.Before(g.ExpiresAt) || !s.relationQualified(g, now) {
 				continue
 			}
 			scope, other := Scope{a.ScopeKind, a.ScopeID}, Scope{g.ScopeKind, g.ScopeID}

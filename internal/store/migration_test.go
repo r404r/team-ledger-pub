@@ -256,7 +256,7 @@ func migrationV1Fixture(t *testing.T, backend string) *testsupport.Fixture {
 			}
 		}
 	}
-	f.KMS, err = testsupport.NewVaultFixture()
+	f.KMS, err = testsupport.NewVaultFixture("dev002-pii")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +416,7 @@ func migrationLedger(t *testing.T, repo *store.Repository) {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-	for _, version := range []int{1, 2, 3, 4, 5} {
+	for _, version := range []int{1, 2, 3, 4, 5, 6} {
 		var found int
 		var backend, checksum string
 		if !rows.Next() || rows.Scan(&found, &backend, &checksum) != nil {
@@ -428,7 +428,7 @@ func migrationLedger(t *testing.T, repo *store.Repository) {
 		}
 	}
 	if rows.Next() || rows.Err() != nil {
-		t.Fatal("ledger must contain exactly the five supported versions")
+		t.Fatal("ledger must contain exactly the six supported versions")
 	}
 }
 

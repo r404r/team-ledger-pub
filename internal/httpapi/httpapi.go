@@ -22,6 +22,7 @@ import (
 	"github.com/r404r/team-ledger/internal/authz"
 	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/identity"
+	"github.com/r404r/team-ledger/internal/interview"
 	"github.com/r404r/team-ledger/internal/organization"
 	"github.com/r404r/team-ledger/internal/value"
 )
@@ -32,14 +33,15 @@ var unsupportedMedia = &fault.Fault{Status: 415, Code: "INVALID_INPUT", Reason: 
 type handler struct {
 	service        *organization.Service
 	grants         *authz.Service
+	interviews     *interview.Service
 	identities     *identity.Service
 	key            []byte
 	origin, static string
 }
 
-func New(service *organization.Service, grants *authz.Service, identities *identity.Service, csrfKey []byte, origin, staticDir string) (http.Handler, error) {
+func New(service *organization.Service, interviews *interview.Service, grants *authz.Service, identities *identity.Service, csrfKey []byte, origin, staticDir string) (http.Handler, error) {
 	u, err := url.Parse(origin)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.RawPath != "" || service == nil || grants == nil || identities == nil || len(csrfKey) != 32 {
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.RawPath != "" || service == nil || interviews == nil || grants == nil || identities == nil || len(csrfKey) != 32 {
 		return nil, errors.New("invalid HTTP configuration")
 	}
 	root, err := filepath.EvalSymlinks(staticDir)
@@ -54,7 +56,7 @@ func New(service *organization.Service, grants *authz.Service, identities *ident
 	if err != nil || !info.Mode().IsRegular() {
 		return nil, errors.New("missing production index")
 	}
-	return &handler{service: service, grants: grants, identities: identities, key: bytes.Clone(csrfKey), origin: strings.TrimSuffix(origin, "/"), static: root}, nil
+	return &handler{service: service, interviews: interviews, grants: grants, identities: identities, key: bytes.Clone(csrfKey), origin: strings.TrimSuffix(origin, "/"), static: root}, nil
 }
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -159,6 +161,24 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if len(authorities) > 0 {
 			caps = append(caps, "access_grant.manage")
 		}
+		sensitivityUntil, e := sensitivityDeadline(snap, now)
+		if e != nil {
+			h.fail(w, e, requestID)
+			return
+		}
+		interviewPermissions := currentInterviewPermissions(snap, employeeScope, teamScope, now)
+		for _, permission := range interviewPermissions {
+			present := false
+			for _, cap := range caps {
+				if cap == permission.Capability {
+					present = true
+					break
+				}
+			}
+			if !present {
+				caps = append(caps, permission.Capability)
+			}
+		}
 		scopeKind, scopeID := "org", snap.OrgID
 		if employeeScope != "" {
 			scopeKind, scopeID = "employee", employeeScope
@@ -167,22 +187,27 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			scopeKind, scopeID = "team", teamScope
 		}
 		h.reply(w, 200, struct {
-			Subject           string                `json:"subject_id"`
-			Org               string                `json:"org_id"`
-			Epoch             string                `json:"auth_epoch"`
-			Capabilities      []string              `json:"capabilities"`
-			CSRF              string                `json:"csrf_token"`
-			ScopeKind         string                `json:"scope_kind"`
-			ScopeID           string                `json:"scope_id"`
-			MFARecent         bool                  `json:"mfa_recent"`
-			MFAUntil          time.Time             `json:"mfa_valid_until"`
-			Authorities       []authz.AuthorityHint `json:"grant_authorities"`
-			IdentityAvailable bool                  `json:"identity_available"`
-		}{snap.SubjectID, snap.OrgID, strconv.FormatInt(snap.AuthEpoch, 10), caps, token, scopeKind, scopeID, now.Before(snap.MFAUntil), snap.MFAUntil, authorities, h.identities.Available()})
+			Subject              string                 `json:"subject_id"`
+			Org                  string                 `json:"org_id"`
+			Epoch                string                 `json:"auth_epoch"`
+			Capabilities         []string               `json:"capabilities"`
+			CSRF                 string                 `json:"csrf_token"`
+			ScopeKind            string                 `json:"scope_kind"`
+			ScopeID              string                 `json:"scope_id"`
+			MFARecent            bool                   `json:"mfa_recent"`
+			MFAUntil             time.Time              `json:"mfa_valid_until"`
+			Authorities          []authz.AuthorityHint  `json:"grant_authorities"`
+			IdentityAvailable    bool                   `json:"identity_available"`
+			InterviewPermissions []interview.Permission `json:"interview_permissions"`
+			SensitivityUntil     time.Time              `json:"sensitivity_valid_until"`
+		}{snap.SubjectID, snap.OrgID, strconv.FormatInt(snap.AuthEpoch, 10), caps, token, scopeKind, scopeID, now.Before(snap.MFAUntil), snap.MFAUntil, authorities, h.identities.Available(), interviewPermissions, sensitivityUntil})
 		return
 	}
 	if r.URL.Path == "/api/v1/access-grants" || strings.HasPrefix(r.URL.Path, "/api/v1/access-grants/") {
 		h.grantRoute(w, r, authz.Request{TokenHash: req.TokenHash, RequestID: req.RequestID, Purpose: req.Purpose, Key: req.Key})
+		return
+	}
+	if h.interviewRoute(w, r, interview.Request{TokenHash: req.TokenHash, RequestID: req.RequestID, Purpose: req.Purpose, Key: req.Key}) {
 		return
 	}
 	if h.structureRoute(w, r, req) {
@@ -292,6 +317,18 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 		root = "step_up"
 	case *authLogoutCommand:
 		root = "logout"
+	case *interview.CreateCommand:
+		root = "interview_create"
+	case *interview.TransitionCommand:
+		root = "interview_transition"
+	case *interview.NoteCommand:
+		root = "note_command"
+	case *interview.ActionCommand:
+		root = "action_command"
+	case *interview.ActionTransitionCommand:
+		root = "action_transition"
+	case *interview.ExportCommand:
+		root = "export_command"
 	default:
 		return fault.Invalid
 	}
@@ -322,34 +359,57 @@ func walkJSON(d *json.Decoder, depth int, object string) error {
 		return fault.Invalid
 	}
 	switch object {
-	case "subject_id", "capability", "category", "kind", "id", "purpose", "expires_at", "authority_id", "expected_revision", "expected_auth_epoch", "reason", "code", "label", "expected_graph_revision", "action", "ref", "employee_id", "team_id", "parent_team_id", "manager_employee_id", "reporting_kind", "end_date", "title", "position_code", "description", "as_of", "q", "cursor":
+	case "head_id", "supersedes_version_id", "actual_started_at", "actual_ended_at", "due_date":
+		if t == nil {
+			return nil
+		}
 		if _, ok := t.(string); !ok {
 			return fault.Invalid
 		}
 		return nil
 	}
-	if object == "object_ref" || object == "relation_ref" && t == nil {
-		if t != nil {
+	switch object {
+	case "subject_id", "capability", "category", "kind", "id", "purpose", "expires_at", "authority_id", "expected_revision", "expected_auth_epoch", "reason", "code", "label", "expected_graph_revision", "action", "ref", "employee_id", "team_id", "parent_team_id", "manager_employee_id", "reporting_kind", "end_date", "title", "position_code", "description", "as_of", "q", "cursor", "scheduled_at", "expected_head_revision", "text", "edit_reason", "expected_version", "minimal_shared_text", "safe_blocker_text", "format", "return_to":
+		if _, ok := t.(string); !ok {
 			return fault.Invalid
 		}
 		return nil
 	}
-	if object == "changes" {
+	if (object == "object_ref" || object == "relation_ref") && t == nil {
+		return nil
+	}
+	if object == "approved_source_refs" && t == nil {
+		return nil
+	}
+	element, maximum, minimum := "", 0, 0
+	switch object {
+	case "changes":
+		element, maximum, minimum = "change_item", 100, 1
+	case "participants":
+		element, maximum = "party", 20
+	case "source_refs":
+		element, maximum = "source_ref", 10
+	case "approved_source_refs":
+		element, maximum = "object_ref", 10
+	case "objects":
+		element, maximum, minimum = "export_object", 100, 1
+	}
+	if element != "" {
 		if t != json.Delim('[') {
 			return fault.Invalid
 		}
 		count := 0
 		for d.More() {
 			count++
-			if count > 100 {
+			if count > maximum {
 				return fault.Invalid
 			}
-			if e = walkJSON(d, depth+1, "change_item"); e != nil {
+			if e = walkJSON(d, depth+1, element); e != nil {
 				return e
 			}
 		}
 		end, e := d.Token()
-		if e != nil || end != json.Delim(']') || count == 0 {
+		if e != nil || end != json.Delim(']') || count < minimum {
 			return fault.Invalid
 		}
 		return nil
@@ -360,13 +420,13 @@ func walkJSON(d *json.Decoder, depth int, object string) error {
 		}
 		return nil
 	}
-	if object == "mfa_required" || object == "relation_bound" || object == "is_primary" || object == "include_profile" {
+	if object == "mfa_required" || object == "relation_bound" || object == "is_primary" || object == "include_profile" || object == "backfilled" || object == "confirm_minimized" {
 		if _, ok := t.(bool); !ok {
 			return fault.Invalid
 		}
 		return nil
 	}
-	if object == "issue" || object == "revoke" || object == "scope" || object == "relation_ref" || object == "create_team" || object == "structure_command" || object == "directory_query" || object == "change_item" || object == "position" {
+	if object == "issue" || object == "revoke" || object == "scope" || object == "relation_ref" || object == "object_ref" || object == "create_team" || object == "structure_command" || object == "directory_query" || object == "change_item" || object == "position" || strings.HasPrefix(object, "interview_") || object == "note_command" || object == "action_command" || object == "action_transition" || object == "export_command" || object == "export_object" || object == "owner" || object == "party" || object == "source_ref" {
 		if t != json.Delim('{') {
 			return fault.Invalid
 		}
@@ -391,7 +451,7 @@ func walkJSON(d *json.Decoder, depth int, object string) error {
 		}
 	}
 	end, e := d.Token()
-	if (object == "issue" && len(seen) != 13) || (object == "revoke" && len(seen) != 3) || (object == "scope" && len(seen) != 2) || (object == "relation_ref" && len(seen) != 2) {
+	if !requiredFields(object, seen) {
 		return fault.Invalid
 	}
 	if e != nil || end != json.Delim('}') {
@@ -405,14 +465,30 @@ func allowedField(object, key string) bool {
 		return key == "action" || key == "return_to"
 	case "issue":
 		switch key {
-		case "subject_id", "capability", "category", "scope", "purpose", "valid_from", "expires_at", "mfa_required", "relation_bound", "relation_ref", "object_ref", "authority_id", "expected_revision":
+		case "subject_id", "capability", "category", "scope", "purpose", "valid_from", "expires_at", "mfa_required", "relation_bound", "relation_ref", "object_ref", "authority_id", "expected_revision", "approved_source_refs":
 			return true
 		}
 		return false
 	case "revoke":
 		return key == "expected_revision" || key == "expected_auth_epoch" || key == "reason"
-	case "scope", "relation_ref":
+	case "scope", "relation_ref", "object_ref", "party", "owner":
 		return key == "kind" || key == "id"
+	case "interview_create":
+		return key == "scheduled_at" || key == "participants" || key == "backfilled" || key == "actual_started_at" || key == "actual_ended_at"
+	case "interview_transition":
+		return key == "action" || key == "expected_revision" || key == "backfilled" || key == "actual_started_at" || key == "actual_ended_at" || key == "reason"
+	case "note_command":
+		return key == "head_id" || key == "category" || key == "expected_head_revision" || key == "text" || key == "edit_reason" || key == "action" || key == "supersedes_version_id" || key == "source_refs" || key == "confirm_minimized"
+	case "action_command":
+		return key == "expected_revision" || key == "minimal_shared_text" || key == "owner" || key == "due_date" || key == "source_refs" || key == "confirm_minimized"
+	case "action_transition":
+		return key == "action" || key == "expected_revision" || key == "safe_blocker_text"
+	case "source_ref":
+		return key == "kind" || key == "id" || key == "expected_version"
+	case "export_command":
+		return key == "objects" || key == "format"
+	case "export_object":
+		return key == "kind" || key == "id" || key == "expected_revision"
 	case "create":
 		return key == "profile" || key == "lifecycle"
 	case "update":

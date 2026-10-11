@@ -136,12 +136,18 @@ func run() error {
 	for _, der := range cert.Certificate {
 		ca = append(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
 	}
+	interviewCert := f.InterviewKMS.Server.TLS.Certificates[0]
+	var interviewCA []byte
+	for _, der := range interviewCert.Certificate {
+		interviewCA = append(interviewCA, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
+	}
 	files := []struct {
 		name string
 		data []byte
 	}{
 		{"csrf.key", f.CSRFKey}, {"digest.key", f.DigestKey}, {"cursor.key", f.CursorKey}, {"kms.token", []byte(f.KMS.Token)},
 		{"kms-ca.pem", ca}, {"api-cert.pem", ca}, {"api-key.pem", pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: key})},
+		{"interview-kms.token", []byte(f.InterviewKMS.Token)}, {"interview-kms-ca.pem", interviewCA},
 	}
 	for _, file := range files {
 		if err = privateFile(filepath.Join(*directory, file.name), file.data); err != nil {
@@ -154,6 +160,8 @@ func run() error {
 		{"KMS_URL", f.KMS.Server.URL}, {"KMS_KEY", "dev002-pii"}, {"KMS_TOKEN_FILE", filepath.Join(*directory, "kms.token")},
 		{"KMS_CA_FILE", filepath.Join(*directory, "kms-ca.pem")}, {"CSRF_KEY_FILE", filepath.Join(*directory, "csrf.key")},
 		{"DIGEST_KEY_FILE", filepath.Join(*directory, "digest.key")}, {"CURSOR_KEY_FILE", filepath.Join(*directory, "cursor.key")}, {"WEB_DIR", *web},
+		{"INTERVIEW_KMS_URL", f.InterviewKMS.Server.URL}, {"INTERVIEW_KMS_KEY", f.InterviewKMS.KeyName},
+		{"INTERVIEW_KMS_TOKEN_FILE", filepath.Join(*directory, "interview-kms.token")}, {"INTERVIEW_KMS_CA_FILE", filepath.Join(*directory, "interview-kms-ca.pem")},
 	}
 	var env strings.Builder
 	for _, entry := range config {
@@ -214,8 +222,14 @@ func run() error {
 					f.KMS.Fail.Store(true)
 				case "kms_up":
 					f.KMS.Fail.Store(false)
+				case "interview_kms_down":
+					f.InterviewKMS.Fail.Store(true)
+				case "interview_kms_up":
+					f.InterviewKMS.Fail.Store(false)
 				case "revoke_owner_pii":
-					err = revoke(control, f)
+					err = revoke(control, f, "organization_management")
+				case "revoke_owner_interview":
+					err = revoke(control, f, "interview_followup")
 				case "status":
 					response, err = counts(control, f)
 				default:
@@ -251,7 +265,7 @@ func privateFile(path string, data []byte) error {
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
 
 // This direct SQL control is test-only; it does not implement OP-SEC-03.
-func revoke(ctx context.Context, f *testsupport.Fixture) error {
+func revoke(ctx context.Context, f *testsupport.Fixture, purpose string) error {
 	tx, err := f.Repo.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -265,7 +279,7 @@ func revoke(ctx context.Context, f *testsupport.Fixture) error {
 		if _, err = tx.ExecContext(ctx, "UPDATE authorization_guard SET auth_epoch=auth_epoch+1 WHERE org_id=$1", f.OrgID); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, "UPDATE access_grant SET revoked=true WHERE org_id=$1 AND subject_id=$2 AND category='pii'", f.OrgID, f.Owner.SubjectID)
+		_, err = tx.ExecContext(ctx, "UPDATE access_grant SET revoked=true,revision=revision+1,revoked_by=$4,revoked_at=$5,revoke_reason='policy_change' WHERE org_id=$1 AND subject_id=$2 AND purpose=$3 AND revoked=false AND ($3='interview_followup' OR category='pii')", f.OrgID, f.Owner.SubjectID, purpose, f.Manager.SubjectID, f.Repo.BindTime(time.Now().UTC().Truncate(time.Microsecond)))
 	} else {
 		// The first write obtains SQLite's writer/organization guard before grants.
 		result, e := tx.ExecContext(ctx, "UPDATE authorization_guard SET auth_epoch=auth_epoch+1 WHERE org_id=?", f.OrgID)
@@ -276,7 +290,7 @@ func revoke(ctx context.Context, f *testsupport.Fixture) error {
 		if e != nil || n != 1 {
 			return errors.New("missing guard")
 		}
-		_, err = tx.ExecContext(ctx, "UPDATE access_grant SET revoked=1 WHERE org_id=? AND subject_id=? AND category='pii'", f.OrgID, f.Owner.SubjectID)
+		_, err = tx.ExecContext(ctx, "UPDATE access_grant SET revoked=1,revision=revision+1,revoked_by=?,revoked_at=?,revoke_reason='policy_change' WHERE org_id=? AND subject_id=? AND purpose=? AND revoked=0 AND (?='interview_followup' OR category='pii')", f.Manager.SubjectID, f.Repo.BindTime(time.Now().UTC().Truncate(time.Microsecond)), f.OrgID, f.Owner.SubjectID, purpose, purpose)
 	}
 	if err != nil {
 		return err
@@ -285,13 +299,13 @@ func revoke(ctx context.Context, f *testsupport.Fixture) error {
 }
 
 func counts(ctx context.Context, f *testsupport.Fixture) (map[string]any, error) {
-	response := map[string]any{"kms_calls": f.KMS.Calls.Load()}
+	response := map[string]any{"kms_calls": f.KMS.Calls.Load(), "interview_kms_calls": f.InterviewKMS.Calls.Load()}
 	tx, err := f.Repo.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	for _, table := range []string{"employee", "employee_profile_version", "encrypted_payload", "command_receipt", "audit_event"} {
+	for _, table := range []string{"employee", "employee_profile_version", "encrypted_payload", "command_receipt", "audit_event", "interview", "interview_event", "note_head", "note_version", "action_item", "action_item_event", "interview_payload", "interview_receipt", "source_reference", "access_grant_source_approval"} {
 		var count int64
 		if err = tx.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&count); err != nil {
 			return nil, err

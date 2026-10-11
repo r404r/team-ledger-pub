@@ -211,7 +211,7 @@ func validFilter(f Filter) bool {
 	if f.Limit < 1 || f.Limit > 100 || len(f.Cursor) > 4096 {
 		return false
 	}
-	for _, id := range []string{f.SubjectID, f.ScopeID, f.GrantID} {
+	for _, id := range []string{f.SubjectID, f.ScopeID, f.GrantID, f.ObjectID} {
 		if id != "" && !value.ValidID(id) {
 			return false
 		}
@@ -219,10 +219,16 @@ func validFilter(f Filter) bool {
 	if (f.ScopeKind == "") != (f.ScopeID == "") || f.ScopeKind != "" && f.ScopeKind != "org" && f.ScopeKind != "employee" && f.ScopeKind != "team" {
 		return false
 	}
-	if f.Category != "" && f.Category != "metadata" && f.Category != "pii" && f.Category != "audit" {
+	if f.Category != "" && f.Category != "metadata" && f.Category != "pii" && f.Category != "audit" && !noteCategory(f.Category) {
 		return false
 	}
-	if f.Purpose != "" && f.Purpose != "organization_management" && f.Purpose != ManagementPurpose {
+	if f.Purpose != "" && f.Purpose != "organization_management" && f.Purpose != ManagementPurpose && f.Purpose != "interview_followup" {
+		return false
+	}
+	if f.ObjectKind != "" && f.ObjectKind != "interview" && f.ObjectKind != "note_head" && f.ObjectKind != "note_version" && f.ObjectKind != "action_item" || f.ObjectID != "" && f.ObjectKind == "" {
+		return false
+	}
+	if f.Capability != "" && f.Capability != "organization.read" && f.Capability != "organization.write" && f.Capability != "pii.read" && f.Capability != "pii.write" && f.Capability != "access_grant.manage" && f.Capability != "interview.read" && f.Capability != "interview.write" && f.Capability != "note.read" && f.Capability != "note.write" && f.Capability != "note.publish" && f.Capability != "action.read" && f.Capability != "action.write" && f.Capability != "sensitive.export" {
 		return false
 	}
 	return f.State == "" || f.State == "current" || f.State == "future" || f.State == "expired" || f.State == "revoked"
@@ -269,14 +275,10 @@ func (s *Service) Issue(ctx context.Context, request Request, command IssueComma
 	expected, valid := value.Revision(command.ExpectedRevision)
 	from, validFrom := parseTimestamp(command.ValidFrom)
 	to, validTo := parseTimestamp(command.ExpiresAt)
-	if !valid || !validFrom || !validTo || !to.After(from) || !value.ValidID(request.Key) || !value.ValidID(command.SubjectID) || !value.ValidID(command.AuthorityID) || !value.ValidID(command.Scope.ID) || (command.Scope.Kind != "org" && command.Scope.Kind != "employee" && command.Scope.Kind != "team") || !validRelation(command.RelationBound, command.RelationRef, command.Scope) || command.ObjectRef != nil || !SupportedPair(command.Capability, command.Category, command.Purpose) || command.Capability == "access_grant.manage" {
+	if !valid || !validFrom || !validTo || !to.After(from) || !value.ValidID(request.Key) || !value.ValidID(command.SubjectID) || !value.ValidID(command.AuthorityID) || !value.ValidID(command.Scope.ID) || (command.Scope.Kind != "org" && command.Scope.Kind != "employee" && command.Scope.Kind != "team") || !validRelation(command.RelationBound, command.RelationRef, command.Scope) || !normalizeObjectCommand(&command) || !SupportedPair(command.Capability, command.Category, command.Purpose) || command.Capability == "access_grant.manage" {
 		return Result{}, fault.Invalid
 	}
 	command.ValidFrom, command.ExpiresAt = from.Format(time.RFC3339Nano), to.Format(time.RFC3339Nano)
-	digest, err := s.digest(request, initial, "OP-SEC-02", "", command)
-	if err != nil {
-		return Result{}, err
-	}
 	var result Result
 	err = s.Store.WithGrantTx(ctx, initial.OrgID, func(tx Tx) error {
 		if err := tx.LockSubjects(ctx, initial.OrgID, []string{initial.SubjectID, command.SubjectID}); err != nil {
@@ -289,7 +291,7 @@ func (s *Service) Issue(ctx context.Context, request Request, command IssueComma
 		if command.SubjectID == current.SubjectID {
 			return fault.Forbidden
 		}
-		g := GrantDTO{OrgID: current.OrgID, SubjectID: command.SubjectID, Capability: command.Capability, Category: command.Category, Scope: command.Scope, Purpose: command.Purpose, ValidFrom: from, ExpiresAt: to, MFARequired: command.MFARequired, RelationBound: command.RelationBound, RelationRef: command.RelationRef, Revision: "1"}
+		g := GrantDTO{OrgID: current.OrgID, SubjectID: command.SubjectID, Capability: command.Capability, Category: command.Category, Scope: command.Scope, Purpose: command.Purpose, ValidFrom: from, ExpiresAt: to, MFARequired: command.MFARequired, RelationBound: command.RelationBound, RelationRef: command.RelationRef, ObjectRef: command.ObjectRef, ApprovedSourceRefs: command.ApprovedSourceRefs, Revision: "1"}
 		covered, err := s.covered(ctx, tx, g, coverage, current.OrgID, command.AuthorityID)
 		if err != nil {
 			return err
@@ -307,15 +309,6 @@ func (s *Service) Issue(ctx context.Context, request Request, command IssueComma
 		if from.Before(authority.ValidFrom) || to.After(authority.ExpiresAt) || authority.MFARequired && !command.MFARequired {
 			return fault.Forbidden
 		}
-		if previous, found, err := tx.GrantReceipt(ctx, current.OrgID, current.SubjectID, "OP-SEC-02", request.Key); err != nil {
-			return err
-		} else if found {
-			if subtle.ConstantTimeCompare(previous.Digest, digest) != 1 {
-				return fault.Mismatch
-			}
-			result = previous.Result
-			return tx.GrantAudit(ctx, s.audit(request, current, result.ID, "OP-SEC-02", "allowed"))
-		}
 		owned, err := tx.OwnsScope(ctx, current.OrgID, command.Scope)
 		if err != nil {
 			return err
@@ -325,6 +318,22 @@ func (s *Service) Issue(ctx context.Context, request Request, command IssueComma
 		}
 		if err := tx.LockScope(ctx, current.OrgID, command.Scope); err != nil {
 			return err
+		}
+		if err := s.approveObjects(ctx, tx, current, &g); err != nil {
+			return err
+		}
+		digest, err := s.digest(request, current, "OP-SEC-02", "", command)
+		if err != nil {
+			return err
+		}
+		if previous, found, err := tx.GrantReceipt(ctx, current.OrgID, current.SubjectID, "OP-SEC-02", request.Key); err != nil {
+			return err
+		} else if found {
+			if subtle.ConstantTimeCompare(previous.Digest, digest) != 1 {
+				return fault.Mismatch
+			}
+			result = previous.Result
+			return tx.GrantAudit(ctx, s.audit(request, current, result.ID, "OP-SEC-02", "allowed"))
 		}
 		qualified, err := tx.Qualified(ctx, current.OrgID, command.SubjectID, command.Capability, command.Scope, s.clock())
 		if err != nil {
@@ -388,10 +397,6 @@ func (s *Service) Revoke(ctx context.Context, request Request, id string, comman
 	if err != nil {
 		return Result{}, s.denied(ctx, request, initial, "OP-SEC-03", err)
 	}
-	digest, err := s.digest(request, initial, "OP-SEC-03", id, command)
-	if err != nil {
-		return Result{}, err
-	}
 	var result Result
 	err = s.Store.WithGrantTx(ctx, initial.OrgID, func(tx Tx) error {
 		if err := tx.LockSubjects(ctx, initial.OrgID, []string{initial.SubjectID, planned.SubjectID}); err != nil {
@@ -417,6 +422,10 @@ func (s *Service) Revoke(ctx context.Context, request Request, id string, comman
 		}
 		if grant.SubjectID != planned.SubjectID {
 			return fault.Conflict
+		}
+		digest, err := s.digest(request, current, "OP-SEC-03", id, command)
+		if err != nil {
+			return err
 		}
 		if previous, found, err := tx.GrantReceipt(ctx, current.OrgID, current.SubjectID, "OP-SEC-03", request.Key); err != nil {
 			return err
