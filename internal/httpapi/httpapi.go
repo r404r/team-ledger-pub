@@ -19,22 +19,25 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/r404r/team-ledger/internal/authz"
+	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/organization"
 	"github.com/r404r/team-ledger/internal/value"
 )
 
-var bodyTooLarge = &organization.Fault{Status: 413, Code: "INVALID_INPUT", Reason: "BODY_TOO_LARGE"}
-var unsupportedMedia = &organization.Fault{Status: 415, Code: "INVALID_INPUT", Reason: "UNSUPPORTED_MEDIA_TYPE"}
+var bodyTooLarge = &fault.Fault{Status: 413, Code: "INVALID_INPUT", Reason: "BODY_TOO_LARGE"}
+var unsupportedMedia = &fault.Fault{Status: 415, Code: "INVALID_INPUT", Reason: "UNSUPPORTED_MEDIA_TYPE"}
 
 type handler struct {
 	service        *organization.Service
+	grants         *authz.Service
 	key            []byte
 	origin, static string
 }
 
-func New(service *organization.Service, csrfKey []byte, origin, staticDir string) (http.Handler, error) {
+func New(service *organization.Service, grants *authz.Service, csrfKey []byte, origin, staticDir string) (http.Handler, error) {
 	u, err := url.Parse(origin)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.RawPath != "" || service == nil || len(csrfKey) != 32 {
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.RawPath != "" || service == nil || grants == nil || len(csrfKey) != 32 {
 		return nil, errors.New("invalid HTTP configuration")
 	}
 	root, err := filepath.EvalSymlinks(staticDir)
@@ -49,7 +52,7 @@ func New(service *organization.Service, csrfKey []byte, origin, staticDir string
 	if err != nil || !info.Mode().IsRegular() {
 		return nil, errors.New("missing production index")
 	}
-	return &handler{service: service, key: bytes.Clone(csrfKey), origin: strings.TrimSuffix(origin, "/"), static: root}, nil
+	return &handler{service: service, grants: grants, key: bytes.Clone(csrfKey), origin: strings.TrimSuffix(origin, "/"), static: root}, nil
 }
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -57,7 +60,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	requestID := value.NewID()
 	w.Header().Set("X-Request-ID", requestID)
 	if r.TLS == nil || r.Host != strings.TrimPrefix(h.origin, "https://") {
-		h.fail(w, organization.Forbidden, requestID)
+		h.fail(w, fault.Forbidden, requestID)
 		return
 	}
 	if !strings.HasPrefix(r.URL.Path, "/api/") {
@@ -67,7 +70,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	req := organization.Request{RequestID: requestID, Purpose: r.Header.Get("X-Access-Purpose"), Key: r.Header.Get("Idempotency-Key")}
 	raw, err := sessionCookie(r)
 	if err != nil {
-		h.fail(w, organization.Unauthenticated, requestID)
+		h.fail(w, fault.Unauthenticated, requestID)
 		return
 	}
 	hash := sha256.Sum256(raw)
@@ -88,7 +91,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if invalidScope {
-		h.fail(w, organization.Invalid, requestID)
+		h.fail(w, fault.Invalid, requestID)
 		return
 	}
 	mac := hmac.New(sha256.New, h.key)
@@ -97,11 +100,22 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	token := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 	tokenHash := sha256.Sum256([]byte(token))
 	if snap.CSRFVersion != 1 || subtle.ConstantTimeCompare(snap.CSRFHash, tokenHash[:]) != 1 {
-		h.fail(w, organization.Unauthenticated, requestID)
+		h.fail(w, fault.Unauthenticated, requestID)
 		return
 	}
 	if r.URL.Path == "/api/v1/session" && r.Method == http.MethodGet {
-		now := time.Now().UTC()
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		if h.grants.Now != nil {
+			now = h.grants.Now().UTC().Truncate(time.Microsecond)
+		}
+		authorities, e := h.grants.SessionAuthorities(r.Context(), authz.Request{TokenHash: req.TokenHash, RequestID: req.RequestID, Purpose: authz.ManagementPurpose})
+		if e != nil {
+			h.fail(w, e, requestID)
+			return
+		}
+		if authorities == nil {
+			authorities = []authz.AuthorityHint{}
+		}
 		caps := make([]string, 0, 4)
 		for _, cap := range []string{"organization.read", "organization.write", "pii.read", "pii.write"} {
 			category := "metadata"
@@ -112,21 +126,29 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				caps = append(caps, cap)
 			}
 		}
+		if len(authorities) > 0 {
+			caps = append(caps, "access_grant.manage")
+		}
 		scopeKind, scopeID := "org", snap.OrgID
 		if employeeScope != "" {
 			scopeKind, scopeID = "employee", employeeScope
 		}
 		h.reply(w, 200, struct {
-			Subject      string    `json:"subject_id"`
-			Org          string    `json:"org_id"`
-			Epoch        string    `json:"auth_epoch"`
-			Capabilities []string  `json:"capabilities"`
-			CSRF         string    `json:"csrf_token"`
-			ScopeKind    string    `json:"scope_kind"`
-			ScopeID      string    `json:"scope_id"`
-			MFARecent    bool      `json:"mfa_recent"`
-			MFAUntil     time.Time `json:"mfa_valid_until"`
-		}{snap.SubjectID, snap.OrgID, strconv.FormatInt(snap.AuthEpoch, 10), caps, token, scopeKind, scopeID, now.Before(snap.MFAUntil), snap.MFAUntil})
+			Subject      string                `json:"subject_id"`
+			Org          string                `json:"org_id"`
+			Epoch        string                `json:"auth_epoch"`
+			Capabilities []string              `json:"capabilities"`
+			CSRF         string                `json:"csrf_token"`
+			ScopeKind    string                `json:"scope_kind"`
+			ScopeID      string                `json:"scope_id"`
+			MFARecent    bool                  `json:"mfa_recent"`
+			MFAUntil     time.Time             `json:"mfa_valid_until"`
+			Authorities  []authz.AuthorityHint `json:"grant_authorities"`
+		}{snap.SubjectID, snap.OrgID, strconv.FormatInt(snap.AuthEpoch, 10), caps, token, scopeKind, scopeID, now.Before(snap.MFAUntil), snap.MFAUntil, authorities})
+		return
+	}
+	if r.URL.Path == "/api/v1/access-grants" || strings.HasPrefix(r.URL.Path, "/api/v1/access-grants/") {
+		h.grantRoute(w, r, authz.Request{TokenHash: req.TokenHash, RequestID: req.RequestID, Purpose: req.Purpose, Key: req.Key}, token)
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/"), "/")
@@ -134,17 +156,17 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	update := len(parts) == 3 && parts[0] == "employees" && parts[2] == "profile" && r.Method == http.MethodPatch
 	get := len(parts) == 2 && parts[0] == "employees" && r.Method == http.MethodGet
 	if !strings.HasPrefix(r.URL.Path, "/api/v1/") || (!create && !update && !get) {
-		h.fail(w, organization.NotFound, requestID)
+		h.fail(w, fault.NotFound, requestID)
 		return
 	}
 	if !value.ValidID(parts[1]) || req.Purpose != "organization_management" {
-		h.fail(w, organization.Invalid, requestID)
+		h.fail(w, fault.Invalid, requestID)
 		return
 	}
 	if get {
 		q, e := url.ParseQuery(r.URL.RawQuery)
 		if e != nil || len(q) != 2 || len(q["as_of"]) != 1 || len(q["include_profile"]) != 1 || !value.ValidDate(q.Get("as_of")) || (q.Get("include_profile") != "true" && q.Get("include_profile") != "false") {
-			h.fail(w, organization.Invalid, requestID)
+			h.fail(w, fault.Invalid, requestID)
 			return
 		}
 		result, e := h.service.Read(r.Context(), req, parts[1], q.Get("as_of"), q.Get("include_profile") == "true")
@@ -156,7 +178,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.RawQuery != "" || r.Header.Get("Origin") != h.origin || r.Header.Get("Sec-Fetch-Site") != "same-origin" || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(token)) != 1 {
-		h.fail(w, organization.Forbidden, requestID)
+		h.fail(w, fault.Forbidden, requestID)
 		return
 	}
 	media, params, e := mime.ParseMediaType(r.Header.Get("Content-Type"))
@@ -165,7 +187,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !value.ValidID(req.Key) || req.Key[14] != '4' || !strings.ContainsRune("89ab", rune(req.Key[19])) {
-		h.fail(w, organization.Invalid, requestID)
+		h.fail(w, fault.Invalid, requestID)
 		return
 	}
 	if create {
@@ -205,7 +227,7 @@ func sessionCookie(r *http.Request) ([]byte, error) {
 	}
 	raw, e := base64.RawURLEncoding.DecodeString(token)
 	if count != 1 || e != nil || len(raw) != 32 || base64.RawURLEncoding.EncodeToString(raw) != token {
-		return nil, organization.Unauthenticated
+		return nil, fault.Unauthenticated
 	}
 	return raw, nil
 }
@@ -216,11 +238,11 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 		if errors.As(e, &limit) {
 			return bodyTooLarge
 		}
-		return organization.Invalid
+		return fault.Invalid
 	}
 	defer clear(data)
 	if !utf8.Valid(data) {
-		return organization.Invalid
+		return fault.Invalid
 	}
 	root := ""
 	switch out.(type) {
@@ -228,8 +250,12 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 		root = "create"
 	case *organization.UpdateCommand:
 		root = "update"
+	case *authz.IssueCommand:
+		root = "issue"
+	case *authz.RevokeCommand:
+		root = "revoke"
 	default:
-		return organization.Invalid
+		return fault.Invalid
 	}
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.UseNumber()
@@ -237,39 +263,63 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 		return e
 	}
 	if _, e = d.Token(); e != io.EOF {
-		return organization.Invalid
+		return fault.Invalid
 	}
 	d = json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
 	if e = d.Decode(out); e != nil {
-		return organization.Invalid
+		return fault.Invalid
 	}
 	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
-		return organization.Invalid
+		return fault.Invalid
 	}
 	return nil
 }
 func walkJSON(d *json.Decoder, depth int, object string) error {
 	if depth > 8 {
-		return organization.Invalid
+		return fault.Invalid
 	}
 	t, e := d.Token()
 	if e != nil {
-		return organization.Invalid
+		return fault.Invalid
+	}
+	switch object {
+	case "subject_id", "capability", "category", "kind", "id", "purpose", "expires_at", "authority_id", "expected_revision", "expected_auth_epoch", "reason":
+		if _, ok := t.(string); !ok {
+			return fault.Invalid
+		}
+		return nil
+	}
+	if object == "relation_ref" || object == "object_ref" {
+		if t != nil {
+			return fault.Invalid
+		}
+		return nil
+	}
+	if object == "mfa_required" || object == "relation_bound" {
+		if _, ok := t.(bool); !ok {
+			return fault.Invalid
+		}
+		return nil
+	}
+	if object == "issue" || object == "revoke" || object == "scope" {
+		if t != json.Delim('{') {
+			return fault.Invalid
+		}
 	}
 	delim, ok := t.(json.Delim)
 	if !ok {
 		return nil
 	}
 	if delim != '{' {
-		return organization.Invalid
+		return fault.Invalid
 	}
 	seen := map[string]bool{}
 	for d.More() {
 		key, e := d.Token()
 		s, ok := key.(string)
 		if e != nil || !ok || seen[s] || !allowedField(object, s) {
-			return organization.Invalid
+			return fault.Invalid
 		}
 		seen[s] = true
 		if e = walkJSON(d, depth+1, s); e != nil {
@@ -277,13 +327,26 @@ func walkJSON(d *json.Decoder, depth int, object string) error {
 		}
 	}
 	end, e := d.Token()
+	if (object == "issue" && len(seen) != 13) || (object == "revoke" && len(seen) != 3) || (object == "scope" && len(seen) != 2) {
+		return fault.Invalid
+	}
 	if e != nil || end != json.Delim('}') {
-		return organization.Invalid
+		return fault.Invalid
 	}
 	return nil
 }
 func allowedField(object, key string) bool {
 	switch object {
+	case "issue":
+		switch key {
+		case "subject_id", "capability", "category", "scope", "purpose", "valid_from", "expires_at", "mfa_required", "relation_bound", "relation_ref", "object_ref", "authority_id", "expected_revision":
+			return true
+		}
+		return false
+	case "revoke":
+		return key == "expected_revision" || key == "expected_auth_epoch" || key == "reason"
+	case "scope":
+		return key == "kind" || key == "id"
 	case "create":
 		return key == "profile" || key == "lifecycle"
 	case "update":
@@ -304,41 +367,41 @@ func (h *handler) reply(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 func (h *handler) fail(w http.ResponseWriter, err error, id string) {
-	fault := organization.Unavailable
+	public := fault.Unavailable
 	// Only declared faults cross the boundary, never arbitrary error strings.
-	for _, known := range []*organization.Fault{bodyTooLarge, unsupportedMedia, organization.Invalid, organization.Unauthenticated, organization.NotFound, organization.Forbidden, organization.Conflict, organization.Mismatch, organization.Unavailable, organization.AuditUnavailable, organization.Busy} {
+	for _, known := range []*fault.Fault{bodyTooLarge, unsupportedMedia, fault.Invalid, fault.Unauthenticated, fault.NotFound, fault.Forbidden, fault.Conflict, fault.Mismatch, fault.Unavailable, fault.AuditUnavailable, fault.Busy} {
 		if errors.Is(err, known) {
-			fault = known
+			public = known
 			break
 		}
 	}
-	h.reply(w, fault.Status, struct {
+	h.reply(w, public.Status, struct {
 		Code      string `json:"code"`
 		RequestID string `json:"request_id"`
 		Reason    string `json:"reason,omitempty"`
-	}{fault.Code, id, fault.Reason})
+	}{public.Code, id, public.Reason})
 }
 func (h *handler) staticFile(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		h.fail(w, organization.NotFound, id)
+		h.fail(w, fault.NotFound, id)
 		return
 	}
 	if r.URL.RawQuery != "" {
 		q, e := url.ParseQuery(r.URL.RawQuery)
 		if e != nil || len(q) != 1 || len(q["as_of"]) != 1 || !value.ValidDate(q.Get("as_of")) || strings.HasPrefix(r.URL.Path, "/assets/") {
-			h.fail(w, organization.NotFound, id)
+			h.fail(w, fault.NotFound, id)
 			return
 		}
 	}
 	name := ""
 	if r.URL.Path == "/" {
 		name = "index.html"
-	} else if strings.HasPrefix(r.URL.Path, "/employees/") && value.ValidID(strings.TrimPrefix(r.URL.Path, "/employees/")) {
+	} else if r.URL.Path == "/security/grants" || strings.HasPrefix(r.URL.Path, "/employees/") && value.ValidID(strings.TrimPrefix(r.URL.Path, "/employees/")) {
 		name = "index.html"
 	} else if strings.HasPrefix(r.URL.Path, "/assets/") {
 		rel := strings.TrimPrefix(r.URL.Path, "/")
 		if filepath.Clean(rel) != rel || strings.Contains(rel, "\\") {
-			h.fail(w, organization.NotFound, id)
+			h.fail(w, fault.NotFound, id)
 			return
 		}
 		switch filepath.Ext(rel) {
@@ -347,23 +410,23 @@ func (h *handler) staticFile(w http.ResponseWriter, r *http.Request, id string) 
 		}
 	}
 	if name == "" {
-		h.fail(w, organization.NotFound, id)
+		h.fail(w, fault.NotFound, id)
 		return
 	}
 	file, e := filepath.EvalSymlinks(filepath.Join(h.static, name))
 	if e != nil || !strings.HasPrefix(file, h.static+string(filepath.Separator)) {
-		h.fail(w, organization.NotFound, id)
+		h.fail(w, fault.NotFound, id)
 		return
 	}
 	f, e := os.Open(file)
 	if e != nil {
-		h.fail(w, organization.NotFound, id)
+		h.fail(w, fault.NotFound, id)
 		return
 	}
 	defer f.Close()
 	info, e := f.Stat()
 	if e != nil || !info.Mode().IsRegular() {
-		h.fail(w, organization.NotFound, id)
+		h.fail(w, fault.NotFound, id)
 		return
 	}
 	http.ServeContent(w, r, name, info.ModTime(), f)

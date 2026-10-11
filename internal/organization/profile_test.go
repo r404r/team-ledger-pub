@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/organization"
 	"github.com/r404r/team-ledger/internal/testsupport"
 )
@@ -94,10 +95,10 @@ func TestProfileImmutableVersionsCASAndIdempotency(t *testing.T) {
 		}
 		changed := command
 		changed.Profile.DisplayName = "SYNTHETIC_CONFLICTING_REPLAY"
-		if _, err = f.Service.Update(ctx, request, made.ID, changed); !errors.Is(err, organization.Mismatch) {
+		if _, err = f.Service.Update(ctx, request, made.ID, changed); !errors.Is(err, fault.Mismatch) {
 			t.Fatal("same key with different command must conflict")
 		}
-		if _, err = f.Service.Update(ctx, f.Request(f.Owner), made.ID, command); !errors.Is(err, organization.Conflict) {
+		if _, err = f.Service.Update(ctx, f.Request(f.Owner), made.ID, command); !errors.Is(err, fault.Conflict) {
 			t.Fatal("independent command with stale revision must not overwrite")
 		}
 		if read(t, f, made.ID).Profile.DisplayName != "SYNTHETIC_PROFILE_NEW" || f.Count(t, "employee_profile_version") != 2 {
@@ -121,7 +122,7 @@ func TestCreateReplayDoesNotCreateAnotherEmployee(t *testing.T) {
 			t.Fatal("creation replay must confirm original employee without another encrypted object")
 		}
 		cmd.Profile.DisplayName = "SYNTHETIC_DIFFERENT_COMMAND"
-		if _, err = f.Service.Create(ctx, request, f.OrgID, cmd); !errors.Is(err, organization.Mismatch) {
+		if _, err = f.Service.Create(ctx, request, f.OrgID, cmd); !errors.Is(err, fault.Mismatch) {
 			t.Fatal("creation key reused for different profile must conflict")
 		}
 	})
@@ -133,7 +134,7 @@ func TestCurrentAuthorizationPrecedesUnavailableKMS(t *testing.T) {
 		f.KMS.Fail.Store(true)
 		before := f.KMS.Calls.Load()
 		for _, c := range []testsupport.Credential{f.Stranger, f.OtherOwner} {
-			if _, err := f.Service.Read(context.Background(), f.Request(c), id, "2026-10-11", true); !errors.Is(err, organization.NotFound) {
+			if _, err := f.Service.Read(context.Background(), f.Request(c), id, "2026-10-11", true); !errors.Is(err, fault.NotFound) {
 				t.Fatal("unreadable scope and cross-org object must return same safe rejection")
 			}
 		}
@@ -141,18 +142,18 @@ func TestCurrentAuthorizationPrecedesUnavailableKMS(t *testing.T) {
 		if err != nil || observer.Profile != nil {
 			t.Fatal("metadata reader cannot receive PII or trigger unavailable KMS")
 		}
-		if _, err = f.Service.Update(context.Background(), f.Request(f.Observer), id, organization.UpdateCommand{ExpectedRevision: "1", Profile: organization.Profile{DisplayName: "SYNTHETIC_DENIED_WRITE"}, EditReason: "synthetic"}); !errors.Is(err, organization.Forbidden) {
+		if _, err = f.Service.Update(context.Background(), f.Request(f.Observer), id, organization.UpdateCommand{ExpectedRevision: "1", Profile: organization.Profile{DisplayName: "SYNTHETIC_DENIED_WRITE"}, EditReason: "synthetic"}); !errors.Is(err, fault.Forbidden) {
 			t.Fatal("metadata read never implies PII read/write")
 		}
 		missing := f.Request(f.Owner)
 		missing.TokenHash = nil
-		if _, err = f.Service.Read(context.Background(), missing, id, "2026-10-11", true); !errors.Is(err, organization.Unauthenticated) {
+		if _, err = f.Service.Read(context.Background(), missing, id, "2026-10-11", true); !errors.Is(err, fault.Unauthenticated) {
 			t.Fatal("missing session must reject before KMS")
 		}
 		if f.KMS.Calls.Load() != before {
 			t.Fatal("unauthorized request reached external KMS")
 		}
-		if _, err = f.Service.Read(context.Background(), f.Request(f.Owner), id, "2026-10-11", true); !errors.Is(err, organization.Unavailable) {
+		if _, err = f.Service.Read(context.Background(), f.Request(f.Owner), id, "2026-10-11", true); !errors.Is(err, fault.Unavailable) {
 			t.Fatal("authorized read with unavailable KMS must fail closed")
 		}
 		if f.Count(t, "employee_profile_version") != 1 {
@@ -179,7 +180,7 @@ func TestExpiredGrantAndRevokedSessionCannotRestoreHistory(t *testing.T) {
 		if err = f.Exec(ctx, "UPDATE session SET revoked=1 WHERE token_hash=?", "UPDATE session SET revoked=true WHERE token_hash=$1", f.Owner.Hash); err != nil {
 			t.Fatal(err)
 		}
-		if _, err = f.Service.Read(ctx, f.Request(f.Owner), id, "2026-01-01", true); !errors.Is(err, organization.Unauthenticated) {
+		if _, err = f.Service.Read(ctx, f.Request(f.Owner), id, "2026-01-01", true); !errors.Is(err, fault.Unauthenticated) {
 			t.Fatal("revoked opaque session cannot authorize historic object")
 		}
 	})
@@ -204,7 +205,7 @@ func TestPayloadTamperAndAuditFailureNeverReleasePlaintext(t *testing.T) {
 			t.Fatal(err)
 		}
 		v, err := f.Service.Read(ctx, f.Request(f.Owner), id, "2026-10-11", true)
-		if !errors.Is(err, organization.Unavailable) || v.Profile != nil {
+		if !errors.Is(err, fault.Unavailable) || v.Profile != nil {
 			t.Fatal("AEAD tamper must fail without partial profile")
 		}
 		if err = f.Exec(ctx, "UPDATE encrypted_payload SET sealed_bytes=? WHERE id=?", "UPDATE encrypted_payload SET sealed_bytes=$1 WHERE id=$2", original, version.ID); err != nil {
@@ -214,11 +215,11 @@ func TestPayloadTamperAndAuditFailureNeverReleasePlaintext(t *testing.T) {
 			t.Fatal(err)
 		}
 		v, err = f.Service.Read(ctx, f.Request(f.Owner), id, "2026-10-11", true)
-		if !errors.Is(err, organization.AuditUnavailable) || v.Profile != nil {
+		if !errors.Is(err, fault.AuditUnavailable) || v.Profile != nil {
 			t.Fatal("mandatory audit failure must prevent sensitive release")
 		}
 		_, err = f.Service.Update(ctx, f.Request(f.Owner), id, organization.UpdateCommand{ExpectedRevision: "1", Profile: organization.Profile{DisplayName: "SYNTHETIC_ROLLED_BACK"}, EditReason: "synthetic"})
-		if !errors.Is(err, organization.AuditUnavailable) {
+		if !errors.Is(err, fault.AuditUnavailable) {
 			t.Fatal("write audit failure must be explicit")
 		}
 		current, err := f.Repo.Employee(ctx, id)
@@ -235,7 +236,7 @@ func TestInvalidProfileAndLifecycleNeverPersistPartialEmployee(t *testing.T) {
 			{Profile: organization.Profile{DisplayName: "synthetic"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-02-30"}},
 			{Profile: organization.Profile{DisplayName: "synthetic"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01", ValidTo: new("2026-01-01")}},
 		} {
-			if _, err := f.Service.Create(context.Background(), f.Request(f.Owner), f.OrgID, cmd); !errors.Is(err, organization.Invalid) {
+			if _, err := f.Service.Create(context.Background(), f.Request(f.Owner), f.OrgID, cmd); !errors.Is(err, fault.Invalid) {
 				t.Fatal("invalid profile/date must reject with safe input error")
 			}
 		}
@@ -286,7 +287,7 @@ func TestWrongPurposeDenialRetainsOnlySafeAuditMetadata(t *testing.T) {
 		before := f.Count(t, "audit_event")
 		calls := f.KMS.Calls.Load()
 		view, err := f.Service.Read(context.Background(), request, id.ID, "2026-10-11", true)
-		if !errors.Is(err, organization.NotFound) || view.Profile != nil || f.KMS.Calls.Load() != calls {
+		if !errors.Is(err, fault.NotFound) || view.Profile != nil || f.KMS.Calls.Load() != calls {
 			t.Fatal("wrong purpose must deny without releasing PII or reaching KMS")
 		}
 		if f.Count(t, "audit_event") != before+1 {

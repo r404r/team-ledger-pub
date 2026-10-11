@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/organization"
 	"modernc.org/sqlite"
 )
@@ -49,7 +50,7 @@ func Open(ctx context.Context, backend, dsn string) (*Repository, error) {
 	switch backend {
 	case "sqlite":
 		if !filepath.IsAbs(dsn) || strings.ContainsAny(dsn, "?\x00") {
-			return nil, organization.Unavailable
+			return nil, fault.Unavailable
 		}
 		u := url.URL{Scheme: "file", Path: dsn}
 		q := url.Values{}
@@ -65,11 +66,11 @@ func Open(ctx context.Context, backend, dsn string) (*Repository, error) {
 	case "postgres":
 		cfg, err := pgx.ParseConfig(dsn)
 		if err != nil || cfg.TLSConfig == nil || cfg.TLSConfig.InsecureSkipVerify || cfg.TLSConfig.ServerName == "" || cfg.TLSConfig.RootCAs == nil {
-			return nil, organization.Unavailable
+			return nil, fault.Unavailable
 		}
 		for _, f := range cfg.Fallbacks {
 			if f.TLSConfig == nil || f.TLSConfig.InsecureSkipVerify || f.TLSConfig.ServerName == "" || f.TLSConfig.RootCAs == nil {
-				return nil, organization.Unavailable
+				return nil, fault.Unavailable
 			}
 		}
 		cfg.ConnectTimeout = 10 * time.Second
@@ -77,7 +78,7 @@ func Open(ctx context.Context, backend, dsn string) (*Repository, error) {
 		cfg.RuntimeParams["lock_timeout"] = "2000"
 		db = stdlib.OpenDB(*cfg)
 	default:
-		return nil, organization.Unavailable
+		return nil, fault.Unavailable
 	}
 	db.SetMaxOpenConns(8)
 	db.SetMaxIdleConns(8)
@@ -112,119 +113,147 @@ func (r reader) sql(s, p string) string {
 	return p
 }
 func (r *Repository) read() reader { return reader{r.DB, r.Backend} }
-func (r *Repository) migration() (string, string, error) {
-	if r.Backend != "sqlite" && r.Backend != "postgres" {
-		return "", "", organization.Unavailable
+
+const currentSchemaVersion = 2
+
+func (r *Repository) migration(version int) (string, string, error) {
+	if (r.Backend != "sqlite" && r.Backend != "postgres") || version < 1 || version > currentSchemaVersion {
+		return "", "", fault.Unavailable
 	}
-	b, e := migrations.ReadFile("migrations/" + r.Backend + "_v1.sql")
-	if e != nil {
-		return "", "", organization.Unavailable
+	b, err := migrations.ReadFile(fmt.Sprintf("migrations/%s_v%d.sql", r.Backend, version))
+	if err != nil {
+		return "", "", fault.Unavailable
 	}
 	return string(b), fmt.Sprintf("%x", sha256.Sum256(b)), nil
 }
+
+// Migrate is a standalone maintenance operation. Existing schemas must match
+// their complete supported ledger and physical definitions before any upgrade.
+// Both a fresh v1->v2 install and an existing v1 upgrade commit atomically.
 func (r *Repository) Migrate(ctx context.Context) error {
-	ddl, checksum, err := r.migration()
-	if err != nil {
-		return err
-	}
 	tx, err := r.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return safeError(err)
 	}
 	defer tx.Rollback()
-	var count int
-	err = tx.QueryRowContext(ctx, r.sql("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'", "SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_type='BASE TABLE'")).Scan(&count)
-	if err != nil {
-		return safeError(err)
-	}
-	if count != 0 {
-		if err = r.checkSchema(ctx, tx); err != nil {
-			return err
-		}
-		return safeError(tx.Commit())
-	}
-	// Execute the checked-in dialect's individual statements in the same transaction.
-	for _, s := range strings.Split(ddl, ";") {
-		if strings.TrimSpace(s) == "" {
-			continue
-		}
-		if _, err = tx.ExecContext(ctx, s); err != nil {
+	if r.Backend == "postgres" {
+		if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(hashtextextended(current_schema(),724202603))"); err != nil {
 			return safeError(err)
 		}
 	}
-	_, err = tx.ExecContext(ctx, r.sql("INSERT INTO schema_version(version,backend,checksum) VALUES(1,?,?)", "INSERT INTO schema_version(version,backend,checksum) VALUES(1,$1,$2)"), r.Backend, checksum)
+	var count int
+	err = tx.QueryRowContext(ctx, r.sql("SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL", "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=current_schema()")).Scan(&count)
 	if err != nil {
 		return safeError(err)
 	}
-	return safeError(tx.Commit())
-}
-func (r *Repository) CheckSchema(ctx context.Context) error { return r.checkSchema(ctx, r.DB) }
-func (r *Repository) checkSchema(ctx context.Context, db queryer) error {
-	_, expected, err := r.migration()
-	if err != nil {
+	version := 0
+	if count != 0 {
+		version, err = r.ledgerVersion(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if r.Backend == "sqlite" {
+			// Acquire the writer before validating the source or copying any rows.
+			if _, err = tx.ExecContext(ctx, "UPDATE schema_version SET version=version"); err != nil {
+				return safeError(err)
+			}
+		} else {
+			// Stop concurrent application writes for the controlled cutover.
+			if _, err = tx.ExecContext(ctx, "LOCK TABLE schema_version,organization,authorization_guard,subject,session,employee,capability_assignment,access_grant,encrypted_payload,employee_profile_version,command_receipt,audit_event IN ACCESS EXCLUSIVE MODE"); err != nil {
+				return safeError(err)
+			}
+		}
+		if err = r.checkSchemaVersion(ctx, tx, version); err != nil {
+			return err
+		}
+		if version == currentSchemaVersion {
+			return safeError(tx.Commit())
+		}
+	}
+	for next := version + 1; next <= currentSchemaVersion; next++ {
+		ddl, checksum, e := r.migration(next)
+		if e != nil {
+			return e
+		}
+		for _, statement := range migrationStatements(ddl) {
+			if _, e = tx.ExecContext(ctx, statement); e != nil {
+				return safeError(e)
+			}
+		}
+		if _, e = tx.ExecContext(ctx, r.sql("INSERT INTO schema_version(version,backend,checksum) VALUES(?,?,?)", "INSERT INTO schema_version(version,backend,checksum) VALUES($1,$2,$3)"), next, r.Backend, checksum); e != nil {
+			return safeError(e)
+		}
+	}
+	if err = r.checkSchemaVersion(ctx, tx, currentSchemaVersion); err != nil {
 		return err
 	}
-	rows, err := db.QueryContext(ctx, "SELECT version,backend,checksum FROM schema_version")
+	return safeError(tx.Commit())
+}
+
+// CheckSchema never upgrades the application schema. A transaction pins one
+// connection for SQLite FK settings and PostgreSQL's rolled-back TEMP reference.
+func (r *Repository) CheckSchema(ctx context.Context) error {
+	tx, err := r.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return organization.Unavailable
+		return safeError(err)
 	}
-	var version int
-	var backend, checksum string
-	if !rows.Next() {
-		rows.Close()
-		return organization.Unavailable
+	defer tx.Rollback()
+	if err = r.checkSchemaVersion(ctx, tx, currentSchemaVersion); err != nil {
+		return err
 	}
-	err = rows.Scan(&version, &backend, &checksum)
-	extra := rows.Next()
-	rowErr := rows.Err()
-	rows.Close()
-	if err != nil || rowErr != nil || extra || version != 1 || backend != r.Backend || checksum != expected {
-		return organization.Unavailable
+	return safeError(tx.Commit())
+}
+
+func (r *Repository) ledgerVersion(ctx context.Context, db queryer) (int, error) {
+	rows, err := db.QueryContext(ctx, "SELECT version,backend,checksum FROM schema_version ORDER BY version")
+	if err != nil {
+		return 0, fault.Unavailable
 	}
-	for _, q := range schemaProbes {
-		rows, err = db.QueryContext(ctx, q)
-		if err != nil {
-			return organization.Unavailable
+	defer rows.Close()
+	version := 0
+	for rows.Next() {
+		var found int
+		var backend, checksum string
+		if err = rows.Scan(&found, &backend, &checksum); err != nil || found != version+1 || found > currentSchemaVersion || backend != r.Backend {
+			return 0, fault.Unavailable
 		}
-		err = rows.Close()
-		if err != nil {
-			return organization.Unavailable
+		_, expected, e := r.migration(found)
+		if e != nil || checksum != expected {
+			return 0, fault.Unavailable
 		}
+		version = found
 	}
-	if err = r.checkStructure(ctx, db); err != nil {
+	if rows.Err() != nil || version == 0 {
+		return 0, fault.Unavailable
+	}
+	return version, nil
+}
+
+func (r *Repository) checkSchemaVersion(ctx context.Context, db queryer, expected int) error {
+	version, err := r.ledgerVersion(ctx, db)
+	if err != nil || version != expected {
+		return fault.Unavailable
+	}
+	if err = r.checkStructure(ctx, db, version); err != nil {
 		return err
 	}
 	if r.Backend == "sqlite" {
-		var fk int
-		if err = db.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&fk); err != nil || fk != 1 {
-			return organization.Unavailable
+		var enabled int
+		if err = db.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&enabled); err != nil || enabled != 1 {
+			return fault.Unavailable
 		}
-		rows, err = db.QueryContext(ctx, "PRAGMA foreign_key_check")
-		if err != nil {
-			return organization.Unavailable
+		rows, e := db.QueryContext(ctx, "PRAGMA foreign_key_check")
+		if e != nil {
+			return fault.Unavailable
 		}
 		invalid := rows.Next()
-		err = rows.Err()
+		e = rows.Err()
 		rows.Close()
-		if invalid || err != nil {
-			return organization.Unavailable
+		if invalid || e != nil {
+			return fault.Unavailable
 		}
 	}
 	return nil
-}
-
-var schemaProbes = []string{
-	"SELECT id,timezone,graph_revision FROM organization WHERE 1=0",
-	"SELECT org_id,auth_epoch FROM authorization_guard WHERE 1=0",
-	"SELECT org_id,id,active,auth_epoch FROM subject WHERE 1=0",
-	"SELECT token_hash,org_id,subject_id,subject_epoch,expires_at,idle_expires_at,mfa_until,revoked,csrf_hash,csrf_version FROM session WHERE 1=0",
-	"SELECT org_id,subject_id,capability,scope_kind,scope_id,employee_id FROM capability_assignment WHERE 1=0",
-	"SELECT id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required FROM access_grant WHERE 1=0",
-	"SELECT org_id,id,profile_head_id,profile_revision,valid_from,valid_to FROM employee WHERE 1=0",
-	"SELECT org_id,employee_id,id,record_id,version_id,object_kind,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes,created_at FROM encrypted_payload WHERE 1=0",
-	"SELECT org_id,employee_id,id,version_no,payload_id,supersedes_id,recorded_at FROM employee_profile_version WHERE 1=0",
-	"SELECT org_id,subject_id,operation,key,digest,digest_key_version,result_id,result_revision FROM command_receipt WHERE 1=0",
-	"SELECT id,org_id,subject_id,employee_id,operation,purpose,request_id,outcome,recorded_at FROM audit_event WHERE 1=0",
 }
 
 func safeError(err error) error {
@@ -233,13 +262,13 @@ func safeError(err error) error {
 	}
 	var se *sqlite.Error
 	if errors.As(err, &se) && (se.Code()&255 == 5 || se.Code()&255 == 6) {
-		return organization.Busy
+		return fault.Busy
 	}
 	var pe *pgconn.PgError
 	if errors.As(err, &pe) && (pe.Code == "55P03" || pe.Code == "57014" || pe.Code == "40001" || pe.Code == "40P01") {
-		return organization.Busy
+		return fault.Busy
 	}
-	return organization.Unavailable
+	return fault.Unavailable
 }
 func nullable(s string) any {
 	if s == "" {
@@ -258,7 +287,7 @@ func (t *dbTime) Scan(v any) error {
 	case time.Time:
 		t.Time = x.UTC()
 	default:
-		return organization.Unavailable
+		return fault.Unavailable
 	}
 	return nil
 }

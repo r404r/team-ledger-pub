@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/organization"
 )
 
@@ -27,7 +28,7 @@ func (r *Repository) WithTx(ctx context.Context, org string, fn func(organizatio
 			return safeError(e)
 		}
 		if n != 1 {
-			return organization.NotFound
+			return fault.NotFound
 		}
 	} else {
 		// Connection defaults also bound the guard lock; SET LOCAL cannot leak to the pool.
@@ -40,7 +41,7 @@ func (r *Repository) WithTx(ctx context.Context, org string, fn func(organizatio
 		var epoch int64
 		err = tx.QueryRowContext(ctx, "SELECT auth_epoch FROM authorization_guard WHERE org_id=$1 FOR UPDATE", org).Scan(&epoch)
 		if errors.Is(err, sql.ErrNoRows) {
-			return organization.NotFound
+			return fault.NotFound
 		}
 		if err != nil {
 			return safeError(err)
@@ -60,7 +61,7 @@ func (t *transaction) bindTime(at time.Time) any {
 }
 func (t *transaction) Create(ctx context.Context, e organization.Employee, v organization.Version) error {
 	if e.OrgID != t.org || v.OrgID != t.org || v.EmployeeID != e.ID || v.ID != e.HeadID || e.Revision != 1 || v.Number != 1 || v.SupersedesID != "" {
-		return organization.Invalid
+		return fault.Invalid
 	}
 	var to any
 	if e.Lifecycle.ValidTo != nil {
@@ -74,19 +75,19 @@ func (t *transaction) Create(ctx context.Context, e organization.Employee, v org
 }
 func (t *transaction) Replace(ctx context.Context, e organization.Employee, v organization.Version, expected int64) error {
 	if e.OrgID != t.org || v.OrgID != t.org || v.EmployeeID != e.ID || v.ID != e.HeadID || expected < 1 || expected == math.MaxInt64 || e.Revision != expected+1 || v.Number != e.Revision {
-		return organization.Invalid
+		return fault.Invalid
 	}
 	var head string
 	var revision int64
 	err := t.tx.QueryRowContext(ctx, t.sql("SELECT profile_head_id,profile_revision FROM employee WHERE org_id=? AND id=?", "SELECT profile_head_id,profile_revision FROM employee WHERE org_id=$1 AND id=$2 FOR UPDATE"), e.OrgID, e.ID).Scan(&head, &revision)
 	if errors.Is(err, sql.ErrNoRows) {
-		return organization.Conflict
+		return fault.Conflict
 	}
 	if err != nil {
 		return safeError(err)
 	}
 	if revision != expected || head != v.SupersedesID {
-		return organization.Conflict
+		return fault.Conflict
 	}
 	if err = t.insertVersion(ctx, v); err != nil {
 		return err
@@ -100,7 +101,7 @@ func (t *transaction) Replace(ctx context.Context, e organization.Employee, v or
 		return safeError(err)
 	}
 	if n != 1 {
-		return organization.Conflict
+		return fault.Conflict
 	}
 	return nil
 }
@@ -120,14 +121,14 @@ func (t *transaction) insertVersion(ctx context.Context, v organization.Version)
 func (t *transaction) SaveReceipt(ctx context.Context, org, subject, op, key string, r organization.Receipt) error {
 	rev, err := strconv.ParseInt(r.Result.Revision, 10, 64)
 	if org != t.org || err != nil || rev < 1 || strconv.FormatInt(rev, 10) != r.Result.Revision {
-		return organization.Invalid
+		return fault.Invalid
 	}
 	_, err = t.tx.ExecContext(ctx, t.sql("INSERT INTO command_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_id,result_revision) VALUES(?,?,?,?,?,1,?,?)", "INSERT INTO command_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_id,result_revision) VALUES($1,$2,$3,$4,$5,1,$6,$7)"), org, subject, op, key, r.Digest, r.Result.ID, rev)
 	return safeError(err)
 }
 func (t *transaction) Audit(ctx context.Context, a organization.Audit) error {
 	if a.OrgID != t.org {
-		return organization.AuditUnavailable
+		return fault.AuditUnavailable
 	}
 	return insertAudit(ctx, t.tx, t.backend, a)
 }
@@ -137,25 +138,26 @@ func insertAudit(ctx context.Context, db queryer, backend string, a organization
 	if backend == "sqlite" {
 		at = a.At.UTC().UnixMicro()
 	}
-	_, err := db.ExecContext(ctx, r.sql("INSERT INTO audit_event(id,org_id,subject_id,employee_id,operation,purpose,request_id,outcome,recorded_at) VALUES(?,?,?,?,?,?,?,?,?)", "INSERT INTO audit_event(id,org_id,subject_id,employee_id,operation,purpose,request_id,outcome,recorded_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)"), a.ID, nullable(a.OrgID), nullable(a.SubjectID), nullable(a.EmployeeID), a.Operation, a.Purpose, a.RequestID, a.Outcome, at)
+	_, err := db.ExecContext(ctx, r.sql("INSERT INTO audit_event(id,org_id,subject_id,employee_id,grant_id,operation,purpose,request_id,outcome,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?)", "INSERT INTO audit_event(id,org_id,subject_id,employee_id,grant_id,operation,purpose,request_id,outcome,recorded_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"), a.ID, nullable(a.OrgID), nullable(a.SubjectID), nullable(a.EmployeeID), nullable(a.GrantID), a.Operation, a.Purpose, a.RequestID, a.Outcome, at)
 	if err != nil {
-		return organization.AuditUnavailable
+		return fault.AuditUnavailable
 	}
 	return nil
 }
 func (r *Repository) AuditDenied(ctx context.Context, a organization.Audit) error {
 	a.EmployeeID = ""
+	a.GrantID = ""
 	a.Outcome = "denied"
 	tx, err := r.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return organization.AuditUnavailable
+		return fault.AuditUnavailable
 	}
 	defer tx.Rollback()
 	if err = insertAudit(ctx, tx, r.Backend, a); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
-		return organization.AuditUnavailable
+		return fault.AuditUnavailable
 	}
 	return nil
 }

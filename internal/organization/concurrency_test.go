@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/organization"
 	"github.com/r404r/team-ledger/internal/testsupport"
 )
@@ -58,7 +59,7 @@ func TestRevokeCommitPreventsInFlightSensitiveRelease(t *testing.T) {
 		}
 		select {
 		case out := <-done:
-			if !errors.Is(out.err, organization.Forbidden) || out.view.Profile != nil {
+			if !errors.Is(out.err, fault.Forbidden) || out.view.Profile != nil {
 				t.Fatal("revoke committed before release but in-flight read disclosed plaintext")
 			}
 		case <-ctx.Done():
@@ -100,7 +101,7 @@ func TestConcurrentCorrectionsFromSamePreparedRevisionHaveOneWinner(t *testing.T
 			case out := <-done:
 				if out.err == nil && out.result.Revision == "2" {
 					success++
-				} else if errors.Is(out.err, organization.Conflict) {
+				} else if errors.Is(out.err, fault.Conflict) {
 					conflict++
 				} else {
 					t.Fatal("concurrent correction returned unexpected safe result")

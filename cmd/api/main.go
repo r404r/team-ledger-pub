@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/r404r/team-ledger/internal/authz"
 	"github.com/r404r/team-ledger/internal/httpapi"
 	"github.com/r404r/team-ledger/internal/organization"
 	"github.com/r404r/team-ledger/internal/sensitive"
@@ -109,7 +110,12 @@ func run() error {
 		return e
 	}
 	defer clear(digest)
-	if bytes.Equal(csrf, digest) {
+	cursor, e := secret("CURSOR_KEY_FILE", 32)
+	if e != nil {
+		return e
+	}
+	defer clear(cursor)
+	if bytes.Equal(csrf, digest) || bytes.Equal(cursor, csrf) || bytes.Equal(cursor, digest) {
 		return errors.New("keys must be distinct")
 	}
 	tokenPath, e := required("KMS_TOKEN_FILE")
@@ -178,7 +184,8 @@ func run() error {
 		return errors.New("invalid database schema")
 	}
 	service := &organization.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, DigestKey: digest, Now: time.Now}
-	handler, e := httpapi.New(service, csrf, cfg["PUBLIC_ORIGIN"], cfg["WEB_DIR"])
+	grants := &authz.Service{Store: repo, DigestKey: digest, CursorKey: cursor, Now: time.Now}
+	handler, e := httpapi.New(service, grants, csrf, cfg["PUBLIC_ORIGIN"], cfg["WEB_DIR"])
 	if e != nil {
 		return e
 	}

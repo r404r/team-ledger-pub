@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/r404r/team-ledger/internal/authz"
 	"github.com/r404r/team-ledger/internal/httpapi"
 	"github.com/r404r/team-ledger/internal/organization"
 	"github.com/r404r/team-ledger/internal/sensitive"
@@ -28,6 +29,10 @@ type Credential struct {
 type Fixture struct {
 	Repo                                  *store.Repository
 	Service                               *organization.Service
+	Authz                                 *authz.Service
+	AuthorityIDs                          map[string]string
+	Manager, Reader, Approver             Credential
+	CursorKey                             []byte
 	KMS                                   *VaultFixture
 	Server                                *httptest.Server
 	OrgID, OtherOrgID, DSN, Backend       string
@@ -72,6 +77,23 @@ func NewFixture(ctx context.Context, backend, dsn string) (_ *Fixture, err error
 	if err != nil {
 		return nil, err
 	}
+	f.CursorKey, err = randomBytes(32)
+	if err != nil {
+		return nil, err
+	}
+	f.Manager, err = credential(f.CSRFKey)
+	if err != nil {
+		return nil, err
+	}
+	f.Reader, err = credential(f.CSRFKey)
+	if err != nil {
+		return nil, err
+	}
+	f.Approver, err = credential(f.CSRFKey)
+	if err != nil {
+		return nil, err
+	}
+	f.AuthorityIDs = make(map[string]string, 4)
 	f.Owner, err = credential(f.CSRFKey)
 	if err != nil {
 		return nil, err
@@ -100,6 +122,7 @@ func NewFixture(ctx context.Context, backend, dsn string) (_ *Fixture, err error
 		return nil, err
 	}
 	f.Service = &organization.Service{Store: f.Repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, DigestKey: f.DigestKey, Now: func() time.Time { return f.Now }}
+	f.Authz = &authz.Service{Store: f.Repo, DigestKey: f.DigestKey, CursorKey: f.CursorKey, Now: func() time.Time { return f.Now }}
 	return f, nil
 }
 func (f *Fixture) Close() {
@@ -114,6 +137,7 @@ func (f *Fixture) Close() {
 	}
 	clear(f.CSRFKey)
 	clear(f.DigestKey)
+	clear(f.CursorKey)
 }
 func (f *Fixture) seed(ctx context.Context) error {
 	tx, err := f.Repo.DB.BeginTx(ctx, nil)
@@ -141,13 +165,16 @@ func (f *Fixture) seed(ctx context.Context) error {
 		c    Credential
 		org  string
 		mode int
-	}{{f.Owner, f.OrgID, 2}, {f.Observer, f.OrgID, 1}, {f.Stranger, f.OrgID, 0}, {f.OtherOwner, f.OtherOrgID, 2}} {
+	}{{f.Owner, f.OrgID, 2}, {f.Observer, f.OrgID, 1}, {f.Stranger, f.OrgID, 0}, {f.OtherOwner, f.OtherOrgID, 2}, {f.Manager, f.OrgID, -1}, {f.Reader, f.OrgID, 0}, {f.Approver, f.OrgID, -1}} {
 		if err = exec("INSERT INTO subject(org_id,id,active,auth_epoch) VALUES(?,?,1,1)", "INSERT INTO subject(org_id,id,active,auth_epoch) VALUES($1,$2,true,1)", entry.org, entry.c.SubjectID); err != nil {
 			return err
 		}
 		csrfHash := sha256.Sum256([]byte(entry.c.CSRF))
 		if err = exec("INSERT INTO session(token_hash,org_id,subject_id,subject_epoch,expires_at,idle_expires_at,mfa_until,revoked,csrf_hash,csrf_version) VALUES(?,?,?,?,?,?,?,0,?,1)", "INSERT INTO session(token_hash,org_id,subject_id,subject_epoch,expires_at,idle_expires_at,mfa_until,revoked,csrf_hash,csrf_version) VALUES($1,$2,$3,$4,$5,$6,$7,false,$8,1)", entry.c.Hash, entry.org, entry.c.SubjectID, int64(1), f.Repo.BindTime(f.Now.Add(8*time.Hour)), f.Repo.BindTime(f.Now.Add(30*time.Minute)), f.Repo.BindTime(f.Now.Add(10*time.Minute)), csrfHash[:]); err != nil {
 			return err
+		}
+		if entry.mode == -1 {
+			continue
 		}
 		for _, cap := range []string{"organization.read", "organization.write", "pii.read", "pii.write"} {
 			if err = exec("INSERT INTO capability_assignment(org_id,subject_id,capability,scope_kind,scope_id) VALUES(?,?,?,'org',?)", "INSERT INTO capability_assignment(org_id,subject_id,capability,scope_kind,scope_id) VALUES($1,$2,$3,'org',$4)", entry.org, entry.c.SubjectID, cap, entry.org); err != nil {
@@ -163,6 +190,23 @@ func (f *Fixture) seed(ctx context.Context) error {
 			if err = exec("INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required) VALUES(?,?,?,?,?,'org',?,'organization_management',?,?,0,0,0)", "INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required) VALUES($1,$2,$3,$4,$5,'org',$6,'organization_management',$7,$8,false,false,false)", value.NewID(), entry.org, entry.c.SubjectID, cap, category, entry.org, f.Repo.BindTime(f.Now.Add(-time.Hour)), f.Repo.BindTime(f.Now.Add(24*time.Hour))); err != nil {
 				return err
 			}
+		}
+	}
+	if err = exec("INSERT INTO capability_assignment(org_id,subject_id,capability,scope_kind,scope_id) VALUES(?,?,'access_grant.manage','org',?)", "INSERT INTO capability_assignment(org_id,subject_id,capability,scope_kind,scope_id) VALUES($1,$2,'access_grant.manage','org',$3)", f.OrgID, f.Manager.SubjectID, f.OrgID); err != nil {
+		return err
+	}
+	if err = exec("INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required) VALUES(?,?,?,'access_grant.manage','audit','org',?,'security_administration',?,?,0,0,1)", "INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required) VALUES($1,$2,$3,'access_grant.manage','audit','org',$4,'security_administration',$5,$6,false,false,true)", value.NewID(), f.OrgID, f.Manager.SubjectID, f.OrgID, f.Repo.BindTime(f.Now.Add(-time.Hour)), f.Repo.BindTime(f.Now.Add(24*time.Hour))); err != nil {
+		return err
+	}
+	for _, cap := range []string{"organization.read", "organization.write", "pii.read", "pii.write"} {
+		category := "metadata"
+		if strings.HasPrefix(cap, "pii.") {
+			category = "pii"
+		}
+		id := value.NewID()
+		f.AuthorityIDs[cap] = id
+		if err = exec("INSERT INTO delegation_authority(id,org_id,manager_subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,mfa_required,approved_by,approved_at,policy_version) VALUES(?,?,?,?,?,'org',?,'organization_management',?,?,1,?,?,?)", "INSERT INTO delegation_authority(id,org_id,manager_subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,mfa_required,approved_by,approved_at,policy_version) VALUES($1,$2,$3,$4,$5,'org',$6,'organization_management',$7,$8,true,$9,$10,$11)", id, f.OrgID, f.Manager.SubjectID, cap, category, f.OrgID, f.Repo.BindTime(f.Now.Add(-time.Hour)), f.Repo.BindTime(f.Now.Add(24*time.Hour)), f.Approver.SubjectID, f.Repo.BindTime(f.Now.Add(-2*time.Hour)), "fixture-policy-1"); err != nil {
+			return err
 		}
 	}
 	return tx.Commit()
@@ -213,7 +257,7 @@ func NewHarness(t testing.TB, backend string) *Fixture {
 		t.Fatal(err)
 	}
 	server := httptest.NewUnstartedServer(nil)
-	handler, err := httpapi.New(f.Service, f.CSRFKey, "https://"+server.Listener.Addr().String(), dir)
+	handler, err := httpapi.New(f.Service, f.Authz, f.CSRFKey, "https://"+server.Listener.Addr().String(), dir)
 	if err != nil {
 		server.Close()
 		t.Fatal(err)

@@ -39,6 +39,11 @@ func TestAPIStartupRequiresProtectedCredentialFiles(t *testing.T) {
 				{"owner_read_write", "", 0600, true},
 				{"public_csrf", "csrf.key", 0644, false},
 				{"group_digest", "digest.key", 0640, false},
+				{"public_cursor", "cursor.key", 0644, false},
+				{"missing_cursor", "cursor.key", 0600, false},
+				{"nonregular_cursor", "cursor.key", 0600, false},
+				{"cursor_equals_csrf", "cursor.key", 0600, false},
+				{"cursor_equals_digest", "cursor.key", 0600, false},
 				{"public_kms_token", "kms.token", 0666, false},
 				{"public_tls_private_key", "api.key", 0644, false},
 				{"public_read_only_ca", "cert.pem", 0444, true},
@@ -55,8 +60,23 @@ func TestAPIStartupRequiresProtectedCredentialFiles(t *testing.T) {
 					}
 					defer clear(key)
 					cert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Certificate[0]})
-					files := map[string][]byte{"csrf.key": f.CSRFKey, "digest.key": f.DigestKey, "kms.token": []byte(f.KMS.Token), "api.key": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: key}), "cert.pem": cert, "index.html": []byte("<!doctype html><title>Fixture</title>")}
+					files := map[string][]byte{"csrf.key": f.CSRFKey, "digest.key": f.DigestKey, "cursor.key": f.CursorKey, "kms.token": []byte(f.KMS.Token), "api.key": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: key}), "cert.pem": cert, "index.html": []byte("<!doctype html><title>Fixture</title>")}
 					for name, data := range files {
+						if name == "cursor.key" {
+							switch tc.name {
+							case "missing_cursor":
+								continue
+							case "nonregular_cursor":
+								if err := os.Mkdir(filepath.Join(dir, name), 0700); err != nil {
+									t.Fatal(err)
+								}
+								continue
+							case "cursor_equals_csrf":
+								data = f.CSRFKey
+							case "cursor_equals_digest":
+								data = f.DigestKey
+							}
+						}
 						mode := os.FileMode(0600)
 						if tc.unsafeFile == "" {
 							mode = tc.mode
@@ -89,6 +109,7 @@ func TestAPIStartupRequiresProtectedCredentialFiles(t *testing.T) {
 					defer cancel()
 					command := exec.CommandContext(ctx, executable, "-test.run=^TestAPIStartupChildProcess$")
 					env := map[string]string{"BACKEND": backend, "DSN": f.DSN, "LISTEN": address, "PUBLIC_ORIGIN": origin, "TLS_CERT_FILE": filepath.Join(dir, "cert.pem"), "TLS_KEY_FILE": filepath.Join(dir, "api.key"), "CSRF_KEY_FILE": filepath.Join(dir, "csrf.key"), "DIGEST_KEY_FILE": filepath.Join(dir, "digest.key"), "KMS_URL": f.KMS.Server.URL, "KMS_KEY": "dev002-pii", "KMS_TOKEN_FILE": filepath.Join(dir, "kms.token"), "KMS_CA_FILE": filepath.Join(dir, "cert.pem"), "WEB_DIR": dir, "TEST_API_CHILD": "1"}
+					env["CURSOR_KEY_FILE"] = filepath.Join(dir, "cursor.key")
 					command.Env = os.Environ()
 					for name, value := range env {
 						command.Env = append(command.Env, "TEAMLEDGER_"+name+"="+value)
@@ -127,7 +148,7 @@ func TestAPIStartupRequiresProtectedCredentialFiles(t *testing.T) {
 							if err == nil || command.ProcessState.ExitCode() == 0 {
 								t.Fatal("insecure file must fail startup")
 							}
-							for _, private := range []string{dir, f.DSN, f.KMS.Token, string(f.CSRFKey), string(f.DigestKey), "-----BEGIN PRIVATE KEY-----"} {
+							for _, private := range []string{dir, f.DSN, f.KMS.Token, string(f.CSRFKey), string(f.DigestKey), string(f.CursorKey), "-----BEGIN PRIVATE KEY-----"} {
 								if strings.Contains(output.String(), private) {
 									t.Fatal("startup error disclosed private configuration")
 								}

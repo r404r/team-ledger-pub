@@ -29,7 +29,7 @@ func ScopeMatches(kind, id, org, employee string) bool {
 }
 
 func (s Snapshot) Allows(capability, category, employee, purpose string, now time.Time) bool {
-	if !s.Valid(now) || purpose != "organization_management" {
+	if !s.Valid(now) || !SupportedPair(capability, category, purpose) || (capability == "access_grant.manage" && !now.Before(s.MFAUntil)) {
 		return false
 	}
 	assigned := false
@@ -48,4 +48,52 @@ func (s Snapshot) Allows(capability, category, employee, purpose string, now tim
 		}
 	}
 	return false
+}
+
+func SupportedPair(capability, category, purpose string) bool {
+	switch capability {
+	case "organization.read", "organization.write":
+		return category == "metadata" && purpose == "organization_management"
+	case "pii.read", "pii.write":
+		return category == "pii" && purpose == "organization_management"
+	case "access_grant.manage":
+		return category == "audit" && purpose == ManagementPurpose
+	}
+	return false
+}
+
+func Covers(outer Scope, inner Scope, org string) bool {
+	return outer.Kind == "org" && outer.ID == org && (inner.Kind == "org" && inner.ID == org || inner.Kind == "employee") ||
+		outer.Kind == "employee" && inner.Kind == "employee" && outer.ID == inner.ID
+}
+
+func (s Snapshot) ManagedScopes(now time.Time) []Scope {
+	result := make([]Scope, 0)
+	if !s.Valid(now) || !now.Before(s.MFAUntil) {
+		return result
+	}
+	seen := map[Scope]bool{}
+	for _, a := range s.Assignments {
+		if a.Capability != "access_grant.manage" {
+			continue
+		}
+		for _, g := range s.Grants {
+			if g.Capability != "access_grant.manage" || g.Category != "audit" || g.Purpose != ManagementPurpose ||
+				g.Revoked || g.RelationBound || now.Before(g.ValidFrom) || !now.Before(g.ExpiresAt) {
+				continue
+			}
+			scope := Scope{a.ScopeKind, a.ScopeID}
+			other := Scope{g.ScopeKind, g.ScopeID}
+			if Covers(scope, other, s.OrgID) {
+				scope = other
+			} else if !Covers(other, scope, s.OrgID) {
+				continue
+			}
+			if !seen[scope] {
+				seen[scope] = true
+				result = append(result, scope)
+			}
+		}
+	}
+	return result
 }

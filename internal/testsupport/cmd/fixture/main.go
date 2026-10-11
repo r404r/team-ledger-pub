@@ -140,7 +140,7 @@ func run() error {
 		name string
 		data []byte
 	}{
-		{"csrf.key", f.CSRFKey}, {"digest.key", f.DigestKey}, {"kms.token", []byte(f.KMS.Token)},
+		{"csrf.key", f.CSRFKey}, {"digest.key", f.DigestKey}, {"cursor.key", f.CursorKey}, {"kms.token", []byte(f.KMS.Token)},
 		{"kms-ca.pem", ca}, {"api-cert.pem", ca}, {"api-key.pem", pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: key})},
 	}
 	for _, file := range files {
@@ -153,7 +153,7 @@ func run() error {
 		{"TLS_CERT_FILE", filepath.Join(*directory, "api-cert.pem")}, {"TLS_KEY_FILE", filepath.Join(*directory, "api-key.pem")},
 		{"KMS_URL", f.KMS.Server.URL}, {"KMS_KEY", "dev002-pii"}, {"KMS_TOKEN_FILE", filepath.Join(*directory, "kms.token")},
 		{"KMS_CA_FILE", filepath.Join(*directory, "kms-ca.pem")}, {"CSRF_KEY_FILE", filepath.Join(*directory, "csrf.key")},
-		{"DIGEST_KEY_FILE", filepath.Join(*directory, "digest.key")}, {"WEB_DIR", *web},
+		{"DIGEST_KEY_FILE", filepath.Join(*directory, "digest.key")}, {"CURSOR_KEY_FILE", filepath.Join(*directory, "cursor.key")}, {"WEB_DIR", *web},
 	}
 	var env strings.Builder
 	for _, entry := range config {
@@ -162,7 +162,7 @@ func run() error {
 	if err = privateFile(filepath.Join(*directory, "api.env"), []byte(env.String())); err != nil {
 		return err
 	}
-	descriptor, err := json.Marshal(map[string]string{"backend": *backend, "origin": origin, "org_id": f.OrgID, "owner_token": f.Owner.Token, "observer_token": f.Observer.Token, "stranger_token": f.Stranger.Token})
+	descriptor, err := json.Marshal(map[string]any{"backend": *backend, "origin": origin, "org_id": f.OrgID, "owner_token": f.Owner.Token, "observer_token": f.Observer.Token, "stranger_token": f.Stranger.Token, "manager_subject_id": f.Manager.SubjectID, "reader_subject_id": f.Reader.SubjectID, "approved_by": f.Approver.SubjectID, "authority_ids": f.AuthorityIDs, "manager_token": f.Manager.Token, "manager_csrf": f.Manager.CSRF, "reader_token": f.Reader.Token, "reader_csrf": f.Reader.CSRF})
 	if err != nil {
 		return err
 	}

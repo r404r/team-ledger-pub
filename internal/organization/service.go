@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/r404r/team-ledger/internal/authz"
+	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/sensitive"
 	"github.com/r404r/team-ledger/internal/value"
 )
@@ -35,28 +36,28 @@ func (s *Service) clock() time.Time {
 
 func (s *Service) Session(ctx context.Context, request Request, employee string) (authz.Snapshot, error) {
 	if len(request.TokenHash) != 32 || s.Store == nil {
-		return authz.Snapshot{}, Unauthenticated
+		return authz.Snapshot{}, fault.Unauthenticated
 	}
 	if employee != "" && !value.ValidID(employee) {
-		return authz.Snapshot{}, Invalid
+		return authz.Snapshot{}, fault.Invalid
 	}
 	snapshot, err := s.Store.Security(ctx, request.TokenHash, "", employee)
 	if err != nil {
 		return authz.Snapshot{}, err
 	}
 	if !snapshot.Valid(s.clock()) {
-		return authz.Snapshot{}, Unauthenticated
+		return authz.Snapshot{}, fault.Unauthenticated
 	}
 	if employee != "" {
 		if !snapshot.Allows("organization.read", "metadata", employee, "organization_management", s.clock()) {
-			return authz.Snapshot{}, s.denied(ctx, request, snapshot, "OP-SEC-01", NotFound)
+			return authz.Snapshot{}, s.denied(ctx, request, snapshot, "OP-SEC-01", fault.NotFound)
 		}
 		object, err := s.Store.Employee(ctx, employee)
 		if err != nil {
 			return authz.Snapshot{}, s.denied(ctx, request, snapshot, "OP-SEC-01", err)
 		}
 		if object.OrgID != snapshot.OrgID {
-			return authz.Snapshot{}, s.denied(ctx, request, snapshot, "OP-SEC-01", NotFound)
+			return authz.Snapshot{}, s.denied(ctx, request, snapshot, "OP-SEC-01", fault.NotFound)
 		}
 	}
 	return snapshot, nil
@@ -68,7 +69,7 @@ func (s *Service) Create(ctx context.Context, request Request, org string, comma
 		return Result{}, s.denied(ctx, request, snapshot, "OP-ORG-05", err)
 	}
 	if !value.ValidID(org) || !value.ValidID(request.Key) || !validProfile(command.Profile) || !validLifecycle(command.Lifecycle) {
-		return Result{}, Invalid
+		return Result{}, fault.Invalid
 	}
 	digest, err := s.digest(request, snapshot, "OP-ORG-05", org, command)
 	if err != nil {
@@ -84,12 +85,15 @@ func (s *Service) Create(ctx context.Context, request Request, org string, comma
 	}
 	var result Result
 	err = s.Store.WithTx(ctx, org, func(tx Tx) error {
+		if err := tx.LockSubjects(ctx, org, []string{snapshot.SubjectID}); err != nil {
+			return err
+		}
 		current, err := s.authorize(ctx, tx, request, org, "", "OP-ORG-05")
 		if err != nil {
 			return err
 		}
 		if current.AuthEpoch != snapshot.AuthEpoch {
-			return Forbidden
+			return fault.Forbidden
 		}
 		if previous, found, err := tx.Receipt(ctx, org, current.SubjectID, "OP-ORG-05", request.Key); err != nil {
 			return err
@@ -117,7 +121,7 @@ func (s *Service) Read(ctx context.Context, request Request, id, asOf string, in
 		return View{}, err
 	}
 	if !value.ValidID(id) || !value.ValidDate(asOf) {
-		return View{}, Invalid
+		return View{}, fault.Invalid
 	}
 	employee, err := s.Store.Employee(ctx, id)
 	if err != nil {
@@ -129,7 +133,7 @@ func (s *Service) Read(ctx context.Context, request Request, id, asOf string, in
 	}
 	zone, err := time.LoadLocation(snapshot.Timezone)
 	if err != nil {
-		return View{}, Unavailable
+		return View{}, fault.Unavailable
 	}
 	view := View{ID: id, OrgID: employee.OrgID, Lifecycle: employee.Lifecycle, AsOf: asOf, AuthorizationDate: s.clock().In(zone).Format("2006-01-02")}
 	if !includeProfile || !snapshot.Allows("pii.read", "pii", id, request.Purpose, s.clock()) {
@@ -142,27 +146,30 @@ func (s *Service) Read(ctx context.Context, request Request, id, asOf string, in
 	binding := profileBinding(employee, version.ID)
 	plain, err := s.Cipher.Open(ctx, binding, version.Envelope)
 	if err != nil {
-		return View{}, Unavailable
+		return View{}, fault.Unavailable
 	}
 	defer clear(plain)
 	var payload ProfilePayload
 	if json.Unmarshal(plain, &payload) != nil || !validProfile(payload.Profile) || len(payload.EditReason) > 4096 {
-		return View{}, Unavailable
+		return View{}, fault.Unavailable
 	}
 	err = s.Store.WithTx(ctx, employee.OrgID, func(tx Tx) error {
+		if err := tx.LockSubjects(ctx, employee.OrgID, []string{snapshot.SubjectID}); err != nil {
+			return err
+		}
 		current, err := s.authorize(ctx, tx, request, employee.OrgID, id, "OP-ORG-06")
 		if err != nil {
 			return err
 		}
 		if !current.Allows("pii.read", "pii", id, request.Purpose, s.clock()) || current.AuthEpoch != snapshot.AuthEpoch {
-			return Forbidden
+			return fault.Forbidden
 		}
 		latest, err := tx.Employee(ctx, id)
 		if err != nil {
 			return err
 		}
 		if latest.OrgID != employee.OrgID || latest.Revision != employee.Revision || latest.HeadID != employee.HeadID {
-			return Conflict
+			return fault.Conflict
 		}
 		return tx.Audit(ctx, s.audit(request, current, id, "OP-ORG-06", "allowed"))
 	})
@@ -178,7 +185,7 @@ func (s *Service) Update(ctx context.Context, request Request, id string, comman
 		return Result{}, err
 	}
 	if !value.ValidID(id) || !value.ValidID(request.Key) {
-		return Result{}, Invalid
+		return Result{}, fault.Invalid
 	}
 	employee, err := s.Store.Employee(ctx, id)
 	if err != nil {
@@ -190,7 +197,7 @@ func (s *Service) Update(ctx context.Context, request Request, id string, comman
 	}
 	expected, valid := value.Revision(command.ExpectedRevision)
 	if !valid || !validProfile(command.Profile) || !utf8.ValidString(command.EditReason) || strings.TrimSpace(command.EditReason) == "" || len(command.EditReason) > 4096 {
-		return Result{}, Invalid
+		return Result{}, fault.Invalid
 	}
 	digest, err := s.digest(request, snapshot, "OP-ORG-08", id, command)
 	if err != nil {
@@ -200,10 +207,10 @@ func (s *Service) Update(ctx context.Context, request Request, id string, comman
 		return result, s.denied(ctx, request, snapshot, "OP-ORG-08", err)
 	}
 	if employee.Revision != expected {
-		return Result{}, Conflict
+		return Result{}, fault.Conflict
 	}
 	if expected == int64(^uint64(0)>>1) {
-		return Result{}, Unavailable
+		return Result{}, fault.Unavailable
 	}
 	next := employee
 	next.Revision++
@@ -214,12 +221,15 @@ func (s *Service) Update(ctx context.Context, request Request, id string, comman
 	version.SupersedesID = employee.HeadID
 	var result Result
 	err = s.Store.WithTx(ctx, employee.OrgID, func(tx Tx) error {
+		if err := tx.LockSubjects(ctx, employee.OrgID, []string{snapshot.SubjectID}); err != nil {
+			return err
+		}
 		current, err := s.authorize(ctx, tx, request, employee.OrgID, id, "OP-ORG-08")
 		if err != nil {
 			return err
 		}
 		if current.AuthEpoch != snapshot.AuthEpoch {
-			return Forbidden
+			return fault.Forbidden
 		}
 		if previous, found, err := tx.Receipt(ctx, employee.OrgID, current.SubjectID, "OP-ORG-08", request.Key); err != nil {
 			return err
@@ -232,7 +242,7 @@ func (s *Service) Update(ctx context.Context, request Request, id string, comman
 			return err
 		}
 		if latest.OrgID != employee.OrgID || latest.Revision != expected || latest.HeadID != employee.HeadID {
-			return Conflict
+			return fault.Conflict
 		}
 		next.HeadID = version.ID
 		if err := tx.Replace(ctx, next, version, expected); err != nil {
@@ -252,7 +262,7 @@ func (s *Service) Update(ctx context.Context, request Request, id string, comman
 
 func (s *Service) authorize(ctx context.Context, reader Reader, request Request, org, employee, operation string) (authz.Snapshot, error) {
 	if len(request.TokenHash) != 32 || reader == nil {
-		return authz.Snapshot{}, Unauthenticated
+		return authz.Snapshot{}, fault.Unauthenticated
 	}
 	snapshot, err := reader.Security(ctx, request.TokenHash, "", employee)
 	if err != nil {
@@ -260,37 +270,37 @@ func (s *Service) authorize(ctx context.Context, reader Reader, request Request,
 	}
 	now := s.clock()
 	if !snapshot.Valid(now) {
-		return snapshot, Unauthenticated
+		return snapshot, fault.Unauthenticated
 	}
 	if snapshot.OrgID != org {
-		return snapshot, NotFound
+		return snapshot, fault.NotFound
 	}
 	metadata := snapshot.Allows("organization.read", "metadata", employee, request.Purpose, now)
 	pii := snapshot.Allows("pii.read", "pii", employee, request.Purpose, now)
 	switch operation {
 	case "OP-ORG-06":
 		if !metadata {
-			return snapshot, NotFound
+			return snapshot, fault.NotFound
 		}
 	case "OP-ORG-05":
 		if !metadata {
-			return snapshot, NotFound
+			return snapshot, fault.NotFound
 		}
 		if !snapshot.Allows("organization.write", "metadata", employee, request.Purpose, now) || !pii || !snapshot.Allows("pii.write", "pii", employee, request.Purpose, now) {
-			return snapshot, Forbidden
+			return snapshot, fault.Forbidden
 		}
 	case "OP-ORG-08":
 		if !pii {
 			if metadata {
-				return snapshot, Forbidden
+				return snapshot, fault.Forbidden
 			}
-			return snapshot, NotFound
+			return snapshot, fault.NotFound
 		}
 		if !snapshot.Allows("pii.write", "pii", employee, request.Purpose, now) {
-			return snapshot, Forbidden
+			return snapshot, fault.Forbidden
 		}
 	default:
-		return snapshot, Forbidden
+		return snapshot, fault.Forbidden
 	}
 	return snapshot, nil
 }
@@ -299,13 +309,13 @@ func (s *Service) prepare(ctx context.Context, employee Employee, profile Profil
 	payload, err := json.Marshal(ProfilePayload{Profile: profile, EditReason: reason})
 	if err != nil || len(payload) > 16<<10 {
 		clear(payload)
-		return Version{}, Invalid
+		return Version{}, fault.Invalid
 	}
 	defer clear(payload)
 	version := Version{ID: value.NewID(), EmployeeID: employee.ID, OrgID: employee.OrgID, Number: employee.Revision, RecordedAt: s.clock()}
 	version.Envelope, err = s.Cipher.Seal(ctx, profileBinding(employee, version.ID), payload)
 	if err != nil {
-		return Version{}, Unavailable
+		return Version{}, fault.Unavailable
 	}
 	return version, nil
 }
@@ -316,11 +326,11 @@ func profileBinding(employee Employee, version string) sensitive.Context {
 
 func (s *Service) digest(request Request, snapshot authz.Snapshot, operation, object string, command any) ([]byte, error) {
 	if len(s.DigestKey) != 32 {
-		return nil, Unavailable
+		return nil, fault.Unavailable
 	}
 	data, err := json.Marshal(command)
 	if err != nil {
-		return nil, Invalid
+		return nil, fault.Invalid
 	}
 	defer clear(data)
 	mac := hmac.New(sha256.New, s.DigestKey)
@@ -344,6 +354,9 @@ func (s *Service) replay(ctx context.Context, request Request, snapshot authz.Sn
 	}
 	var result Result
 	err = s.Store.WithTx(ctx, snapshot.OrgID, func(tx Tx) error {
+		if err := tx.LockSubjects(ctx, snapshot.OrgID, []string{snapshot.SubjectID}); err != nil {
+			return err
+		}
 		current, err := s.authorize(ctx, tx, request, snapshot.OrgID, employee, operation)
 		if err != nil {
 			return err
@@ -353,7 +366,7 @@ func (s *Service) replay(ctx context.Context, request Request, snapshot authz.Sn
 			return err
 		}
 		if !exists {
-			return Unavailable
+			return fault.Unavailable
 		}
 		result, err = confirmReceipt(receipt, digest)
 		return err
@@ -366,7 +379,7 @@ func (s *Service) replay(ctx context.Context, request Request, snapshot authz.Sn
 
 func confirmReceipt(receipt Receipt, digest []byte) (Result, error) {
 	if subtle.ConstantTimeCompare(receipt.Digest, digest) != 1 {
-		return Result{}, Mismatch
+		return Result{}, fault.Mismatch
 	}
 	return receipt.Result, nil
 }
@@ -393,7 +406,7 @@ func (s *Service) audit(request Request, snapshot authz.Snapshot, employee, oper
 	return Audit{ID: value.NewID(), OrgID: snapshot.OrgID, SubjectID: snapshot.SubjectID, EmployeeID: employee, Operation: operation, Purpose: purpose, RequestID: request.RequestID, Outcome: outcome, At: s.clock()}
 }
 func (s *Service) denied(ctx context.Context, request Request, snapshot authz.Snapshot, operation string, err error) error {
-	if err != nil && (errors.Is(err, NotFound) || errors.Is(err, Forbidden) || errors.Is(err, Unauthenticated)) && s.Store != nil {
+	if err != nil && (errors.Is(err, fault.NotFound) || errors.Is(err, fault.Forbidden) || errors.Is(err, fault.Unauthenticated)) && s.Store != nil {
 		if auditErr := s.Store.AuditDenied(ctx, s.audit(request, snapshot, "", operation, "denied")); auditErr != nil {
 			id := request.RequestID
 			if !value.ValidID(id) {

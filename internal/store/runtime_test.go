@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/organization"
 	"github.com/r404r/team-ledger/internal/store"
 	"github.com/r404r/team-ledger/internal/testsupport"
@@ -126,7 +127,7 @@ func TestRuntimeSchemaDriftFailsStartupWithoutRepairingFacts(t *testing.T) {
 						}
 					} else {
 						var checksum string
-						if err := startup.DB.QueryRowContext(ctx, "SELECT checksum FROM schema_version").Scan(&checksum); err != nil || checksum != "SYNTHETIC_RUNTIME_ALTERED_LEDGER" {
+						if err := startup.DB.QueryRowContext(ctx, "SELECT checksum FROM schema_version WHERE version=1").Scan(&checksum); err != nil || checksum != "SYNTHETIC_RUNTIME_ALTERED_LEDGER" {
 							t.Fatal("failed startup/migration must not overwrite the altered ledger")
 						}
 					}
@@ -253,7 +254,7 @@ func TestRuntimeHeldAuthorizationWriterReturnsSafeBusyBeforeCallback(t *testing.
 					Operation: "OP-ORG-08", Purpose: "organization_management", RequestID: value.NewID(), Outcome: "allowed", At: f.Now,
 				})
 			})
-			if !errors.Is(err, organization.Busy) || err.Error() != "UNAVAILABLE" || organization.Busy.Status != 503 || organization.Busy.Reason != "WRITE_BUSY" {
+			if !errors.Is(err, fault.Busy) || err.Error() != "UNAVAILABLE" || fault.Busy.Status != 503 || fault.Busy.Reason != "WRITE_BUSY" {
 				t.Fatalf("held guard must return the safe write-busy fault, not driver details: %v", err)
 			}
 			if blocked.Err() != nil {
@@ -331,7 +332,7 @@ func runtimeForeignKey(t *testing.T, backend string, err error) {
 
 func runtimeUnavailable(t *testing.T, err error) {
 	t.Helper()
-	if !errors.Is(err, organization.Unavailable) || err.Error() != "UNAVAILABLE" {
+	if !errors.Is(err, fault.Unavailable) || err.Error() != "UNAVAILABLE" {
 		t.Fatalf("schema drift must fail closed with a safe unavailable fault: %v", err)
 	}
 }
@@ -347,6 +348,7 @@ func runtimeFacts(t *testing.T, ctx context.Context, repo *store.Repository) map
 		{"capability_assignment", "org_id,subject_id,capability,scope_kind,scope_id"}, {"access_grant", "id"},
 		{"encrypted_payload", "org_id,employee_id,id"}, {"employee_profile_version", "org_id,employee_id,id"},
 		{"command_receipt", "org_id,subject_id,operation,key"}, {"audit_event", "id"},
+		{"delegation_authority", "id"}, {"grant_command_receipt", "org_id,subject_id,operation,key"},
 	} {
 		rows, err := repo.DB.QueryContext(ctx, "SELECT * FROM "+table.name+" ORDER BY "+table.order)
 		if err != nil {
