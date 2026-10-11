@@ -41,8 +41,8 @@ func (r reader) Security(ctx context.Context, hash []byte, org, employee string)
 	s.IdleExpiresAt = idle.Time
 	s.MFAUntil = mfa.Time
 	rows, err := r.db.QueryContext(ctx, r.sql(
-		"SELECT capability,scope_kind,scope_id FROM capability_assignment WHERE org_id=? AND subject_id=? AND (capability='access_grant.manage' OR (scope_kind='org' AND scope_id=?) OR (scope_kind='employee' AND scope_id=? AND employee_id=?)) LIMIT 1001",
-		"SELECT capability,scope_kind,scope_id FROM capability_assignment WHERE org_id=$1 AND subject_id=$2 AND (capability='access_grant.manage' OR (scope_kind='org' AND scope_id=$3) OR (scope_kind='employee' AND scope_id=$4 AND employee_id=$5)) LIMIT 1001"), s.OrgID, s.SubjectID, s.OrgID, employee, employee)
+		"SELECT capability,scope_kind,scope_id FROM capability_assignment WHERE org_id=? AND subject_id=? LIMIT 1001",
+		"SELECT capability,scope_kind,scope_id FROM capability_assignment WHERE org_id=$1 AND subject_id=$2 LIMIT 1001"), s.OrgID, s.SubjectID)
 	if err != nil {
 		return authz.Snapshot{}, safeError(err)
 	}
@@ -64,20 +64,29 @@ func (r reader) Security(ctx context.Context, hash []byte, org, employee string)
 		return authz.Snapshot{}, safeError(err)
 	}
 	rows, err = r.db.QueryContext(ctx, r.sql(
-		"SELECT capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required FROM access_grant WHERE org_id=? AND subject_id=? AND (capability='access_grant.manage' OR (scope_kind='org' AND scope_id=?) OR (scope_kind='employee' AND scope_id=? AND employee_id=?)) LIMIT 1001",
-		"SELECT capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required FROM access_grant WHERE org_id=$1 AND subject_id=$2 AND (capability='access_grant.manage' OR (scope_kind='org' AND scope_id=$3) OR (scope_kind='employee' AND scope_id=$4 AND employee_id=$5)) LIMIT 1001"), s.OrgID, s.SubjectID, s.OrgID, employee, employee)
+		"SELECT capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required,relation_kind,reporting_line_id,membership_id,relation_actor_employee_id FROM access_grant WHERE org_id=? AND subject_id=? LIMIT 1001",
+		"SELECT capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required,relation_kind,reporting_line_id,membership_id,relation_actor_employee_id FROM access_grant WHERE org_id=$1 AND subject_id=$2 LIMIT 1001"), s.OrgID, s.SubjectID)
 	if err != nil {
 		return authz.Snapshot{}, safeError(err)
 	}
 	for rows.Next() {
 		var g authz.Grant
 		var from, to dbTime
-		if err = rows.Scan(&g.Capability, &g.Category, &g.ScopeKind, &g.ScopeID, &g.Purpose, &from, &to, &g.Revoked, &g.RelationBound, &g.MFARequired); err != nil {
+		var kind, reporting, membership, actor sql.NullString
+		if err = rows.Scan(&g.Capability, &g.Category, &g.ScopeKind, &g.ScopeID, &g.Purpose, &from, &to, &g.Revoked, &g.RelationBound, &g.MFARequired, &kind, &reporting, &membership, &actor); err != nil {
 			rows.Close()
 			return authz.Snapshot{}, safeError(err)
 		}
 		g.ValidFrom = from.Time
 		g.ExpiresAt = to.Time
+		g.RelationActorEmployeeID = actor.String
+		if kind.Valid {
+			id := membership.String
+			if kind.String == "reporting_line" {
+				id = reporting.String
+			}
+			g.RelationRef = &authz.RelationReference{Kind: kind.String, ID: id}
+		}
 		s.Grants = append(s.Grants, g)
 		if len(s.Grants) > 1000 {
 			rows.Close()
@@ -89,7 +98,119 @@ func (r reader) Security(ctx context.Context, hash []byte, org, employee string)
 	if err != nil {
 		return authz.Snapshot{}, safeError(err)
 	}
+	var actor sql.NullString
+	err = r.db.QueryRowContext(ctx, r.sql(
+		"SELECT employee_id FROM subject_employee WHERE org_id=? AND subject_id=?",
+		"SELECT employee_id FROM subject_employee WHERE org_id=$1 AND subject_id=$2"), s.OrgID, s.SubjectID).Scan(&actor)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return authz.Snapshot{}, safeError(err)
+	}
+	s.SubjectEmployeeID = actor.String
+	s.Memberships, err = r.securityMemberships(ctx, s.OrgID, s.SubjectID, employee)
+	if err != nil {
+		return authz.Snapshot{}, err
+	}
+	s.Relations, err = r.securityRelations(ctx, s.OrgID, s.SubjectID)
+	if err != nil {
+		return authz.Snapshot{}, err
+	}
 	return s, nil
+}
+
+func (r reader) dateColumn(column string) string {
+	return r.sql(column, "to_char("+column+",'YYYY-MM-DD')")
+}
+
+func (r reader) tenureColumns(kind string) string {
+	q := "m.id,m.employee_id,"
+	if kind == "team_membership" {
+		q += "m.team_id,''"
+	} else {
+		q += "'',m.manager_employee_id"
+	}
+	q += "," + r.dateColumn("m.valid_from") + "," + r.dateColumn("m.valid_to") + "," + r.dateColumn("m.effective_to") + ",m.superseded," + r.dateColumn("e.valid_from") + "," + r.dateColumn("e.valid_to")
+	if kind == "team_membership" {
+		return q + "," + r.dateColumn("t.valid_from") + "," + r.dateColumn("t.valid_to") + ",'',NULL"
+	}
+	return q + ",'',NULL," + r.dateColumn("manager.valid_from") + "," + r.dateColumn("manager.valid_to")
+}
+
+func tenureJoin(kind string) string {
+	if kind == "team_membership" {
+		return " FROM team_membership m JOIN employee e ON e.org_id=m.org_id AND e.id=m.employee_id JOIN team t ON t.org_id=m.org_id AND t.id=m.team_id"
+	}
+	return " FROM reporting_line m JOIN employee e ON e.org_id=m.org_id AND e.id=m.employee_id JOIN employee manager ON manager.org_id=m.org_id AND manager.id=m.manager_employee_id"
+}
+
+func scanTenure(row grantScanner, kind string) (authz.Tenure, error) {
+	t := authz.Tenure{Kind: kind}
+	var to, effective, employeeTo, teamTo, managerTo sql.NullString
+	err := row.Scan(&t.ID, &t.EmployeeID, &t.TeamID, &t.ManagerEmployeeID, &t.ValidFrom, &to, &effective, &t.Superseded, &t.EmployeeFrom, &employeeTo, &t.TeamFrom, &teamTo, &t.ManagerFrom, &managerTo)
+	t.ValidTo, t.EffectiveTo, t.EmployeeTo, t.TeamTo, t.ManagerTo = stringPtr(to), stringPtr(effective), stringPtr(employeeTo), stringPtr(teamTo), stringPtr(managerTo)
+	return t, err
+}
+
+func (r reader) relationTenure(ctx context.Context, org string, ref authz.RelationReference) (authz.Tenure, bool, error) {
+	if ref.Kind != "team_membership" && ref.Kind != "reporting_line" {
+		return authz.Tenure{}, false, nil
+	}
+	q := "SELECT " + r.tenureColumns(ref.Kind) + tenureJoin(ref.Kind) + r.sql(" WHERE m.org_id=? AND m.id=?", " WHERE m.org_id=$1 AND m.id=$2")
+	t, err := scanTenure(r.db.QueryRowContext(ctx, q, org, ref.ID), ref.Kind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return t, false, nil
+	}
+	return t, err == nil, safeError(err)
+}
+
+func (r reader) securityMemberships(ctx context.Context, org, subject, employee string) ([]authz.Tenure, error) {
+	q := "SELECT " + r.tenureColumns("team_membership") + tenureJoin("team_membership") + r.sql(
+		" WHERE m.org_id=? AND (m.employee_id=? OR EXISTS(SELECT 1 FROM capability_assignment a WHERE a.org_id=m.org_id AND a.subject_id=? AND a.scope_kind='team' AND a.team_id=m.team_id) OR EXISTS(SELECT 1 FROM access_grant g WHERE g.org_id=m.org_id AND g.subject_id=? AND g.scope_kind='team' AND g.team_id=m.team_id))",
+		" WHERE m.org_id=$1 AND (m.employee_id=$2 OR EXISTS(SELECT 1 FROM capability_assignment a WHERE a.org_id=m.org_id AND a.subject_id=$3 AND a.scope_kind='team' AND a.team_id=m.team_id) OR EXISTS(SELECT 1 FROM access_grant g WHERE g.org_id=m.org_id AND g.subject_id=$4 AND g.scope_kind='team' AND g.team_id=m.team_id))")
+	rows, err := r.db.QueryContext(ctx, q, org, employee, subject, subject)
+	if err != nil {
+		return nil, safeError(err)
+	}
+	defer rows.Close()
+	var facts []authz.Tenure
+	for rows.Next() {
+		t, err := scanTenure(rows, "team_membership")
+		if err != nil {
+			return nil, safeError(err)
+		}
+		facts = append(facts, t)
+	}
+	return facts, safeError(rows.Err())
+}
+
+func (r reader) securityRelations(ctx context.Context, org, subject string) ([]authz.Tenure, error) {
+	var facts []authz.Tenure
+	for _, kind := range []string{"team_membership", "reporting_line"} {
+		column := "membership_id"
+		if kind == "reporting_line" {
+			column = "reporting_line_id"
+		}
+		q := "SELECT " + r.tenureColumns(kind) + tenureJoin(kind) + r.sql(
+			" WHERE m.org_id=? AND EXISTS(SELECT 1 FROM access_grant g WHERE g.org_id=m.org_id AND g.subject_id=? AND g.relation_kind='"+kind+"' AND g."+column+"=m.id)",
+			" WHERE m.org_id=$1 AND EXISTS(SELECT 1 FROM access_grant g WHERE g.org_id=m.org_id AND g.subject_id=$2 AND g.relation_kind='"+kind+"' AND g."+column+"=m.id)")
+		rows, err := r.db.QueryContext(ctx, q, org, subject)
+		if err != nil {
+			return nil, safeError(err)
+		}
+		for rows.Next() {
+			t, err := scanTenure(rows, kind)
+			if err != nil {
+				rows.Close()
+				return nil, safeError(err)
+			}
+			facts = append(facts, t)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, safeError(err)
+		}
+	}
+	return facts, nil
 }
 func (r reader) Employee(ctx context.Context, id string) (organization.Employee, error) {
 	var e organization.Employee

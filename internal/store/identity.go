@@ -363,7 +363,7 @@ func (r *Repository) AuditIdentityDenied(ctx context.Context, operation, request
 	return r.AuditDenied(ctx, organization.Audit{ID: value.NewID(), Operation: operation, RequestID: requestID, At: now})
 }
 func validMapping(m identity.Identity, requestID string) bool {
-	return len(m.Digest) == 32 && m.KeyVersion == 1 && value.ValidID(m.OrgID) && value.ValidID(m.SubjectID) && value.ValidID(requestID)
+	return len(m.Digest) == 32 && m.KeyVersion == 1 && value.ValidID(m.OrgID) && value.ValidID(m.SubjectID) && value.ValidID(requestID) && (m.EmployeeID == "" || value.ValidID(m.EmployeeID))
 }
 
 type maintenancePrincipal struct {
@@ -388,9 +388,9 @@ func insertMaintenanceAudit(ctx context.Context, q reader, m identity.Identity, 
 		at = now.UTC().UnixMicro()
 	}
 	_, err := q.db.ExecContext(ctx, q.sql(
-		"INSERT INTO audit_event(id,org_id,subject_id,operation,purpose,request_id,outcome,recorded_at,actor_kind,actor_uid,actor_host_hash,target_subject_id,identity_digest) VALUES(?,?,NULL,?,'security_administration',?,'allowed',?,'local_maintenance',?,?,?,?)",
-		"INSERT INTO audit_event(id,org_id,subject_id,operation,purpose,request_id,outcome,recorded_at,actor_kind,actor_uid,actor_host_hash,target_subject_id,identity_digest) VALUES($1,$2,NULL,$3,'security_administration',$4,'allowed',$5,'local_maintenance',$6,$7,$8,$9)"),
-		value.NewID(), m.OrgID, operation, requestID, at, actor.uid, actor.hostHash[:], m.SubjectID, m.Digest)
+		"INSERT INTO audit_event(id,org_id,subject_id,operation,purpose,request_id,outcome,recorded_at,actor_kind,actor_uid,actor_host_hash,target_subject_id,identity_digest,target_employee_id) VALUES(?,?,NULL,?,'security_administration',?,'allowed',?,'local_maintenance',?,?,?,?,?)",
+		"INSERT INTO audit_event(id,org_id,subject_id,operation,purpose,request_id,outcome,recorded_at,actor_kind,actor_uid,actor_host_hash,target_subject_id,identity_digest,target_employee_id) VALUES($1,$2,NULL,$3,'security_administration',$4,'allowed',$5,'local_maintenance',$6,$7,$8,$9,$10)"),
+		value.NewID(), m.OrgID, operation, requestID, at, actor.uid, actor.hostHash[:], m.SubjectID, m.Digest, nullable(m.EmployeeID))
 	if err != nil {
 		return fault.AuditUnavailable
 	}
@@ -422,6 +422,9 @@ func (r *Repository) BindIdentity(ctx context.Context, m identity.Identity, requ
 		if org != m.OrgID || subject != m.SubjectID || active {
 			return fault.Conflict
 		}
+		if err := bindApprovedEmployee(ctx, q, &m); err != nil {
+			return err
+		}
 		if _, err := q.db.ExecContext(ctx, q.sql("UPDATE subject_identity SET active=1 WHERE digest=?", "UPDATE subject_identity SET active=true WHERE digest=$1"), m.Digest); err != nil {
 			return safeError(err)
 		}
@@ -444,6 +447,14 @@ func (r *Repository) UnbindIdentity(ctx context.Context, m identity.Identity, re
 		if current.OrgID != m.OrgID || current.SubjectID != m.SubjectID {
 			return fault.Unauthenticated
 		}
+		employee, err := approvedEmployee(ctx, q, m.OrgID, m.SubjectID)
+		if err != nil {
+			return err
+		}
+		if m.EmployeeID != "" && m.EmployeeID != employee {
+			return fault.Conflict
+		}
+		m.EmployeeID = employee
 		var epoch, orgEpoch int64
 		if err = q.db.QueryRowContext(ctx, q.sql("SELECT auth_epoch FROM subject WHERE org_id=? AND id=?", "SELECT auth_epoch FROM subject WHERE org_id=$1 AND id=$2"), m.OrgID, m.SubjectID).Scan(&epoch); err != nil {
 			return safeError(err)

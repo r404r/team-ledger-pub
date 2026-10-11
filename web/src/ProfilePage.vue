@@ -17,6 +17,11 @@ type Profile = {
   profile_summary?: string
 }
 
+type Relation = {
+  id: string; employee_id: string; team_id?: string; manager_employee_id?: string; kind?: 'administrative' | 'dotted'
+  is_primary?: boolean; valid_from: string; valid_to: string | null
+  position?: { title: string; position_code?: string; description?: string }
+}
 type Employee = {
   id: string
   org_id: string
@@ -25,6 +30,10 @@ type Employee = {
   as_of: string
   authorization_date: string
   profile?: Profile
+  graph_revision?: string
+  memberships?: Relation[]
+  positions?: Relation[]
+  reporting_lines?: Relation[]
 }
 
 type Operation = { generation: number; controller: AbortController }
@@ -177,7 +186,8 @@ async function readEmployee(id: string, operation: Operation) {
   if (!next || next.id !== id || next.org_id !== session.value?.org_id ||
       !next.lifecycle || !validDate(next.lifecycle.valid_from) ||
       (next.lifecycle.valid_to !== null && !validDate(next.lifecycle.valid_to)) ||
-      next.as_of !== asOf.value || !validDate(next.authorization_date)) {
+      next.as_of !== asOf.value || !validDate(next.authorization_date) ||
+      (next.graph_revision !== undefined && (typeof next.graph_revision !== 'string' || !revisionPattern.test(next.graph_revision)))) {
     throw new ApiFailure(503)
   }
   if (next.profile !== undefined) {
@@ -196,6 +206,19 @@ async function readEmployee(id: string, operation: Operation) {
     delete next.profile_revision
   }
   details.value = next
+  for (const relations of [next.memberships, next.positions, next.reporting_lines]) {
+    if (relations !== undefined && (!Array.isArray(relations) || !relations.every((relation) =>
+      relation && uuidPattern.test(relation.id) && relation.employee_id === id && validDate(relation.valid_from) &&
+      (relation.valid_to === null || validDate(relation.valid_to) && relation.valid_to > relation.valid_from) &&
+      (!relation.team_id || uuidPattern.test(relation.team_id)) &&
+      (!relation.manager_employee_id || uuidPattern.test(relation.manager_employee_id)) &&
+      (!relation.position || hasCapabilities(session.value, ['pii.read']) && typeof relation.position.title === 'string' &&
+        (relation.position.position_code === undefined || typeof relation.position.position_code === 'string') &&
+        (relation.position.description === undefined || typeof relation.position.description === 'string'))))) {
+      details.value = null
+      throw new ApiFailure(503)
+    }
+  }
 }
 
 function showFailure(cause: unknown, operation: Operation) {
@@ -333,6 +356,13 @@ async function save() {
     }
   }
 }
+function navigate(event: MouseEvent, path: string) {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  event.preventDefault()
+  window.history.pushState({}, '', path)
+  window.dispatchEvent(new PopStateEvent('popstate'))
+}
+
 
 function readRoute() {
   cancelOperation()
@@ -422,6 +452,24 @@ onBeforeUnmount(() => {
           </template>
         </dl>
         <p v-else>当前只获准查看元数据，未提供个人资料。</p>
+        <nav aria-label="员工组织导航">
+          <a :href="`/employees/${details.id}/organization-history`" @click="navigate($event, `/employees/${details.id}/organization-history`)">组织历史</a>
+          <a :href="`/orgs/${details.org_id}/tree?as_of=${details.as_of}`" @click="navigate($event, `/orgs/${details.org_id}/tree?as_of=${details.as_of}`)">组织树</a>
+          <a :href="`/orgs/${details.org_id}/employees?as_of=${details.as_of}`" @click="navigate($event, `/orgs/${details.org_id}/employees?as_of=${details.as_of}`)">员工目录</a>
+        </nav>
+        <section aria-label="查询日任职与经理">
+          <h2>{{ details.as_of }} 任职与经理</h2>
+          <p v-if="details.graph_revision">图版本 {{ details.graph_revision }}（独立于个人资料版本）</p>
+          <template v-for="group in [{ label: '团队任职', items: details.memberships }, { label: '职位任职', items: details.positions }, { label: '经理关系', items: details.reporting_lines }]" :key="group.label">
+            <h3>{{ group.label }}</h3>
+            <p v-if="!group.items?.length">查询日无获准{{ group.label }}；不推测当前团队或经理。</p>
+            <ul><li v-for="relation in group.items" :key="relation.id">
+              原稳定关系 {{ relation.id }} · {{ relation.team_id ?? relation.manager_employee_id ?? '未指定团队' }} {{ relation.kind ?? '' }}
+              · [{{ relation.valid_from }}, {{ relation.valid_to ?? '∞' }})
+              <template v-if="relation.position"> · {{ relation.position.title }} <span v-if="relation.position.position_code">（{{ relation.position.position_code }}）</span> <span v-if="relation.position.description">{{ relation.position.description }}</span></template>
+            </li></ul>
+          </template>
+        </section>
         <button v-if="canEdit && !editing" type="button" :disabled="busy" @click="beginEdit">更正资料</button>
       </section>
 

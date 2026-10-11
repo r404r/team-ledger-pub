@@ -71,10 +71,20 @@ func (s *Service) authorization(ctx context.Context, r Reader, request Request) 
 		hint := AuthorityHint{Authority: a}
 		for _, m := range scopes {
 			scope := a.Scope
-			if Covers(scope, m, current.OrgID) {
+			forward, err := r.ScopeCovered(ctx, current.OrgID, scope, m, s.clock())
+			if err != nil {
+				return current, nil, nil, err
+			}
+			if forward {
 				scope = m
-			} else if !Covers(m, scope, current.OrgID) {
-				continue
+			} else {
+				reverse, err := r.ScopeCovered(ctx, current.OrgID, m, scope, s.clock())
+				if err != nil {
+					return current, nil, nil, err
+				}
+				if !reverse {
+					continue
+				}
 			}
 			owned, err := r.OwnsScope(ctx, current.OrgID, scope)
 			if err != nil {
@@ -206,7 +216,7 @@ func validFilter(f Filter) bool {
 			return false
 		}
 	}
-	if (f.ScopeKind == "") != (f.ScopeID == "") || f.ScopeKind != "" && f.ScopeKind != "org" && f.ScopeKind != "employee" {
+	if (f.ScopeKind == "") != (f.ScopeID == "") || f.ScopeKind != "" && f.ScopeKind != "org" && f.ScopeKind != "employee" && f.ScopeKind != "team" {
 		return false
 	}
 	if f.Category != "" && f.Category != "metadata" && f.Category != "pii" && f.Category != "audit" {
@@ -231,16 +241,24 @@ func grantStatus(g GrantDTO, now time.Time) string {
 	return "current"
 }
 
-func covered(grant GrantDTO, authorities []Authority, org string, authorityID string) bool {
+func validRelation(bound bool, ref *RelationReference, scope Scope) bool {
+	if !bound {
+		return ref == nil
+	}
+	return ref != nil && value.ValidID(ref.ID) && (ref.Kind == "reporting_line" && scope.Kind == "employee" || ref.Kind == "team_membership" && scope.Kind == "team")
+}
+
+func (s *Service) covered(ctx context.Context, r Reader, grant GrantDTO, authorities []Authority, org, authorityID string) (bool, error) {
 	for _, a := range authorities {
-		if authorityID != "" && a.ID != authorityID {
+		if authorityID != "" && a.ID != authorityID || a.Capability != grant.Capability || a.Category != grant.Category || a.Purpose != grant.Purpose {
 			continue
 		}
-		if a.Capability == grant.Capability && a.Category == grant.Category && a.Purpose == grant.Purpose && Covers(a.Scope, grant.Scope, org) {
-			return true
+		ok, err := r.ScopeCovered(ctx, org, a.Scope, grant.Scope, s.clock())
+		if err != nil || ok {
+			return ok, err
 		}
 	}
-	return false
+	return false, nil
 }
 
 func (s *Service) Issue(ctx context.Context, request Request, command IssueCommand) (Result, error) {
@@ -251,7 +269,7 @@ func (s *Service) Issue(ctx context.Context, request Request, command IssueComma
 	expected, valid := value.Revision(command.ExpectedRevision)
 	from, validFrom := parseTimestamp(command.ValidFrom)
 	to, validTo := parseTimestamp(command.ExpiresAt)
-	if !valid || !validFrom || !validTo || !to.After(from) || !value.ValidID(request.Key) || !value.ValidID(command.SubjectID) || !value.ValidID(command.AuthorityID) || !value.ValidID(command.Scope.ID) || (command.Scope.Kind != "org" && command.Scope.Kind != "employee") || command.RelationBound || command.RelationRef != nil || command.ObjectRef != nil || !SupportedPair(command.Capability, command.Category, command.Purpose) || command.Capability == "access_grant.manage" {
+	if !valid || !validFrom || !validTo || !to.After(from) || !value.ValidID(request.Key) || !value.ValidID(command.SubjectID) || !value.ValidID(command.AuthorityID) || !value.ValidID(command.Scope.ID) || (command.Scope.Kind != "org" && command.Scope.Kind != "employee" && command.Scope.Kind != "team") || !validRelation(command.RelationBound, command.RelationRef, command.Scope) || command.ObjectRef != nil || !SupportedPair(command.Capability, command.Category, command.Purpose) || command.Capability == "access_grant.manage" {
 		return Result{}, fault.Invalid
 	}
 	command.ValidFrom, command.ExpiresAt = from.Format(time.RFC3339Nano), to.Format(time.RFC3339Nano)
@@ -271,19 +289,13 @@ func (s *Service) Issue(ctx context.Context, request Request, command IssueComma
 		if command.SubjectID == current.SubjectID {
 			return fault.Forbidden
 		}
-		g := GrantDTO{OrgID: current.OrgID, SubjectID: command.SubjectID, Capability: command.Capability, Category: command.Category, Scope: command.Scope, Purpose: command.Purpose, ValidFrom: from, ExpiresAt: to, MFARequired: command.MFARequired, Revision: "1"}
-		if !covered(g, coverage, current.OrgID, command.AuthorityID) {
-			return fault.Forbidden
-		}
-		owned, err := tx.OwnsScope(ctx, current.OrgID, command.Scope)
+		g := GrantDTO{OrgID: current.OrgID, SubjectID: command.SubjectID, Capability: command.Capability, Category: command.Category, Scope: command.Scope, Purpose: command.Purpose, ValidFrom: from, ExpiresAt: to, MFARequired: command.MFARequired, RelationBound: command.RelationBound, RelationRef: command.RelationRef, Revision: "1"}
+		covered, err := s.covered(ctx, tx, g, coverage, current.OrgID, command.AuthorityID)
 		if err != nil {
 			return err
 		}
-		if !owned {
+		if !covered {
 			return fault.Forbidden
-		}
-		if err := tx.LockScope(ctx, current.OrgID, command.Scope); err != nil {
-			return err
 		}
 		var authority Authority
 		for _, a := range facts {
@@ -304,12 +316,31 @@ func (s *Service) Issue(ctx context.Context, request Request, command IssueComma
 			result = previous.Result
 			return tx.GrantAudit(ctx, s.audit(request, current, result.ID, "OP-SEC-02", "allowed"))
 		}
-		qualified, err := tx.Qualified(ctx, current.OrgID, command.SubjectID, command.Capability, command.Scope)
+		owned, err := tx.OwnsScope(ctx, current.OrgID, command.Scope)
+		if err != nil {
+			return err
+		}
+		if !owned {
+			return fault.Forbidden
+		}
+		if err := tx.LockScope(ctx, current.OrgID, command.Scope); err != nil {
+			return err
+		}
+		qualified, err := tx.Qualified(ctx, current.OrgID, command.SubjectID, command.Capability, command.Scope, s.clock())
 		if err != nil {
 			return err
 		}
 		if !qualified {
 			return fault.Forbidden
+		}
+		if command.RelationBound {
+			qualified, err := tx.RelationQualified(ctx, current.OrgID, command.SubjectID, command.Scope, *command.RelationRef, s.clock())
+			if err != nil {
+				return err
+			}
+			if !qualified {
+				return fault.Forbidden
+			}
 		}
 		if current.AuthEpoch != expected {
 			return fault.Conflict
@@ -377,7 +408,11 @@ func (s *Service) Revoke(ctx context.Context, request Request, id string, comman
 		if err != nil {
 			return err
 		}
-		if !covered(grant, coverage, current.OrgID, "") {
+		covered, err := s.covered(ctx, tx, grant, coverage, current.OrgID, "")
+		if err != nil {
+			return err
+		}
+		if !covered {
 			return fault.NotFound
 		}
 		if grant.SubjectID != planned.SubjectID {

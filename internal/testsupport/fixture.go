@@ -122,7 +122,7 @@ func NewFixture(ctx context.Context, backend, dsn string) (_ *Fixture, err error
 	if err != nil {
 		return nil, err
 	}
-	f.Service = &organization.Service{Store: f.Repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, DigestKey: f.DigestKey, Now: func() time.Time { return f.Now }}
+	f.Service = &organization.Service{Store: f.Repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, DigestKey: f.DigestKey, CursorKey: f.CursorKey, Now: func() time.Time { return f.Now }}
 	f.Authz = &authz.Service{Store: f.Repo, DigestKey: f.DigestKey, CursorKey: f.CursorKey, Now: func() time.Time { return f.Now }}
 	return f, nil
 }

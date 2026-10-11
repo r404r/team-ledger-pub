@@ -10,6 +10,7 @@ import (
 
 	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/organization"
+	"github.com/r404r/team-ledger/internal/value"
 )
 
 func (r *Repository) WithTx(ctx context.Context, org string, fn func(organization.Tx) error) error {
@@ -68,6 +69,12 @@ func (t *transaction) Create(ctx context.Context, e organization.Employee, v org
 		to = *e.Lifecycle.ValidTo
 	}
 	_, err := t.tx.ExecContext(ctx, t.sql("INSERT INTO employee(org_id,id,profile_head_id,profile_revision,valid_from,valid_to) VALUES(?,?,?,?,?,?)", "INSERT INTO employee(org_id,id,profile_head_id,profile_revision,valid_from,valid_to) VALUES($1,$2,$3,$4,$5,$6)"), e.OrgID, e.ID, e.HeadID, e.Revision, e.Lifecycle.ValidFrom, to)
+	if err != nil {
+		return safeError(err)
+	}
+	// Initial lifecycle facts are immutable and independent of profile history;
+	// profile creation does not advance the organization graph revision.
+	_, err = t.tx.ExecContext(ctx, t.sql("INSERT INTO employee_lifecycle_history(org_id,id,employee_id,valid_from,valid_to,change_id,supersedes_id) VALUES(?,?,?,?,?,NULL,NULL)", "INSERT INTO employee_lifecycle_history(org_id,id,employee_id,valid_from,valid_to,change_id,supersedes_id) VALUES($1,$2,$3,$4,$5,NULL,NULL)"), e.OrgID, value.NewID(), e.ID, e.Lifecycle.ValidFrom, to)
 	if err != nil {
 		return safeError(err)
 	}

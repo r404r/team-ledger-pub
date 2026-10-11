@@ -145,21 +145,31 @@ func (s *Service) now() time.Time {
 }
 func (s *Service) Available() bool { return s != nil && s.verifier != nil }
 
-// AllowedReturn accepts only the existing relative pages and one business date.
+// AllowedReturn accepts canonical registered pages and safe business dates only.
 func AllowedReturn(raw string) bool {
 	if len(raw) > 128 {
 		return false
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.IsAbs() || u.Host != "" || u.User != nil || u.Fragment != "" || u.RawPath != "" || u.Opaque != "" || strings.ContainsAny(raw, "\\\r\n#") {
+	if err != nil || u.IsAbs() || u.Host != "" || u.User != nil || u.Fragment != "" || u.RawPath != "" || u.Opaque != "" || !strings.HasPrefix(u.Path, "/") || strings.ContainsAny(raw, "\\\r\n#") {
 		return false
 	}
-	if u.Path != "/" && u.Path != "/security/grants" && !(strings.HasPrefix(u.Path, "/employees/") && value.ValidID(strings.TrimPrefix(u.Path, "/employees/"))) {
+	parts := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
+	employeePage := len(parts) == 2 && parts[0] == "employees" && value.ValidID(parts[1])
+	historyPage := len(parts) == 3 && parts[0] == "employees" && value.ValidID(parts[1]) && parts[2] == "organization-history"
+	orgPage := len(parts) == 3 && parts[0] == "orgs" && value.ValidID(parts[1]) && (parts[2] == "tree" || parts[2] == "employees")
+	if u.Path != "/" && u.Path != "/security/grants" && !employeePage && !historyPage && !orgPage {
 		return false
 	}
 	if strings.Contains(raw, "?") {
 		q, err := url.ParseQuery(u.RawQuery)
-		if err != nil || len(q) != 1 || len(q["as_of"]) != 1 || !value.ValidDate(q.Get("as_of")) || u.RawQuery != "as_of="+q.Get("as_of") {
+		if err != nil || u.RawQuery == "" || u.RawQuery != q.Encode() {
+			return false
+		}
+		if historyPage && len(q) == 2 && len(q["from"]) == 1 && len(q["to"]) == 1 {
+			return value.ValidDate(q.Get("from")) && value.ValidDate(q.Get("to")) && q.Get("from") < q.Get("to")
+		}
+		if len(q) != 1 || len(q["as_of"]) != 1 || !value.ValidDate(q.Get("as_of")) {
 			return false
 		}
 	}

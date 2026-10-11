@@ -46,6 +46,7 @@ type Identity struct {
 	Digest           []byte
 	KeyVersion       int
 	OrgID, SubjectID string
+	EmployeeID       string // Optional, explicitly approved employment correspondence.
 	Active           bool
 }
 type Session struct {

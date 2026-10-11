@@ -80,14 +80,17 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	hash := sha256.Sum256(raw)
 	req.TokenHash = hash[:]
-	employeeScope := ""
+	employeeScope, teamScope := "", ""
 	invalidScope := false
 	if r.URL.Path == "/api/v1/session" && r.Method == http.MethodGet {
 		q, e := url.ParseQuery(r.URL.RawQuery)
-		if e != nil || (len(q) != 0 && (len(q) != 1 || len(q["employee_id"]) != 1 || !value.ValidID(q.Get("employee_id")))) {
+		if e != nil || len(q) > 1 || !singleQuery(q, []string{"employee_id", "team_id"}) {
 			invalidScope = true
-		} else {
-			employeeScope = q.Get("employee_id")
+		} else if len(q) == 1 {
+			employeeScope, teamScope = q.Get("employee_id"), q.Get("team_id")
+			if !value.ValidID(employeeScope) && !value.ValidID(teamScope) {
+				invalidScope = true
+			}
 		}
 	}
 	snap, err := h.service.Session(r.Context(), req, employeeScope)
@@ -145,7 +148,11 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if strings.HasPrefix(cap, "pii.") {
 				category = "pii"
 			}
-			if snap.Allows(cap, category, employeeScope, "organization_management", now) {
+			allowed := snap.Allows(cap, category, employeeScope, "organization_management", now)
+			if teamScope != "" {
+				allowed = snap.AllowsTeam(cap, category, teamScope, "organization_management", now)
+			}
+			if allowed {
 				caps = append(caps, cap)
 			}
 		}
@@ -155,6 +162,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		scopeKind, scopeID := "org", snap.OrgID
 		if employeeScope != "" {
 			scopeKind, scopeID = "employee", employeeScope
+		}
+		if teamScope != "" {
+			scopeKind, scopeID = "team", teamScope
 		}
 		h.reply(w, 200, struct {
 			Subject           string                `json:"subject_id"`
@@ -173,6 +183,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/api/v1/access-grants" || strings.HasPrefix(r.URL.Path, "/api/v1/access-grants/") {
 		h.grantRoute(w, r, authz.Request{TokenHash: req.TokenHash, RequestID: req.RequestID, Purpose: req.Purpose, Key: req.Key})
+		return
+	}
+	if h.structureRoute(w, r, req) {
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/"), "/")
@@ -265,6 +278,12 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 		root = "create"
 	case *organization.UpdateCommand:
 		root = "update"
+	case *organization.CreateTeamCommand:
+		root = "create_team"
+	case *organization.StructureCommand:
+		root = "structure_command"
+	case *organization.DirectoryQuery:
+		root = "directory_query"
 	case *authz.IssueCommand:
 		root = "issue"
 	case *authz.RevokeCommand:
@@ -303,25 +322,51 @@ func walkJSON(d *json.Decoder, depth int, object string) error {
 		return fault.Invalid
 	}
 	switch object {
-	case "subject_id", "capability", "category", "kind", "id", "purpose", "expires_at", "authority_id", "expected_revision", "expected_auth_epoch", "reason":
+	case "subject_id", "capability", "category", "kind", "id", "purpose", "expires_at", "authority_id", "expected_revision", "expected_auth_epoch", "reason", "code", "label", "expected_graph_revision", "action", "ref", "employee_id", "team_id", "parent_team_id", "manager_employee_id", "reporting_kind", "end_date", "title", "position_code", "description", "as_of", "q", "cursor":
 		if _, ok := t.(string); !ok {
 			return fault.Invalid
 		}
 		return nil
 	}
-	if object == "relation_ref" || object == "object_ref" {
+	if object == "object_ref" || object == "relation_ref" && t == nil {
 		if t != nil {
 			return fault.Invalid
 		}
 		return nil
 	}
-	if object == "mfa_required" || object == "relation_bound" {
+	if object == "changes" {
+		if t != json.Delim('[') {
+			return fault.Invalid
+		}
+		count := 0
+		for d.More() {
+			count++
+			if count > 100 {
+				return fault.Invalid
+			}
+			if e = walkJSON(d, depth+1, "change_item"); e != nil {
+				return e
+			}
+		}
+		end, e := d.Token()
+		if e != nil || end != json.Delim(']') || count == 0 {
+			return fault.Invalid
+		}
+		return nil
+	}
+	if object == "limit" {
+		if _, ok := t.(json.Number); !ok {
+			return fault.Invalid
+		}
+		return nil
+	}
+	if object == "mfa_required" || object == "relation_bound" || object == "is_primary" || object == "include_profile" {
 		if _, ok := t.(bool); !ok {
 			return fault.Invalid
 		}
 		return nil
 	}
-	if object == "issue" || object == "revoke" || object == "scope" {
+	if object == "issue" || object == "revoke" || object == "scope" || object == "relation_ref" || object == "create_team" || object == "structure_command" || object == "directory_query" || object == "change_item" || object == "position" {
 		if t != json.Delim('{') {
 			return fault.Invalid
 		}
@@ -346,7 +391,7 @@ func walkJSON(d *json.Decoder, depth int, object string) error {
 		}
 	}
 	end, e := d.Token()
-	if (object == "issue" && len(seen) != 13) || (object == "revoke" && len(seen) != 3) || (object == "scope" && len(seen) != 2) {
+	if (object == "issue" && len(seen) != 13) || (object == "revoke" && len(seen) != 3) || (object == "scope" && len(seen) != 2) || (object == "relation_ref" && len(seen) != 2) {
 		return fault.Invalid
 	}
 	if e != nil || end != json.Delim('}') {
@@ -366,12 +411,30 @@ func allowedField(object, key string) bool {
 		return false
 	case "revoke":
 		return key == "expected_revision" || key == "expected_auth_epoch" || key == "reason"
-	case "scope":
+	case "scope", "relation_ref":
 		return key == "kind" || key == "id"
 	case "create":
 		return key == "profile" || key == "lifecycle"
 	case "update":
 		return key == "expected_profile_revision" || key == "profile" || key == "edit_reason"
+	case "create_team":
+		return key == "code" || key == "lifecycle" || key == "label"
+	case "structure_command":
+		return key == "expected_graph_revision" || key == "changes" || key == "reason"
+	case "change_item":
+		switch key {
+		case "action", "kind", "ref", "employee_id", "team_id", "parent_team_id", "manager_employee_id", "reporting_kind", "is_primary", "lifecycle", "end_date", "position":
+			return true
+		}
+		return false
+	case "position":
+		return key == "title" || key == "position_code" || key == "description"
+	case "directory_query":
+		switch key {
+		case "as_of", "team_id", "employee_id", "lifecycle", "q", "cursor", "limit", "include_profile":
+			return true
+		}
+		return false
 	case "profile":
 		return key == "display_name" || key == "work_contact" || key == "profile_summary"
 	case "work_contact":
@@ -407,19 +470,10 @@ func (h *handler) staticFile(w http.ResponseWriter, r *http.Request, id string) 
 		h.fail(w, fault.NotFound, id)
 		return
 	}
-	if r.URL.RawQuery != "" {
-		q, e := url.ParseQuery(r.URL.RawQuery)
-		if e != nil || len(q) != 1 || len(q["as_of"]) != 1 || !value.ValidDate(q.Get("as_of")) || strings.HasPrefix(r.URL.Path, "/assets/") {
-			h.fail(w, fault.NotFound, id)
-			return
-		}
-	}
 	name := ""
-	if r.URL.Path == "/" {
+	if identity.AllowedReturn(r.URL.RequestURI()) {
 		name = "index.html"
-	} else if r.URL.Path == "/security/grants" || strings.HasPrefix(r.URL.Path, "/employees/") && value.ValidID(strings.TrimPrefix(r.URL.Path, "/employees/")) {
-		name = "index.html"
-	} else if strings.HasPrefix(r.URL.Path, "/assets/") {
+	} else if strings.HasPrefix(r.URL.Path, "/assets/") && r.URL.RawQuery == "" {
 		rel := strings.TrimPrefix(r.URL.Path, "/")
 		if filepath.Clean(rel) != rel || strings.Contains(rel, "\\") {
 			h.fail(w, fault.NotFound, id)

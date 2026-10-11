@@ -505,6 +505,35 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     expect(page.text()).toContain(EMPLOYEE_ID)
     expect(api.matching('PATCH', CORRECTION_PATH)).toHaveLength(0)
   })
+  it('shows as_of primary memberships, position and administrative manager using stable IDs with history navigation', async () => {
+    const membership = { id: REQUEST_ID, employee_id: EMPLOYEE_ID, team_id: ORG_ID, is_primary: true, valid_from: VALID_FROM, valid_to: null }
+    const position = { ...membership, id: SUBJECT_ID, position: { title: '合成获准职位正文', description: '合成获准任职描述' } }
+    const manager = { id: OTHER_EMPLOYEE_ID, employee_id: EMPLOYEE_ID, manager_employee_id: OTHER_EMPLOYEE_ID, kind: 'administrative', valid_from: VALID_FROM, valid_to: null }
+    api.respond('GET', EMPLOYEE_PATH, 200, { ...employee(), graph_revision: '23', memberships: [membership], positions: [position], reporting_lines: [manager] })
+    const page = await openPage()
+    const organization = page.find('[aria-label="查询日任职与经理"]')
+    expect(organization.text()).toContain(AS_OF)
+    expect(organization.text()).toContain(REQUEST_ID)
+    expect(organization.text()).toContain('合成获准职位正文')
+    expect(organization.text()).toContain(`administrative`)
+    expect(organization.text()).toContain(OTHER_EMPLOYEE_ID)
+    expect(page.find(`a[href="/employees/${EMPLOYEE_ID}/organization-history"]`).exists()).toBe(true)
+    expect(page.find(`a[href="/orgs/${ORG_ID}/tree?as_of=${AS_OF}"]`).exists()).toBe(true)
+    expect(page.text()).toContain('图版本 23')
+  })
+  it('metadata-only organization projection exposes stable IDs but no profile revision, title or invented manager', async () => {
+    api.session = { ...SESSION, capabilities: ['organization.read'] }
+    const { profile: _profile, profile_revision: _revision, ...metadata } = employee()
+    api.respond('GET', EMPLOYEE_PATH, 200, { ...metadata, graph_revision: '5', memberships: [{ id: REQUEST_ID, employee_id: EMPLOYEE_ID, team_id: ORG_ID, is_primary: true, valid_from: VALID_FROM, valid_to: null }], positions: [], reporting_lines: [] })
+    const page = await openPage()
+    const organization = page.find('[aria-label="查询日任职与经理"]')
+    expect(organization.text()).toContain(REQUEST_ID)
+    expect(organization.text()).toContain('查询日无获准经理关系')
+    expect(page.text()).not.toContain('profile_revision')
+    expect(page.text()).not.toContain(ORIGINAL_PROFILE.display_name)
+    expect(page.text()).not.toContain('合成获准职位正文')
+    expect(api.matching('PATCH', CORRECTION_PATH)).toHaveLength(0)
+  })
 
   it('discards a late old-employee GET after navigation and never replaces the new employee details', async () => {
     const oldRead = api.defer('GET', EMPLOYEE_PATH)

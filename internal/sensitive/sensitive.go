@@ -218,22 +218,57 @@ func newDEKID() (string, error) {
 }
 
 func canonicalAAD(binding Context) ([]byte, error) {
-	if binding.ObjectKind != "employee_profile" || binding.Purpose != "pii" ||
-		binding.SchemaType != "pii.profile.v1" || binding.SchemaVersion != 1 {
+	if binding.Purpose != "pii" || binding.SchemaVersion != 1 {
+		return nil, ErrInvalid
+	}
+	employeeOwned := false
+	switch binding.ObjectKind {
+	case "employee_profile":
+		if binding.SchemaType != "pii.profile.v1" {
+			return nil, ErrInvalid
+		}
+		employeeOwned = true
+	case "team_label":
+		if binding.SchemaType != "org.team.label.v1" {
+			return nil, ErrInvalid
+		}
+	case "position_assignment":
+		if binding.SchemaType != "org.position.v1" {
+			return nil, ErrInvalid
+		}
+		employeeOwned = true
+	case "structure_change":
+		if binding.SchemaType != "org.structure.reason.v1" {
+			return nil, ErrInvalid
+		}
+	default:
+		return nil, ErrInvalid
+	}
+	if !employeeOwned && binding.EmployeeID != "" {
 		return nil, ErrInvalid
 	}
 	var ids [4][16]byte
 	for i, value := range [4]string{binding.OrgID, binding.EmployeeID, binding.RecordID, binding.VersionID} {
+		if i == 1 && !employeeOwned {
+			continue
+		}
 		if !decodeUUID(value, &ids[i]) {
 			return nil, ErrInvalid
 		}
 	}
 	size := len("TEAMLEDGER-AAD") + 2 + 4*20 + 3*4 +
 		len(binding.ObjectKind) + len(binding.Purpose) + len(binding.SchemaType) + 8
+	if !employeeOwned {
+		size -= 16
+	}
 	aad := make([]byte, 0, size)
 	aad = append(aad, "TEAMLEDGER-AAD"...)
 	aad = binary.BigEndian.AppendUint16(aad, 1)
 	for i := range ids {
+		if i == 1 && !employeeOwned {
+			aad = binary.BigEndian.AppendUint32(aad, 0)
+			continue
+		}
 		aad = binary.BigEndian.AppendUint32(aad, 16)
 		aad = append(aad, ids[i][:]...)
 	}

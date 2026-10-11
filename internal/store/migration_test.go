@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -264,12 +265,13 @@ func migrationV1Fixture(t *testing.T, backend string) *testsupport.Fixture {
 		t.Fatal(err)
 	}
 	f.DigestKey = bytes.Repeat([]byte{2}, 32)
-	f.Service = &organization.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, DigestKey: f.DigestKey, Now: func() time.Time { return f.Now }}
+	f.CursorKey = bytes.Repeat([]byte{3}, 32)
+	f.Service = &organization.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, DigestKey: f.DigestKey, CursorKey: f.CursorKey, Now: func() time.Time { return f.Now }}
 	return f
 }
 
-// Seed genuine deployed v1 through its existing typed persistence and actual
-// cipher. Current product startup intentionally does not serve a v1 schema.
+// Seed the genuine deployed schema using its original guarded SQL and actual
+// cipher, not today's store writes (which append new lifecycle facts in v5).
 func migrationV1Profile(t *testing.T, f *testsupport.Fixture, profile organization.Profile, id string) organization.Result {
 	t.Helper()
 	ctx := context.Background()
@@ -278,9 +280,11 @@ func migrationV1Profile(t *testing.T, f *testsupport.Fixture, profile organizati
 	if id == "" {
 		employee.ID = value.NewID()
 	} else {
-		var err error
-		employee, err = f.Repo.Employee(ctx, id)
-		if err != nil {
+		query := "SELECT profile_head_id,profile_revision FROM employee WHERE org_id=? AND id=?"
+		if f.Backend == "postgres" {
+			query = "SELECT profile_head_id,profile_revision FROM employee WHERE org_id=$1 AND id=$2"
+		}
+		if err := f.Repo.DB.QueryRowContext(ctx, query, f.OrgID, id).Scan(&employee.HeadID, &employee.Revision); err != nil {
 			t.Fatal(err)
 		}
 		supersedes = employee.HeadID
@@ -300,22 +304,50 @@ func migrationV1Profile(t *testing.T, f *testsupport.Fixture, profile organizati
 	}
 	employee.HeadID = version.ID
 	result := organization.Result{ID: employee.ID, Revision: fmt.Sprint(employee.Revision)}
-	err = f.Repo.WithTx(ctx, f.OrgID, func(tx organization.Tx) error {
-		if supersedes == "" {
-			if err := tx.Create(ctx, employee, version); err != nil {
-				return err
-			}
-		} else if err := tx.Replace(ctx, employee, version, employee.Revision-1); err != nil {
-			return err
-		}
-		return tx.SaveReceipt(ctx, f.OrgID, f.Owner.SubjectID, operation, value.NewID(), organization.Receipt{Digest: bytes.Repeat([]byte{4}, 32), Result: result})
-	})
+	tx, err := f.Repo.DB.BeginTx(ctx, nil)
 	if err != nil {
-		t.Fatal("actual v1 encrypted history/receipt must persist:", err)
+		t.Fatal(err)
 	}
-	err = f.Exec(ctx, "INSERT INTO audit_event(id,org_id,subject_id,employee_id,operation,purpose,request_id,outcome,recorded_at) VALUES(?,?,?,?,?,'organization_management',?,'allowed',?)", "INSERT INTO audit_event(id,org_id,subject_id,employee_id,operation,purpose,request_id,outcome,recorded_at) VALUES($1,$2,$3,$4,$5,'organization_management',$6,'allowed',$7)", value.NewID(), f.OrgID, f.Owner.SubjectID, employee.ID, operation, value.NewID(), f.Repo.BindTime(f.Now))
-	if err != nil {
-		t.Fatal("legacy typed audit must persist before upgrade:", err)
+	defer tx.Rollback()
+	exec := func(sq, pg string, args ...any) sql.Result {
+		query := sq
+		if f.Backend == "postgres" {
+			query = pg
+		}
+		res, e := tx.ExecContext(ctx, query, args...)
+		if e != nil {
+			t.Fatal("genuine historical SQL must persist:", e)
+		}
+		return res
+	}
+	if f.Backend == "sqlite" {
+		exec("UPDATE authorization_guard SET auth_epoch=auth_epoch WHERE org_id=?", "", f.OrgID)
+	} else {
+		var epoch int64
+		if err = tx.QueryRowContext(ctx, "SELECT auth_epoch FROM authorization_guard WHERE org_id=$1 FOR UPDATE", f.OrgID).Scan(&epoch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if supersedes == "" {
+		exec("INSERT INTO employee(org_id,id,profile_head_id,profile_revision,valid_from) VALUES(?,?,?,?,?)", "INSERT INTO employee(org_id,id,profile_head_id,profile_revision,valid_from) VALUES($1,$2,$3,$4,$5)", f.OrgID, employee.ID, version.ID, employee.Revision, employee.Lifecycle.ValidFrom)
+	}
+	e, c := version.Envelope, version.Envelope.Context
+	exec("INSERT INTO encrypted_payload(org_id,employee_id,id,record_id,version_id,object_kind,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", "INSERT INTO encrypted_payload(org_id,employee_id,id,record_id,version_id,object_kind,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)", c.OrgID, c.EmployeeID, version.ID, c.RecordID, c.VersionID, c.ObjectKind, c.Purpose, c.SchemaType, c.SchemaVersion, e.FormatVersion, e.Algorithm, e.DEKID, e.Key.KEKID, e.Key.Version, e.Key.Data, e.SealedBytes, f.Repo.BindTime(f.Now))
+	var old any
+	if supersedes != "" {
+		old = supersedes
+	}
+	exec("INSERT INTO employee_profile_version(org_id,employee_id,id,version_no,payload_id,supersedes_id,recorded_at) VALUES(?,?,?,?,?,?,?)", "INSERT INTO employee_profile_version(org_id,employee_id,id,version_no,payload_id,supersedes_id,recorded_at) VALUES($1,$2,$3,$4,$5,$6,$7)", f.OrgID, employee.ID, version.ID, employee.Revision, version.ID, old, f.Repo.BindTime(f.Now))
+	if supersedes != "" {
+		res := exec("UPDATE employee SET profile_head_id=?,profile_revision=? WHERE org_id=? AND id=? AND profile_revision=? AND profile_head_id=?", "UPDATE employee SET profile_head_id=$1,profile_revision=$2 WHERE org_id=$3 AND id=$4 AND profile_revision=$5 AND profile_head_id=$6", version.ID, employee.Revision, f.OrgID, employee.ID, employee.Revision-1, supersedes)
+		if n, e := res.RowsAffected(); e != nil || n != 1 {
+			t.Fatal("historical profile CAS must update exactly its original head")
+		}
+	}
+	exec("INSERT INTO command_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_id,result_revision) VALUES(?,?,?,?,?,1,?,?)", "INSERT INTO command_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_id,result_revision) VALUES($1,$2,$3,$4,$5,1,$6,$7)", f.OrgID, f.Owner.SubjectID, operation, value.NewID(), bytes.Repeat([]byte{4}, 32), employee.ID, employee.Revision)
+	exec("INSERT INTO audit_event(id,org_id,subject_id,employee_id,operation,purpose,request_id,outcome,recorded_at) VALUES(?,?,?,?,?,'organization_management',?,'allowed',?)", "INSERT INTO audit_event(id,org_id,subject_id,employee_id,operation,purpose,request_id,outcome,recorded_at) VALUES($1,$2,$3,$4,$5,'organization_management',$6,'allowed',$7)", value.NewID(), f.OrgID, f.Owner.SubjectID, employee.ID, operation, value.NewID(), f.Repo.BindTime(f.Now))
+	if err = tx.Commit(); err != nil {
+		t.Fatal("historical encrypted history/receipt/audit must commit atomically:", err)
 	}
 	return result
 }
@@ -334,6 +366,9 @@ func migrationLegacyFacts(t *testing.T, repo *store.Repository) map[string][][]a
 		}
 		if name == "audit_event" {
 			columns = "id,org_id,subject_id,employee_id,operation,purpose,request_id,outcome,recorded_at"
+		}
+		if name == "capability_assignment" {
+			columns = "org_id,subject_id,capability,scope_kind,scope_id,employee_id"
 		}
 		order := "1,2,3"
 		if name == "authorization_guard" {
@@ -354,6 +389,26 @@ func migrationLegacyFacts(t *testing.T, repo *store.Repository) map[string][][]a
 	return facts
 }
 
+// Compare only columns present in the genuine source schema. New v5 owner
+// columns are independently constrained/tested, never invented legacy facts.
+func migrationOriginalUnchanged(t *testing.T, before, after map[string][][]any) {
+	t.Helper()
+	projected := make(map[string][][]any, len(before))
+	for table, original := range before {
+		rows := after[table]
+		if len(rows) != len(original) {
+			t.Fatalf("upgrade must preserve every original row in %s", table)
+		}
+		for i, row := range rows {
+			if len(row) < len(original[i]) {
+				t.Fatalf("upgrade must preserve every original column in %s", table)
+			}
+			projected[table] = append(projected[table], row[:len(original[i])])
+		}
+	}
+	runtimeUnchanged(t, before, projected)
+}
+
 func migrationLedger(t *testing.T, repo *store.Repository) {
 	t.Helper()
 	rows, err := repo.DB.QueryContext(context.Background(), "SELECT version,backend,checksum FROM schema_version ORDER BY version")
@@ -361,7 +416,7 @@ func migrationLedger(t *testing.T, repo *store.Repository) {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-	for _, version := range []int{1, 2, 3, 4} {
+	for _, version := range []int{1, 2, 3, 4, 5} {
 		var found int
 		var backend, checksum string
 		if !rows.Next() || rows.Scan(&found, &backend, &checksum) != nil {
@@ -373,7 +428,7 @@ func migrationLedger(t *testing.T, repo *store.Repository) {
 		}
 	}
 	if rows.Next() || rows.Err() != nil {
-		t.Fatal("ledger must contain exactly the two supported versions")
+		t.Fatal("ledger must contain exactly the five supported versions")
 	}
 }
 

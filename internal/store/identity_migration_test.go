@@ -85,7 +85,7 @@ func TestIdentityV3ActualV2UpgradePreservesEncryptedHistoryApprovalsReceiptsAndA
 			for i, row := range after["audit_event"] {
 				after["audit_event"][i] = row[:10]
 			}
-			runtimeUnchanged(t, before, after)
+			migrationOriginalUnchanged(t, before, after)
 			migrationLedger(t, f.Repo)
 			view, err := f.Service.Read(ctx, f.Request(f.Owner), first.ID, "2026-01-01", true)
 			if err != nil || view.Profile == nil || view.Profile.DisplayName != "SYNTHETIC_V2_CURRENT" {

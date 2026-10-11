@@ -351,10 +351,7 @@ func runtimeFacts(t *testing.T, ctx context.Context, repo *store.Repository) map
 		{"command_receipt", "org_id,subject_id,operation,key"}, {"audit_event", "id"},
 		{"delegation_authority", "id"}, {"grant_command_receipt", "org_id,subject_id,operation,key"},
 	} {
-		columns := "*"
-		if table.name == "audit_event" {
-			columns = runtimeAuditProjection(t, ctx, repo)
-		}
+		columns := runtimeTableProjection(t, ctx, repo, table.name)
 		rows, err := repo.DB.QueryContext(ctx, "SELECT "+columns+" FROM "+table.name+" ORDER BY "+table.order)
 		if err != nil {
 			t.Fatal("persisted fact query failed:", table.name, err)
@@ -366,13 +363,13 @@ func runtimeFacts(t *testing.T, ctx context.Context, repo *store.Repository) map
 
 // Explicit physical columns preserve every field while changing the prepared
 // query identity after a schema cutover; SELECT * retains PG's old row type.
-func runtimeAuditProjection(t *testing.T, ctx context.Context, repo *store.Repository) string {
+func runtimeTableProjection(t *testing.T, ctx context.Context, repo *store.Repository, table string) string {
 	t.Helper()
-	query := "SELECT name FROM pragma_table_info('audit_event') ORDER BY cid"
+	query := "SELECT name FROM pragma_table_info(?) ORDER BY cid"
 	if repo.Backend == "postgres" {
-		query = "SELECT attname FROM pg_attribute WHERE attrelid='audit_event'::regclass AND attnum>0 AND NOT attisdropped ORDER BY attnum"
+		query = "SELECT attname FROM pg_attribute WHERE attrelid=$1::regclass AND attnum>0 AND NOT attisdropped ORDER BY attnum"
 	}
-	rows, err := repo.DB.QueryContext(ctx, query)
+	rows, err := repo.DB.QueryContext(ctx, query, table)
 	if err != nil {
 		t.Fatal(err)
 	}

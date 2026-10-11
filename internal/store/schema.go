@@ -40,12 +40,17 @@ func (r *Repository) checkStructure(ctx context.Context, db queryer, version int
 				nameIndex = 3
 			}
 			name := strings.Split(strings.Fields(statement)[nameIndex], "(")[0]
-			for _, suffix := range []string{"_v2", "_v3", "_v4"} {
+			for _, suffix := range []string{"_v2", "_v3", "_v4", "_v5"} {
 				if strings.HasSuffix(name, suffix) {
 					finalName := strings.TrimSuffix(name, suffix)
 					statement = strings.Replace(statement, "CREATE TABLE "+name+"(", "CREATE TABLE "+finalName+"(", 1)
 					name = finalName
 				}
+			}
+			// v5 rebuilds mutually referenced authorization tables together.
+			// Renames rewrite their references as well as their declarations.
+			for _, table := range []string{"delegation_authority", "access_grant", "grant_command_receipt", "audit_event"} {
+				statement = strings.ReplaceAll(statement, table+"_v5", table)
 			}
 			expected[name] = compactSQL(statement)
 		}
@@ -128,8 +133,10 @@ func (r *Repository) checkPostgresStructure(ctx context.Context, db queryer, ver
 		}
 		for _, statement := range migrationStatements(ddl) {
 			statement = strings.Replace(statement, "CREATE TABLE ", "CREATE TEMP TABLE ", 1)
-			statement = strings.Replace(statement, "CREATE FUNCTION delegation_authority_immutable", "CREATE FUNCTION pg_temp.delegation_authority_immutable", 1)
-			statement = strings.Replace(statement, "EXECUTE FUNCTION delegation_authority_immutable", "EXECUTE FUNCTION pg_temp.delegation_authority_immutable", 1)
+			for _, function := range []string{"delegation_authority_immutable", "structure_fact_immutable", "structure_relation_immutable", "structure_item_owner"} {
+				statement = strings.Replace(statement, "CREATE FUNCTION "+function, "CREATE FUNCTION pg_temp."+function, 1)
+				statement = strings.Replace(statement, "EXECUTE FUNCTION "+function, "EXECUTE FUNCTION pg_temp."+function, 1)
+			}
 			if _, e = db.ExecContext(ctx, statement); e != nil {
 				return safeError(e)
 			}

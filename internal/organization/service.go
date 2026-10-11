@@ -24,6 +24,7 @@ type Service struct {
 	Store     Store
 	Cipher    sensitive.Cipher
 	DigestKey []byte
+	CursorKey []byte
 	Now       func() time.Time
 }
 
@@ -131,53 +132,21 @@ func (s *Service) Read(ctx context.Context, request Request, id, asOf string, in
 	if err != nil {
 		return View{}, s.denied(ctx, request, snapshot, "OP-ORG-06", err)
 	}
-	zone, err := time.LoadLocation(snapshot.Timezone)
-	if err != nil {
-		return View{}, fault.Unavailable
-	}
-	view := View{ID: id, OrgID: employee.OrgID, Lifecycle: employee.Lifecycle, AsOf: asOf, AuthorizationDate: s.clock().In(zone).Format("2006-01-02")}
-	if !includeProfile || !snapshot.Allows("pii.read", "pii", id, request.Purpose, s.clock()) {
-		return view, nil
-	}
-	version, err := s.Store.Version(ctx, employee.OrgID, id, employee.HeadID)
+	graph, err := s.Store.GraphState(ctx, employee.OrgID)
 	if err != nil {
 		return View{}, err
 	}
-	binding := profileBinding(employee, version.ID)
-	plain, err := s.Cipher.Open(ctx, binding, version.Envelope)
+	view, err := s.prepareView(ctx, request, snapshot, employee, asOf, includeProfile, graph)
 	if err != nil {
-		return View{}, fault.Unavailable
+		return View{}, err
 	}
-	defer clear(plain)
-	var payload ProfilePayload
-	if json.Unmarshal(plain, &payload) != nil || !validProfile(payload.Profile) || len(payload.EditReason) > 4096 {
-		return View{}, fault.Unavailable
+	var pii []string
+	if view.Profile != nil {
+		pii = append(pii, id)
 	}
-	err = s.Store.WithTx(ctx, employee.OrgID, func(tx Tx) error {
-		if err := tx.LockSubjects(ctx, employee.OrgID, []string{snapshot.SubjectID}); err != nil {
-			return err
-		}
-		current, err := s.authorize(ctx, tx, request, employee.OrgID, id, "OP-ORG-06")
-		if err != nil {
-			return err
-		}
-		if !current.Allows("pii.read", "pii", id, request.Purpose, s.clock()) || current.AuthEpoch != snapshot.AuthEpoch {
-			return fault.Forbidden
-		}
-		latest, err := tx.Employee(ctx, id)
-		if err != nil {
-			return err
-		}
-		if latest.OrgID != employee.OrgID || latest.Revision != employee.Revision || latest.HeadID != employee.HeadID {
-			return fault.Conflict
-		}
-		return tx.Audit(ctx, s.audit(request, current, id, "OP-ORG-06", "allowed"))
-	})
-	if err != nil {
+	if err = s.releaseQuery(ctx, request, snapshot, graph, view.AuthorizationDate, "OP-ORG-06", []Employee{employee}, nil, nil, pii, false); err != nil {
 		return View{}, s.denied(ctx, request, snapshot, "OP-ORG-06", err)
 	}
-	view.Profile = &payload.Profile
-	view.Revision = strconv.FormatInt(employee.Revision, 10)
 	return view, nil
 }
 func (s *Service) Update(ctx context.Context, request Request, id string, command UpdateCommand) (Result, error) {

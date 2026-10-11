@@ -613,6 +613,20 @@ func TestOIDCReturnRoutesAndActionBindingRejectOpenRedirects(t *testing.T) {
 			t.Fatal("unregistered return route must be rejected:", err)
 		}
 	}
+	org, employee := value.NewID(), value.NewID()
+	for _, route := range []string{
+		"orgs/" + org + "/tree", "/orgs/" + org + "/unknown",
+		"/orgs/" + org + "/employees?q=SYNTHETIC_BODY_ONLY_SEARCH",
+		"/orgs/" + org + "/tree?as_of=2026-01-01&as_of=2026-01-01",
+		"/employees/" + employee + "/organization-history?from=2026-01-01",
+		"/employees/" + employee + "/organization-history?from=2026-02-01&to=2026-01-01",
+		"/employees/" + employee + "/organization-history?from=2026-01-01&to=2026-02-01&q=private",
+		"/employees/" + employee + "/organization-history?from=2026-01-01&to=2026-02-30",
+	} {
+		if _, err := h.s.Begin(context.Background(), identity.BeginRequest{Mode: "login", ReturnTo: route, RequestID: value.NewID()}); !errors.Is(err, fault.Invalid) {
+			t.Fatal("organization identity return must remain canonical, safe and body-search-free:", err)
+		}
+	}
 	for _, request := range []identity.BeginRequest{
 		{Mode: "login", Action: "pii.write", ReturnTo: "/", RequestID: value.NewID()},
 		{Mode: "step_up", Action: "financial.export", ReturnTo: "/", RequestID: value.NewID(), SessionHash: h.f.Owner.Hash},

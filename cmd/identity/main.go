@@ -41,8 +41,9 @@ func run(args []string) error {
 	caFile := flags.String("postgres-ca-file", "", "protected public PostgreSQL CA file")
 	org := flags.String("org-id", "", "existing approved organization UUID")
 	subject := flags.String("subject-id", "", "existing approved subject UUID")
+	employee := flags.String("employee-id", "", "optional explicitly approved employee UUID")
 	requestID := flags.String("request-id", "", "maintenance request UUID")
-	if flags.Parse(args[1:]) != nil || flags.NArg() != 0 || !value.ValidID(*org) || !value.ValidID(*subject) || !value.ValidID(*requestID) {
+	if flags.Parse(args[1:]) != nil || flags.NArg() != 0 || !value.ValidID(*org) || !value.ValidID(*subject) || !value.ValidID(*requestID) || *employee != "" && !value.ValidID(*employee) {
 		return fault.Invalid
 	}
 	dsnBytes, err := configfile.Read(*dsnFile, 16<<10, true)
@@ -96,7 +97,7 @@ func run(args []string) error {
 	if err = repo.CheckSchema(ctx); err != nil {
 		return err
 	}
-	mapping := identity.Identity{Digest: digest, KeyVersion: 1, OrgID: *org, SubjectID: *subject}
+	mapping := identity.Identity{Digest: digest, KeyVersion: 1, OrgID: *org, SubjectID: *subject, EmployeeID: *employee}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	if op == "bind" {
 		return repo.BindIdentity(ctx, mapping, *requestID, now)

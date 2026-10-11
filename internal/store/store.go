@@ -263,7 +263,7 @@ func (r reader) sql(s, p string) string {
 }
 func (r *Repository) read() reader { return reader{r.DB, r.Backend} }
 
-const currentSchemaVersion = 4
+const currentSchemaVersion = 5
 
 func (r *Repository) migration(version int) (string, string, error) {
 	if (r.Backend != "sqlite" && r.Backend != "postgres") || version < 1 || version > currentSchemaVersion {

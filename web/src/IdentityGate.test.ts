@@ -394,4 +394,21 @@ describe('shared protected identity interaction', () => {
     expect(request.url.search).toBe('')
     closed(page)
   })
+  it.each([
+    [`/orgs/${ORG}/tree/?as_of=${AS_OF}`, `/orgs/${ORG}/tree?as_of=${AS_OF}`],
+    [`/orgs/${ORG}/employees?as_of=${AS_OF}&q=synthetic-private-name`, `/orgs/${ORG}/employees`],
+    [`/employees/${EMPLOYEE}/organization-history/?to=2026-11-01&from=2026-10-01`, `/employees/${EMPLOYEE}/organization-history?from=2026-10-01&to=2026-11-01`],
+    [`/employees/${EMPLOYEE}/organization-history?from=2026-10-01&from=2026-10-02&to=2026-11-01`, `/employees/${EMPLOYEE}/organization-history`],
+    [`/orgs/${ORG}/not-registered?as_of=${AS_OF}`, '/'],
+  ])('keeps only canonical organization return paths and explicit safe dates (%s)', async (route, expected) => {
+    history.replaceState({}, '', route)
+    api.reply('GET', '/api/v1/session', 401, { code: 'UNAUTHENTICATED' })
+    const page = await open()
+    expect(identityState(page)).toBe('expired')
+    const login = page.find('a[href^="/api/v1/auth/login"]')
+    const target = new URL(login.attributes('href')!, location.href)
+    expect(target.searchParams.get('return_to')).toBe(expected)
+    expect(target.href).not.toContain('synthetic-private-name')
+    expect(api.requests).toHaveLength(1)
+  })
 })

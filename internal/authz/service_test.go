@@ -542,9 +542,11 @@ func TestGrantRevisionIntervalAndReferenceBoundaries(t *testing.T) {
 			func(c *authz.IssueCommand) { c.ExpiresAt = c.ValidFrom },
 			func(c *authz.IssueCommand) { c.ValidFrom = "2026-10-11T00:00:00.1234567Z" },
 			func(c *authz.IssueCommand) { c.ValidFrom = "2026-10-11T00:00:00+00:00" },
-			func(c *authz.IssueCommand) { c.RelationRef = &nonNull },
+			func(c *authz.IssueCommand) {
+				c.RelationRef = &authz.RelationReference{Kind: "unknown", ID: value.NewID()}
+				c.RelationBound = true
+			},
 			func(c *authz.IssueCommand) { c.ObjectRef = &nonNull },
-			func(c *authz.IssueCommand) { c.Scope.Kind = "team" },
 			func(c *authz.IssueCommand) { c.Category = "financial" },
 			func(c *authz.IssueCommand) { c.Purpose = "arbitrary_free_text" },
 			func(c *authz.IssueCommand) { c.Scope.ID = "not-a-canonical-uuid" },
@@ -552,7 +554,7 @@ func TestGrantRevisionIntervalAndReferenceBoundaries(t *testing.T) {
 			cmd := grantCommand(f, "organization.read", "1")
 			alter(&cmd)
 			if _, err := f.Authz.Issue(context.Background(), managementRequest(f), cmd); !errors.Is(err, fault.Invalid) {
-				t.Fatal("unsupported scope/ref/purpose/precision must reject without command", err)
+				t.Fatal("invalid command must reject without receipt", err)
 			}
 		}
 		if f.Count(t, "grant_command_receipt") != 0 {

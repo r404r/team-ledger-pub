@@ -12,6 +12,11 @@ type Scope struct {
 	ID   string `json:"id"`
 }
 
+type RelationReference struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
+}
+
 type Authority struct {
 	ID            string    `json:"id"`
 	Capability    string    `json:"capability"`
@@ -32,46 +37,47 @@ type AuthorityHint struct {
 }
 
 type GrantDTO struct {
-	ID            string     `json:"id"`
-	OrgID         string     `json:"org_id"`
-	SubjectID     string     `json:"subject_id"`
-	Capability    string     `json:"capability"`
-	Category      string     `json:"category"`
-	Scope         Scope      `json:"scope"`
-	Purpose       string     `json:"purpose"`
-	ValidFrom     time.Time  `json:"valid_from"`
-	ExpiresAt     time.Time  `json:"expires_at"`
-	MFARequired   bool       `json:"mfa_required"`
-	RelationBound bool       `json:"relation_bound"`
-	RelationRef   *string    `json:"relation_ref"`
-	ObjectRef     *string    `json:"object_ref"`
-	Revision      string     `json:"revision"`
-	Status        string     `json:"status"`
-	AuthorityID   *string    `json:"authority_id"`
-	PolicyVersion *string    `json:"policy_version"`
-	ApprovedBy    *string    `json:"approved_by"`
-	ApprovedAt    *time.Time `json:"approved_at"`
-	IssuedBy      *string    `json:"issued_by"`
-	IssuedAt      *time.Time `json:"issued_at"`
-	RevokedBy     *string    `json:"revoked_by"`
-	RevokedAt     *time.Time `json:"revoked_at"`
-	RevokeReason  *string    `json:"revoke_reason"`
+	ID                      string             `json:"id"`
+	OrgID                   string             `json:"org_id"`
+	SubjectID               string             `json:"subject_id"`
+	Capability              string             `json:"capability"`
+	Category                string             `json:"category"`
+	Scope                   Scope              `json:"scope"`
+	Purpose                 string             `json:"purpose"`
+	ValidFrom               time.Time          `json:"valid_from"`
+	ExpiresAt               time.Time          `json:"expires_at"`
+	MFARequired             bool               `json:"mfa_required"`
+	RelationBound           bool               `json:"relation_bound"`
+	RelationRef             *RelationReference `json:"relation_ref"`
+	RelationActorEmployeeID string             `json:"-"`
+	ObjectRef               *string            `json:"object_ref"`
+	Revision                string             `json:"revision"`
+	Status                  string             `json:"status"`
+	AuthorityID             *string            `json:"authority_id"`
+	PolicyVersion           *string            `json:"policy_version"`
+	ApprovedBy              *string            `json:"approved_by"`
+	ApprovedAt              *time.Time         `json:"approved_at"`
+	IssuedBy                *string            `json:"issued_by"`
+	IssuedAt                *time.Time         `json:"issued_at"`
+	RevokedBy               *string            `json:"revoked_by"`
+	RevokedAt               *time.Time         `json:"revoked_at"`
+	RevokeReason            *string            `json:"revoke_reason"`
 }
 
 type IssueCommand struct {
-	SubjectID        string  `json:"subject_id"`
-	Capability       string  `json:"capability"`
-	Category         string  `json:"category"`
-	Scope            Scope   `json:"scope"`
-	Purpose          string  `json:"purpose"`
-	ValidFrom        string  `json:"valid_from"`
-	ExpiresAt        string  `json:"expires_at"`
-	MFARequired      bool    `json:"mfa_required"`
-	RelationBound    bool    `json:"relation_bound"`
-	RelationRef      *string `json:"relation_ref"`
-	ObjectRef        *string `json:"object_ref"`
-	AuthorityID      string  `json:"authority_id"`
-	ExpectedRevision string  `json:"expected_revision"`
+	SubjectID        string             `json:"subject_id"`
+	Capability       string             `json:"capability"`
+	Category         string             `json:"category"`
+	Scope            Scope              `json:"scope"`
+	Purpose          string             `json:"purpose"`
+	ValidFrom        string             `json:"valid_from"`
+	ExpiresAt        string             `json:"expires_at"`
+	MFARequired      bool               `json:"mfa_required"`
+	RelationBound    bool               `json:"relation_bound"`
+	RelationRef      *RelationReference `json:"relation_ref"`
+	ObjectRef        *string            `json:"object_ref"`
+	AuthorityID      string             `json:"authority_id"`
+	ExpectedRevision string             `json:"expected_revision"`
 }
 
 type RevokeCommand struct {
@@ -123,7 +129,9 @@ type Reader interface {
 	Authorities(context.Context, string, string, time.Time) ([]Authority, error)
 	Grant(context.Context, string, string) (GrantDTO, error)
 	VisibleGrants(context.Context, string, []Authority, Filter, string, time.Time) ([]GrantDTO, error)
-	Qualified(context.Context, string, string, string, Scope) (bool, error)
+	Qualified(context.Context, string, string, string, Scope, time.Time) (bool, error)
+	ScopeCovered(context.Context, string, Scope, Scope, time.Time) (bool, error)
+	RelationQualified(context.Context, string, string, Scope, RelationReference, time.Time) (bool, error)
 	OwnsScope(context.Context, string, Scope) (bool, error)
 	GrantReceipt(context.Context, string, string, string, string) (Receipt, bool, error)
 }

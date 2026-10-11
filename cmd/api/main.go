@@ -153,7 +153,7 @@ func run() error {
 	if repo.CheckSchema(startup) != nil {
 		return errors.New("invalid database schema")
 	}
-	service := &organization.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, DigestKey: digest, Now: time.Now}
+	service := &organization.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, DigestKey: digest, CursorKey: cursor, Now: time.Now}
 	grants := &authz.Service{Store: repo, DigestKey: digest, CursorKey: cursor, Now: time.Now}
 	oidcConfig, closeIdentity, e := identityConfiguration(cfg["PUBLIC_ORIGIN"], csrf, digest, cursor)
 	if e != nil {

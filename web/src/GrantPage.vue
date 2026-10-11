@@ -3,7 +3,8 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 
 
 const emit = defineEmits<{ 'session-expired': [] }>()
 
-type Scope = { kind: 'org' | 'employee'; id: string }
+type Scope = { kind: 'org' | 'team' | 'employee'; id: string }
+type RelationReference = { kind: 'reporting_line' | 'team_membership'; id: string }
 type Authority = {
   id: string; capability: string; category: string; scope: Scope; purpose: string
   valid_from: string; expires_at: string; mfa_required: boolean
@@ -16,8 +17,8 @@ type Session = {
 }
 type Grant = {
   id: string; org_id: string; subject_id: string; capability: string; category: string; scope: Scope; purpose: string
-  valid_from: string; expires_at: string; mfa_required: boolean; relation_bound: false
-  relation_ref: null; object_ref: null; revision: string; status: 'current' | 'future' | 'expired' | 'revoked'
+  valid_from: string; expires_at: string; mfa_required: boolean; relation_bound: boolean
+  relation_ref: RelationReference | null; object_ref: null; revision: string; status: 'current' | 'future' | 'expired' | 'revoked'
   authority_id: string | null; policy_version: string | null; approved_by: string | null; approved_at: string | null
   issued_by: string | null; issued_at: string | null; revoked_by: string | null; revoked_at: string | null; revoke_reason: string | null
 }
@@ -42,7 +43,8 @@ const phase = ref<'idle' | 'loading' | 'submitting' | 'verifying'>('idle')
 const error = ref<string | null>(null)
 const notice = ref<string | null>(null)
 const filters = reactive({ subject: '', scopeKind: '', scopeID: '', category: '', purpose: '', state: '', grantID: '', limit: '20' })
-const form = reactive({ authorityID: '', subject: '', scopeKind: 'employee', scopeID: '', validFrom: '', expiresAt: '', mfa: true })
+const form = reactive({ authorityID: '', subject: '', scopeKind: 'employee', scopeID: '', validFrom: '', expiresAt: '', mfa: true,
+  relationKind: '', relationID: '' })
 let appliedFilters = ''
 let generation = 0
 let controller: AbortController | null = null
@@ -71,10 +73,16 @@ function timestamp(value: unknown): string | null {
   return `${match[1]}.${(match[2] ?? '').padEnd(6, '0')}Z`
 }
 function validScope(value: Scope): boolean {
-  return Boolean(value && (value.kind === 'org' || value.kind === 'employee') && typeof value.id === 'string' && uuid.test(value.id))
+  return Boolean(value && ['org', 'team', 'employee'].includes(value.kind) && typeof value.id === 'string' && uuid.test(value.id))
 }
 function scopeCovers(allowed: Scope, kind: string, id: string): boolean {
-  return allowed.kind === 'org' ? (kind === 'employee' || kind === 'org' && id === allowed.id) : kind === 'employee' && id === allowed.id
+  return allowed.kind === 'org' ? (kind === 'employee' || kind === 'team' || kind === 'org' && id === allowed.id)
+    : allowed.kind === kind && id === allowed.id
+}
+function validRelation(bound: boolean, ref: RelationReference | null, scope: Scope): boolean {
+  if (!bound) return ref === null
+  return Boolean(ref && uuid.test(ref.id) &&
+    (ref.kind === 'reporting_line' && scope.kind === 'employee' || ref.kind === 'team_membership' && scope.kind === 'team'))
 }
 function validAuthority(value: Authority): boolean {
   return Boolean(value && uuid.test(value.id) && capabilities.includes(value.capability) &&
@@ -83,7 +91,8 @@ function validAuthority(value: Authority): boolean {
     timestamp(value.valid_from)! < timestamp(value.expires_at)! && typeof value.mfa_required === 'boolean' &&
     uuid.test(value.approved_by) && timestamp(value.approved_at) && typeof value.policy_version === 'string' && value.policy_version.length > 0 &&
     Array.isArray(value.delegable_scopes) && value.delegable_scopes.length > 0 && value.delegable_scopes.length <= 1000 &&
-    value.delegable_scopes.every((scope) => validScope(scope) && scopeCovers(value.scope, scope.kind, scope.id)))
+    value.delegable_scopes.every((scope) => validScope(scope) &&
+      (scopeCovers(value.scope, scope.kind, scope.id) || value.scope.kind === 'team' && scope.kind === 'employee')))
 }
 function sameContext(left: Session, right: Session): boolean {
   return left.subject_id === right.subject_id && left.org_id === right.org_id && left.auth_epoch === right.auth_epoch &&
@@ -98,7 +107,7 @@ function clearData() {
   revokeConfirm.value = false
   revokeReason.value = 'access_no_longer_required'
   form.authorityID = ''; form.subject = ''; form.scopeKind = 'employee'; form.scopeID = ''
-  form.validFrom = ''; form.expiresAt = ''; form.mfa = true
+  form.validFrom = ''; form.expiresAt = ''; form.mfa = true; form.relationKind = ''; form.relationID = ''
   lastCommand = null; uncertain.value = false; notice.value = null
 }
 function cancelOperation() {
@@ -150,7 +159,8 @@ function validGrant(value: Grant): boolean {
       !capabilities.includes(value.capability) || value.category !== (value.capability.startsWith('pii.') ? 'pii' : 'metadata') ||
       !validScope(value.scope) || value.purpose !== 'organization_management' || !timestamp(value.valid_from) || !timestamp(value.expires_at) ||
       timestamp(value.valid_from)! >= timestamp(value.expires_at)! || typeof value.mfa_required !== 'boolean' ||
-      value.relation_bound !== false || value.relation_ref !== null || value.object_ref !== null || !validRevision(value.revision) ||
+      typeof value.relation_bound !== 'boolean' || !validRelation(value.relation_bound, value.relation_ref, value.scope) ||
+      value.object_ref !== null || !validRevision(value.revision) ||
       !['current', 'future', 'expired', 'revoked'].includes(value.status)) return false
   for (const field of ['authority_id', 'approved_by', 'issued_by', 'revoked_by'] as const) {
     if (value[field] !== null && (typeof value[field] !== 'string' || !uuid.test(value[field]!))) return false
@@ -235,14 +245,21 @@ function newGrant() {
   if (busy.value || uncertain.value || !manageable.value) return
   details.value = null; editing.value = true; preview.value = null; revokeConfirm.value = false; error.value = null; notice.value = null
   form.authorityID = currentList.value!.authorities[0]!.id; form.subject = ''; form.validFrom = ''; form.expiresAt = ''
+  form.relationKind = ''; form.relationID = ''
   chooseAuthority()
 }
 function previewGrant() {
   if (busy.value || uncertain.value || !session.value || !manageable.value) return
   const authority = selectedAuthority.value
   const start = timestamp(form.validFrom); const end = timestamp(form.expiresAt)
+  const relation = form.relationKind
+    ? { kind: form.relationKind, id: form.relationID } as RelationReference : null
+  if ((!form.relationKind && form.relationID) ||
+      !validRelation(Boolean(form.relationKind), relation, { kind: form.scopeKind as Scope['kind'], id: form.scopeID })) {
+    preview.value = null; error.value = '关系绑定须明确填写原任职 ID：reporting_line 仅 employee 范围，team_membership 仅 team 范围。'; return
+  }
   if (!authority || !uuid.test(form.subject) || form.subject === session.value.subject_id || !uuid.test(form.scopeID) ||
-      !['org', 'employee'].includes(form.scopeKind) || (form.scopeKind === 'org' && form.scopeID !== session.value.org_id) ||
+      !['org', 'team', 'employee'].includes(form.scopeKind) || (form.scopeKind === 'org' && form.scopeID !== session.value.org_id) ||
       !authority.delegable_scopes.some((scope) => scopeCovers(scope, form.scopeKind, form.scopeID)) ||
       !start || !end || start >= end || start < timestamp(authority.valid_from)! || end > timestamp(authority.expires_at)! ||
       (authority.mfa_required && !form.mfa)) {
@@ -252,7 +269,7 @@ function previewGrant() {
     subject_id: form.subject, capability: authority.capability, category: authority.category,
     scope: { kind: form.scopeKind, id: form.scopeID }, purpose: authority.purpose,
     valid_from: form.validFrom, expires_at: form.expiresAt, mfa_required: form.mfa,
-    relation_bound: false, relation_ref: null, object_ref: null, authority_id: authority.id, expected_revision: session.value.auth_epoch,
+    relation_bound: relation !== null, relation_ref: relation, object_ref: null, authority_id: authority.id, expected_revision: session.value.auth_epoch,
   }) }
   error.value = null; editing.value = false
 }
@@ -294,7 +311,7 @@ async function execute(command: Command, replay = false) {
   } catch (cause) {
     if (!isCurrent(operation)) return
     const status = cause instanceof ApiFailure ? cause.status : 503
-    if (sent && !committed && ![400, 401, 403, 404, 409, 422].includes(status)) {
+    if ((sent || replay) && !committed && ![400, 401, 403, 404, 409, 422].includes(status)) {
       lastCommand = command; uncertain.value = true; preview.value = null; revokeConfirm.value = false; editing.value = false
     }
     showFailure(cause, operation)
@@ -314,7 +331,7 @@ onBeforeUnmount(() => { alive = false; window.removeEventListener('popstate', ro
 <template>
   <main :aria-busy="busy">
     <h1>明确授权管理</h1>
-    <p>仅管理已批准的独立 org / employee 授权。管理权不授予员工 PII、业务正文或全库审计读取权；不在此授角色或完成登录 / MFA。</p>
+    <p>仅管理明确批准的 org / team / employee 授权。团队、经理或身份映射不自动授予权限；关系绑定须填写原任职引用。管理权不授予员工 PII、业务正文或全库审计读取权。</p>
     <button type="button" @click="refresh">刷新授权</button>
     <p v-if="error" role="alert">{{ error }}</p>
     <p v-if="busy" role="status">{{ phase === 'submitting' ? '正在提交命令……' : phase === 'verifying' ? '正在重新验证并读取当前授权……' : '正在验证会话并读取授权……' }}</p>
@@ -336,7 +353,7 @@ onBeforeUnmount(() => { alive = false; window.removeEventListener('popstate', ro
         <h2>筛选当前可管理授权</h2>
         <fieldset :disabled="busy || uncertain">
           <label for="grant-filter-subject">筛选主体 ID</label><input id="grant-filter-subject" v-model="filters.subject" />
-          <label for="grant-filter-scope-kind">筛选 scope 类型</label><select id="grant-filter-scope-kind" v-model="filters.scopeKind"><option value="">全部</option><option value="org">org</option><option value="employee">employee</option></select>
+          <label for="grant-filter-scope-kind">筛选 scope 类型</label><select id="grant-filter-scope-kind" v-model="filters.scopeKind"><option value="">全部</option><option value="org">org</option><option value="team">team</option><option value="employee">employee</option></select>
           <label for="grant-filter-scope-id">筛选 scope ID</label><input id="grant-filter-scope-id" v-model="filters.scopeID" />
           <label for="grant-filter-category">筛选类别</label><select id="grant-filter-category" v-model="filters.category"><option value="">全部</option><option value="metadata">metadata</option><option value="pii">pii</option></select>
           <label for="grant-filter-purpose">筛选目的</label><select id="grant-filter-purpose" v-model="filters.purpose"><option value="">全部</option><option value="organization_management">organization_management</option></select>
@@ -367,7 +384,8 @@ onBeforeUnmount(() => { alive = false; window.removeEventListener('popstate', ro
         <dt>组织 ID</dt><dd>{{ details.org_id }}</dd><dt>能力 / 类别 / 目的</dt><dd>{{ details.capability }} / {{ details.category }} / {{ details.purpose }}</dd>
         <dt>范围</dt><dd>{{ details.scope.kind }} {{ details.scope.id }}</dd><dt>期限（半开）</dt><dd>[{{ details.valid_from }}, {{ details.expires_at }})</dd>
         <dt>revision</dt><dd>{{ details.revision }}</dd><dt>状态</dt><dd>{{ details.status }}</dd>
-        <dt>MFA</dt><dd>{{ details.mfa_required ? '必须' : '按会话策略' }}</dd><dt>绑定</dt><dd>独立授权；无关系 / 对象引用</dd>
+        <dt>MFA</dt><dd>{{ details.mfa_required ? '必须' : '按会话策略' }}</dd>
+        <dt>绑定</dt><dd>{{ details.relation_bound ? `${details.relation_ref?.kind} ${details.relation_ref?.id}` : '独立授权；无关系引用' }}；无对象引用</dd>
         <dt>原批准依据</dt><dd>{{ details.authority_id ?? '历史未知' }}</dd><dt>policy version</dt><dd>{{ details.policy_version ?? '历史未知' }}</dd>
         <dt>批准者 / 时间</dt><dd>{{ details.approved_by ?? '历史未知' }} / {{ details.approved_at ?? '历史未知' }}</dd>
         <dt>签发者 / 时间</dt><dd>{{ details.issued_by ?? '历史未知' }} / {{ details.issued_at ?? '历史未知' }}</dd>
@@ -375,18 +393,22 @@ onBeforeUnmount(() => { alive = false; window.removeEventListener('popstate', ro
       </dl>
       <button v-if="details.status !== 'revoked' && !revokeConfirm" type="button" :disabled="busy || uncertain" @click="revokeConfirm = true; notice = null">撤销此授权</button>
     </section>
-    <form v-if="editing" aria-label="新建独立授权" @submit.prevent="previewGrant">
-      <h2>新建独立授权</h2>
+    <form v-if="editing" aria-label="新建明确授权" @submit.prevent="previewGrant">
+      <h2>新建明确授权</h2>
       <fieldset :disabled="busy || uncertain">
         <label for="grant-authority">批准依据（authority）</label><select id="grant-authority" v-model="form.authorityID" @change="chooseAuthority"><option v-for="authority in currentList?.authorities" :key="authority.id" :value="authority.id">{{ authority.id }} · {{ authority.capability }} · 原批准 {{ authority.scope.kind }} {{ authority.scope.id }}</option></select>
         <p v-if="selectedAuthority">能力 {{ selectedAuthority.capability }} · 类别 {{ selectedAuthority.category }} · 目的 {{ selectedAuthority.purpose }} · policy {{ selectedAuthority.policy_version }}</p>
         <label for="grant-subject">受授权主体 ID（已有资格，非自身）</label><input id="grant-subject" v-model="form.subject" required autocomplete="off" />
-        <label for="grant-scope-kind">授权 scope 类型</label><select id="grant-scope-kind" v-model="form.scopeKind" :disabled="!canUseOrg"><option value="org" :disabled="!canUseOrg">org</option><option value="employee">employee</option></select>
+        <label for="grant-scope-kind">授权 scope 类型</label><select id="grant-scope-kind" v-model="form.scopeKind"><option value="org" :disabled="!canUseOrg">org</option><option value="team">team</option><option value="employee">employee</option></select>
         <label for="grant-scope-id">授权 scope ID</label><input id="grant-scope-id" v-model="form.scopeID" required autocomplete="off" />
         <label for="grant-start">生效时间（RFC3339 UTC，最多六位小数）</label><input id="grant-start" v-model="form.validFrom" placeholder="YYYY-MM-DDTHH:mm:ss.ffffffZ" required autocomplete="off" />
         <label for="grant-end">到期时间（RFC3339 UTC，最多六位小数）</label><input id="grant-end" v-model="form.expiresAt" placeholder="YYYY-MM-DDTHH:mm:ss.ffffffZ" required autocomplete="off" />
         <label for="grant-mfa"><input id="grant-mfa" v-model="form.mfa" type="checkbox" :disabled="selectedAuthority?.mfa_required" />被授予人使用此授权须 MFA</label>
-        <p>只支持独立授权：relation_bound=false，relation_ref=null，object_ref=null。服务器仍检查目标主体当前资格及同组织范围。</p>
+        <label for="grant-relation-kind">关系绑定类型（可留空）</label>
+        <select id="grant-relation-kind" v-model="form.relationKind" @change="form.relationID = ''"><option value="">独立授权</option><option value="reporting_line">reporting_line（经理任职）</option><option value="team_membership">team_membership（团队任职）</option></select>
+        <label v-if="form.relationKind" for="grant-relation-id">原任职关系 ID（不可猜测或自动填入）</label>
+        <input v-if="form.relationKind" id="grant-relation-id" v-model="form.relationID" required autocomplete="off" />
+        <p>服务器核对目标主体的已批准员工映射、当前原任职与范围。换任职、结束或更正不使旧引用复活；不自动授经理或团队权限。</p>
         <button type="submit">预览授权</button>
         <button type="button" @click="editing = false; form.subject = ''; form.validFrom = ''; form.expiresAt = ''">取消新建</button>
       </fieldset>
@@ -395,7 +417,7 @@ onBeforeUnmount(() => { alive = false; window.removeEventListener('popstate', ro
       <h2>确认已批准的授权</h2>
       <p>受授权主体 {{ form.subject }} · {{ preview.authority.capability }} / {{ preview.authority.category }} / {{ preview.authority.purpose }}</p>
       <p>{{ form.scopeKind }} {{ form.scopeID }} · [{{ form.validFrom }}, {{ form.expiresAt }}) · MFA {{ form.mfa ? '必须' : '按会话策略' }}</p>
-      <p>独立授权 · 批准依据 {{ preview.authority.id }} · 批准者 {{ preview.authority.approved_by }} · {{ preview.authority.approved_at }} · policy {{ preview.authority.policy_version }} · expected epoch {{ preview.context.auth_epoch }}</p>
+      <p>{{ form.relationKind ? `${form.relationKind} ${form.relationID}` : '独立授权' }} · 批准依据 {{ preview.authority.id }} · 批准者 {{ preview.authority.approved_by }} · {{ preview.authority.approved_at }} · policy {{ preview.authority.policy_version }} · expected epoch {{ preview.context.auth_epoch }}</p>
       <p>这会向已有资格的主体开放上述范围；不授角色。请逐项确认真实批准范围。</p>
       <button type="button" :disabled="busy || uncertain" @click="confirmIssue">确认授予</button>
       <button type="button" :disabled="busy || uncertain" @click="preview = null; editing = true">返回修改</button>

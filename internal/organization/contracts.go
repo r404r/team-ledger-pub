@@ -54,13 +54,17 @@ type Result struct {
 	Revision string `json:"profile_revision"`
 }
 type View struct {
-	ID                string    `json:"id"`
-	OrgID             string    `json:"org_id"`
-	Revision          string    `json:"profile_revision,omitempty"`
-	Lifecycle         Lifecycle `json:"lifecycle"`
-	AsOf              string    `json:"as_of"`
-	AuthorizationDate string    `json:"authorization_date"`
-	Profile           *Profile  `json:"profile,omitempty"`
+	ID                string           `json:"id"`
+	OrgID             string           `json:"org_id"`
+	Revision          string           `json:"profile_revision,omitempty"`
+	Lifecycle         Lifecycle        `json:"lifecycle"`
+	AsOf              string           `json:"as_of"`
+	AuthorizationDate string           `json:"authorization_date"`
+	Profile           *Profile         `json:"profile,omitempty"`
+	GraphRevision     string           `json:"graph_revision,omitempty"`
+	Memberships       []MembershipView `json:"memberships,omitempty"`
+	Positions         []PositionView   `json:"positions,omitempty"`
+	ReportingLines    []ReportingView  `json:"reporting_lines,omitempty"`
 }
 type Receipt struct {
 	Digest []byte
@@ -72,12 +76,14 @@ type Audit struct {
 }
 
 type Reader interface {
+	StructureReader
 	Security(context.Context, []byte, string, string) (authz.Snapshot, error)
 	Employee(context.Context, string) (Employee, error)
 	Version(context.Context, string, string, string) (Version, error)
 	Receipt(context.Context, string, string, string, string) (Receipt, bool, error)
 }
 type Tx interface {
+	StructureTx
 	Reader
 	LockSubjects(context.Context, string, []string) error
 	Create(context.Context, Employee, Version) error

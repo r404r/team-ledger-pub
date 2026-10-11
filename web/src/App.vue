@@ -3,9 +3,12 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import ProfilePage from './ProfilePage.vue'
 import GrantPage from './GrantPage.vue'
 import IdentityGate from './IdentityGate.vue'
+import OrganizationPage from './OrganizationPage.vue'
 
 const pathname = ref(window.location.pathname)
 const grantsRoute = computed(() => /^\/security\/grants\/?$/.test(pathname.value))
+const organizationRoute = computed(() => /^\/orgs\/[0-9a-f-]+\/(?:tree|employees)\/?$/.test(pathname.value) ||
+  /^\/employees\/[0-9a-f-]+\/organization-history\/?$/.test(pathname.value))
 
 function readRoute() {
   pathname.value = window.location.pathname
@@ -22,12 +25,15 @@ onBeforeUnmount(() => window.removeEventListener('popstate', readRoute))
 </script>
 
 <template>
-  <IdentityGate v-slot="{ expireSession }">
+  <IdentityGate v-slot="{ expireSession, orgID }">
     <nav aria-label="主导航">
       <a href="/" @click="navigate($event, '/')">人员资料</a>
       <a href="/security/grants" @click="navigate($event, '/security/grants')">授权</a>
+      <a :href="`/orgs/${orgID}/tree`" @click="navigate($event, `/orgs/${orgID}/tree`)">组织树</a>
+      <a :href="`/orgs/${orgID}/employees`" @click="navigate($event, `/orgs/${orgID}/employees`)">员工目录</a>
     </nav>
     <GrantPage v-if="grantsRoute" @session-expired="expireSession" />
+    <OrganizationPage v-else-if="organizationRoute" @session-expired="expireSession" />
     <ProfilePage v-else @session-expired="expireSession" />
   </IdentityGate>
 </template>

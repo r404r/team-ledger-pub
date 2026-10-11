@@ -120,7 +120,7 @@ func TestMaintenanceAuditV4PreservesV3HistoryWithoutInventingOperator(t *testing
 			for i, row := range after["audit_event"] {
 				after["audit_event"][i] = row[:10]
 			}
-			runtimeUnchanged(t, before, after)
+			migrationOriginalUnchanged(t, before, after)
 			migrationLedger(t, f.Repo)
 			identityRows, err = f.Repo.DB.QueryContext(ctx, "SELECT * FROM subject_identity ORDER BY digest")
 			if err != nil {

@@ -38,12 +38,19 @@ function knownReturnRoute() {
   const url = new URL(window.location.href)
   let path: string
   const employee = /^\/employees\/([0-9a-f-]+)(?:\/profile)?\/?$/.exec(url.pathname)
+  const history = /^\/employees\/([0-9a-f-]+)\/organization-history\/?$/.exec(url.pathname)
+  const organization = /^\/orgs\/([0-9a-f-]+)\/(tree|employees)\/?$/.exec(url.pathname)
   if (employee && uuid.test(employee[1]!)) path = `/employees/${employee[1]}`
+  else if (history && uuid.test(history[1]!)) path = `/employees/${history[1]}/organization-history`
+  else if (organization && uuid.test(organization[1]!)) path = `/orgs/${organization[1]}/${organization[2]}`
   else if (/^\/security\/grants\/?$/.test(url.pathname)) path = '/security/grants'
   else if (url.pathname === '/') path = '/'
   else return '/'
   const query = Array.from(url.searchParams.entries())
-  if (query.length === 1 && query[0]![0] === 'as_of' && validDate(query[0]![1])) {
+  if (history && query.length === 2 && url.searchParams.getAll('from').length === 1 && url.searchParams.getAll('to').length === 1) {
+    const from = url.searchParams.get('from')!, to = url.searchParams.get('to')!
+    if (validDate(from) && validDate(to) && from < to) return `${path}?${new URLSearchParams({ from, to })}`
+  } else if (!history && query.length === 1 && query[0]![0] === 'as_of' && validDate(query[0]![1])) {
     return `${path}?${new URLSearchParams({ as_of: query[0]![1] })}`
   }
   return path
@@ -242,7 +249,7 @@ onBeforeUnmount(() => {
     <a v-if="['logged-out', 'expired', 'changed', 'unavailable', 'logout-failed', 'mfa-failed'].includes(phase)" :href="loginURL" @click="login">通过可信身份设施登录</a>
   </section>
   <div v-if="phase === 'authenticated'" :key="protectedGeneration">
-    <slot :expireSession="expireSession" />
+    <slot :expireSession="expireSession" :orgID="session?.org_id" />
   </div>
 </template>
 
