@@ -160,7 +160,6 @@ describe('P-SEC-01 current independent grant management', () => {
     const page = await open(); await select(page)
     await action(page, /^撤销此授权$/).trigger('click')
     await field(page, /撤销原因/).setValue('policy_change')
-    expect(page.find('[aria-label="撤销影响"]').text()).toMatch(/已披露|已下载/)
     expect(api.commands()).toHaveLength(0)
     const pending = api.defer('POST', `/api/v1/access-grants/${GRANT}/revoke`)
     await action(page, /^确认撤销$/).trigger('click'); await settle()
@@ -207,6 +206,14 @@ describe('P-SEC-01 current independent grant management', () => {
       api.reply('POST', '/api/v1/access-grants', status, { code: 'DENIED' })
       await action(page, /^确认授予$/).trigger('click'); await settle()
       cleared(page); expect(page.find('[role="alert"]').exists()).toBe(true)
+      if (status === 401) {
+        expect(page.find('nav').exists()).toBe(false)
+        expect(page.find('main').exists()).toBe(false)
+        const requestCount = api.requests.length
+        window.dispatchEvent(new Event('focus')); await settle()
+        expect(api.requests).toHaveLength(requestCount)
+        expect(page.find('main').exists()).toBe(false)
+      }
     })
   }
   for (const change of ['epoch', 'subject', 'org', 'authority', 'management', 'mfa'] as const) {

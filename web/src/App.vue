@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import ProfilePage from './ProfilePage.vue'
 import GrantPage from './GrantPage.vue'
+import IdentityGate from './IdentityGate.vue'
 
 const pathname = ref(window.location.pathname)
 const grantsRoute = computed(() => /^\/security\/grants\/?$/.test(pathname.value))
@@ -21,12 +22,14 @@ onBeforeUnmount(() => window.removeEventListener('popstate', readRoute))
 </script>
 
 <template>
-  <nav aria-label="主导航">
-    <a href="/" @click="navigate($event, '/')">人员资料</a>
-    <a href="/security/grants" @click="navigate($event, '/security/grants')">授权</a>
-  </nav>
-  <GrantPage v-if="grantsRoute" />
-  <ProfilePage v-else />
+  <IdentityGate v-slot="{ expireSession }">
+    <nav aria-label="主导航">
+      <a href="/" @click="navigate($event, '/')">人员资料</a>
+      <a href="/security/grants" @click="navigate($event, '/security/grants')">授权</a>
+    </nav>
+    <GrantPage v-if="grantsRoute" @session-expired="expireSession" />
+    <ProfilePage v-else @session-expired="expireSession" />
+  </IdentityGate>
 </template>
 
 <style scoped>

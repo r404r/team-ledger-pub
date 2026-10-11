@@ -1,13 +1,18 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"embed"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -73,13 +78,157 @@ func Open(ctx context.Context, backend, dsn string) (*Repository, error) {
 				return nil, fault.Unavailable
 			}
 		}
-		cfg.ConnectTimeout = 10 * time.Second
-		cfg.RuntimeParams["statement_timeout"] = "10000"
-		cfg.RuntimeParams["lock_timeout"] = "2000"
-		db = stdlib.OpenDB(*cfg)
+		db = postgresDB(cfg)
 	default:
 		return nil, fault.Unavailable
 	}
+	return openRepository(ctx, backend, db)
+}
+
+// OpenPostgresWithCheckedCA binds every physical connection to the trust bytes
+// already read under the caller's public-file policy. sslrootcert remains a
+// required declaration in the URL, but is never passed to pgx for file access.
+func OpenPostgresWithCheckedCA(ctx context.Context, dsn string, caPEM []byte) (*Repository, error) {
+	u, err := url.Parse(dsn)
+	if err != nil || u.Scheme != "postgres" && u.Scheme != "postgresql" || u.Fragment != "" || os.Getenv("PGSERVICE") != "" {
+		return nil, fault.Unavailable
+	}
+	q, err := url.ParseQuery(u.RawQuery)
+	if err != nil || len(q["sslmode"]) != 1 || q.Get("sslmode") != "verify-full" || len(q["sslrootcert"]) != 1 || q.Get("sslrootcert") == "" || q.Get("sslrootcert") == "system" {
+		return nil, fault.Unavailable
+	}
+	// Services can override settings during ParseConfig; client credentials
+	// are not part of this checked-CA connector and must not be read implicitly.
+	for _, key := range []string{"service", "servicefile", "ssl", "sslcert", "sslkey", "sslpassword", "passfile"} {
+		if _, present := q[key]; present {
+			return nil, fault.Unavailable
+		}
+	}
+	host := u.Hostname()
+	if values, present := q["host"]; present {
+		if len(values) != 1 {
+			return nil, fault.Unavailable
+		}
+		host = values[0]
+	}
+	for _, h := range strings.Split(host, ",") {
+		if h == "" || strings.ContainsAny(h, "/\\\x00") {
+			return nil, fault.Unavailable
+		}
+	}
+	user := q.Get("user")
+	if user == "" && u.User != nil {
+		user = u.User.Username()
+	}
+	if user == "" {
+		return nil, fault.Unavailable
+	}
+	roots := x509.NewCertPool()
+	remaining := bytes.TrimSpace(caPEM)
+	if len(remaining) == 0 || len(caPEM) > 1<<20 {
+		return nil, fault.Unavailable
+	}
+	for len(remaining) != 0 {
+		// pem.Decode skips leading junk and invalid blocks; reject rather than
+		// accepting only the valid subset of a malformed trust bundle.
+		if !bytes.HasPrefix(remaining, []byte("-----BEGIN CERTIFICATE-----")) {
+			return nil, fault.Unavailable
+		}
+		const endMarker = "-----END CERTIFICATE-----"
+		end := bytes.Index(remaining, []byte(endMarker))
+		if end < 0 {
+			return nil, fault.Unavailable
+		}
+		end += len(endMarker)
+		if bytes.Count(remaining[:end], []byte("-----BEGIN ")) != 1 {
+			return nil, fault.Unavailable
+		}
+		block, rest := pem.Decode(remaining[:end])
+		if block == nil || len(bytes.TrimSpace(rest)) != 0 || block.Type != "CERTIFICATE" || len(block.Headers) != 0 {
+			return nil, fault.Unavailable
+		}
+		cert, e := x509.ParseCertificate(block.Bytes)
+		if e != nil || !cert.BasicConstraintsValid || !cert.IsCA || cert.KeyUsage != 0 && cert.KeyUsage&x509.KeyUsageCertSign == 0 {
+			return nil, fault.Unavailable
+		}
+		roots.AddCert(cert)
+		remaining = bytes.TrimSpace(remaining[end:])
+	}
+	// Shadow file/default/environment inputs before parsing, not afterwards:
+	// pgx reads sslrootcert even when sslmode=disable.
+	q.Set("sslmode", "disable")
+	for _, key := range []string{"sslrootcert", "sslcert", "sslkey", "sslpassword", "passfile"} {
+		q.Set(key, "")
+	}
+	q.Set("user", user)
+	if _, present := q["password"]; !present {
+		password := ""
+		if u.User != nil {
+			password, _ = u.User.Password()
+		}
+		q.Set("password", password)
+	}
+	if _, present := q["database"]; !present {
+		if _, present = q["dbname"]; !present {
+			q.Set("database", strings.TrimPrefix(u.Path, "/"))
+		}
+	}
+	if _, present := q["port"]; !present && u.Port() == "" {
+		q.Set("port", "5432")
+	}
+	for key, value := range map[string]string{
+		"connect_timeout": "10", "sslsni": "1", "sslnegotiation": "postgres",
+		"target_session_attrs": "any", "min_protocol_version": "", "max_protocol_version": "",
+		"channel_binding": "prefer", "require_auth": "",
+	} {
+		if _, present := q[key]; !present {
+			q.Set(key, value)
+		}
+	}
+	u.RawQuery = q.Encode()
+	cfg, err := pgx.ParseConfig(u.String())
+	if err != nil {
+		return nil, fault.Unavailable
+	}
+	// Runtime environment settings must not silently augment the explicit URL.
+	for _, key := range []string{"application_name", "timezone", "options"} {
+		if _, present := q[key]; !present {
+			delete(cfg.RuntimeParams, key)
+		}
+	}
+	makeTLS := func(host string, port uint16) (*tls.Config, error) {
+		if network, _ := pgconn.NetworkAddress(host, port); network != "tcp" || host == "" {
+			return nil, fault.Unavailable
+		}
+		return &tls.Config{RootCAs: roots, ServerName: host, MinVersion: tls.VersionTLS12}, nil
+	}
+	cfg.TLSConfig, err = makeTLS(cfg.Host, cfg.Port)
+	if err != nil {
+		return nil, err
+	}
+	for _, fallback := range cfg.Fallbacks {
+		fallback.TLSConfig, err = makeTLS(fallback.Host, fallback.Port)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if cfg.SSLNegotiation == "direct" {
+		cfg.TLSConfig.NextProtos = []string{"postgresql"}
+		for _, fallback := range cfg.Fallbacks {
+			fallback.TLSConfig.NextProtos = []string{"postgresql"}
+		}
+	}
+	return openRepository(ctx, "postgres", postgresDB(cfg))
+}
+
+func postgresDB(cfg *pgx.ConnConfig) *sql.DB {
+	cfg.ConnectTimeout = 10 * time.Second
+	cfg.RuntimeParams["statement_timeout"] = "10000"
+	cfg.RuntimeParams["lock_timeout"] = "2000"
+	return stdlib.OpenDB(*cfg)
+}
+
+func openRepository(ctx context.Context, backend string, db *sql.DB) (*Repository, error) {
 	db.SetMaxOpenConns(8)
 	db.SetMaxIdleConns(8)
 	if err := db.PingContext(ctx); err != nil {
@@ -114,7 +263,7 @@ func (r reader) sql(s, p string) string {
 }
 func (r *Repository) read() reader { return reader{r.DB, r.Backend} }
 
-const currentSchemaVersion = 2
+const currentSchemaVersion = 4
 
 func (r *Repository) migration(version int) (string, string, error) {
 	if (r.Backend != "sqlite" && r.Backend != "postgres") || version < 1 || version > currentSchemaVersion {
@@ -129,7 +278,7 @@ func (r *Repository) migration(version int) (string, string, error) {
 
 // Migrate is a standalone maintenance operation. Existing schemas must match
 // their complete supported ledger and physical definitions before any upgrade.
-// Both a fresh v1->v2 install and an existing v1 upgrade commit atomically.
+// Fresh installation and every supported forward upgrade commit atomically.
 func (r *Repository) Migrate(ctx context.Context) error {
 	tx, err := r.DB.BeginTx(ctx, nil)
 	if err != nil {

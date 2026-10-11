@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue'
 
+const emit = defineEmits<{ 'session-expired': [] }>()
+
 type Scope = { kind: 'org' | 'employee'; id: string }
 type Authority = {
   id: string; capability: string; category: string; scope: Scope; purpose: string
@@ -180,6 +182,7 @@ function showFailure(cause: unknown, operation: Operation) {
   if ([401, 403, 404].includes(status)) {
     cancelOperation(); clearData(); session.value = null
     error.value = status === 401 ? '会话已失效，授权内容和表单已清空。' : '当前授权不可访问或管理条件已改变，内容和表单已清空。请手动刷新；MFA 只能由可信身份设施验证。'
+    if (status === 401) emit('session-expired')
   } else if (status === 409) {
     clearData(); error.value = '授权版本或上下文冲突。未自动重试；请手动刷新，再重新预览与确认。'
   } else if (status === 422 || status === 400) {

@@ -63,7 +63,7 @@ func TestMigrationActualV1PreservesEveryLegacyFact(t *testing.T) {
 			}
 			for range 2 {
 				if err = f.Repo.Migrate(ctx); err != nil {
-					t.Fatal("genuine v2 repeat must preserve all facts:", err)
+					t.Fatal("repeat migration must preserve all facts:", err)
 				}
 			}
 			if err = f.Repo.CheckSchema(ctx); err != nil {
@@ -130,9 +130,7 @@ func TestMigrationRejectsReplacedDefinitionsAndLedgerDrift(t *testing.T) {
 				t.Run(fmt.Sprintf("%s/v%d/%s", backend, version, drift), func(t *testing.T) {
 					f := migrationV1Fixture(t, backend)
 					if version == 2 {
-						if err := f.Repo.Migrate(context.Background()); err != nil {
-							t.Fatal(err)
-						}
+						migrationInstallVersion(t, f.Repo, 2)
 					}
 					migrationDrift(t, f.Repo, version, drift)
 					before := migrationLegacyFacts(t, f.Repo)
@@ -347,7 +345,7 @@ func migrationLegacyFacts(t *testing.T, repo *store.Repository) map[string][][]a
 		}
 		facts[name] = runtimeRows(t, rows)
 	}
-	// The original ledger row is preserved; a successful upgrade appends v2.
+	// The original ledger row is preserved; forward upgrades append records.
 	rows, err := repo.DB.QueryContext(context.Background(), "SELECT version,backend,checksum FROM schema_version WHERE version=1")
 	if err != nil {
 		t.Fatal(err)
@@ -363,11 +361,11 @@ func migrationLedger(t *testing.T, repo *store.Repository) {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-	for _, version := range []int{1, 2} {
+	for _, version := range []int{1, 2, 3, 4} {
 		var found int
 		var backend, checksum string
 		if !rows.Next() || rows.Scan(&found, &backend, &checksum) != nil {
-			t.Fatal("both checksum ledger records must exist")
+			t.Fatal("every supported checksum ledger record must exist")
 		}
 		b, err := os.ReadFile(filepath.Join("migrations", fmt.Sprintf("%s_v%d.sql", repo.Backend, version)))
 		if err != nil || found != version || backend != repo.Backend || checksum != fmt.Sprintf("%x", sha256.Sum256(b)) {

@@ -1,8 +1,6 @@
 package httpapi
 
 import (
-	"crypto/subtle"
-	"mime"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -13,7 +11,7 @@ import (
 	"github.com/r404r/team-ledger/internal/value"
 )
 
-func (h *handler) grantRoute(w http.ResponseWriter, r *http.Request, req authz.Request, csrf string) {
+func (h *handler) grantRoute(w http.ResponseWriter, r *http.Request, req authz.Request) {
 	if req.Purpose != authz.ManagementPurpose {
 		h.fail(w, fault.Invalid, req.RequestID)
 		return
@@ -61,15 +59,6 @@ func (h *handler) grantRoute(w http.ResponseWriter, r *http.Request, req authz.R
 	revoke := r.Method == http.MethodPost && len(parts) == 2 && value.ValidID(parts[0]) && parts[1] == "revoke"
 	if !issue && !revoke {
 		h.fail(w, fault.NotFound, req.RequestID)
-		return
-	}
-	if r.URL.RawQuery != "" || r.Header.Get("Origin") != h.origin || r.Header.Get("Sec-Fetch-Site") != "same-origin" || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(csrf)) != 1 {
-		h.fail(w, fault.Forbidden, req.RequestID)
-		return
-	}
-	media, params, e := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if e != nil || media != "application/json" || len(params) > 1 || len(params) == 1 && strings.ToLower(params["charset"]) != "utf-8" {
-		h.fail(w, unsupportedMedia, req.RequestID)
 		return
 	}
 	if !value.ValidID(req.Key) || req.Key[14] != '4' || !strings.ContainsRune("89ab", rune(req.Key[19])) {

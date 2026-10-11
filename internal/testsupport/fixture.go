@@ -16,6 +16,7 @@ import (
 
 	"github.com/r404r/team-ledger/internal/authz"
 	"github.com/r404r/team-ledger/internal/httpapi"
+	"github.com/r404r/team-ledger/internal/identity"
 	"github.com/r404r/team-ledger/internal/organization"
 	"github.com/r404r/team-ledger/internal/sensitive"
 	"github.com/r404r/team-ledger/internal/store"
@@ -257,7 +258,13 @@ func NewHarness(t testing.TB, backend string) *Fixture {
 		t.Fatal(err)
 	}
 	server := httptest.NewUnstartedServer(nil)
-	handler, err := httpapi.New(f.Service, f.Authz, f.CSRFKey, "https://"+server.Listener.Addr().String(), dir)
+	identities, err := identity.New(ctx, f.Repo, f.CSRFKey, nil)
+	if err != nil {
+		server.Close()
+		t.Fatal(err)
+	}
+	identities.Now = f.Service.Now
+	handler, err := httpapi.New(f.Service, f.Authz, identities, f.CSRFKey, "https://"+server.Listener.Addr().String(), dir)
 	if err != nil {
 		server.Close()
 		t.Fatal(err)

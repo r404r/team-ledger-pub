@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -350,13 +351,49 @@ func runtimeFacts(t *testing.T, ctx context.Context, repo *store.Repository) map
 		{"command_receipt", "org_id,subject_id,operation,key"}, {"audit_event", "id"},
 		{"delegation_authority", "id"}, {"grant_command_receipt", "org_id,subject_id,operation,key"},
 	} {
-		rows, err := repo.DB.QueryContext(ctx, "SELECT * FROM "+table.name+" ORDER BY "+table.order)
+		columns := "*"
+		if table.name == "audit_event" {
+			columns = runtimeAuditProjection(t, ctx, repo)
+		}
+		rows, err := repo.DB.QueryContext(ctx, "SELECT "+columns+" FROM "+table.name+" ORDER BY "+table.order)
 		if err != nil {
 			t.Fatal("persisted fact query failed:", table.name, err)
 		}
 		facts[table.name] = runtimeRows(t, rows)
 	}
 	return facts
+}
+
+// Explicit physical columns preserve every field while changing the prepared
+// query identity after a schema cutover; SELECT * retains PG's old row type.
+func runtimeAuditProjection(t *testing.T, ctx context.Context, repo *store.Repository) string {
+	t.Helper()
+	query := "SELECT name FROM pragma_table_info('audit_event') ORDER BY cid"
+	if repo.Backend == "postgres" {
+		query = "SELECT attname FROM pg_attribute WHERE attrelid='audit_event'::regclass AND attnum>0 AND NOT attisdropped ORDER BY attnum"
+	}
+	rows, err := repo.DB.QueryContext(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var columns strings.Builder
+	for rows.Next() {
+		var name string
+		if err = rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		if columns.Len() != 0 {
+			columns.WriteByte(',')
+		}
+		columns.WriteByte('"')
+		columns.WriteString(strings.ReplaceAll(name, "\"", "\"\""))
+		columns.WriteByte('"')
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return columns.String()
 }
 
 func runtimeRows(t *testing.T, rows *sql.Rows) [][]any {

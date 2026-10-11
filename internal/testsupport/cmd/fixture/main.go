@@ -162,7 +162,7 @@ func run() error {
 	if err = privateFile(filepath.Join(*directory, "api.env"), []byte(env.String())); err != nil {
 		return err
 	}
-	descriptor, err := json.Marshal(map[string]any{"backend": *backend, "origin": origin, "org_id": f.OrgID, "owner_token": f.Owner.Token, "observer_token": f.Observer.Token, "stranger_token": f.Stranger.Token, "manager_subject_id": f.Manager.SubjectID, "reader_subject_id": f.Reader.SubjectID, "approved_by": f.Approver.SubjectID, "authority_ids": f.AuthorityIDs, "manager_token": f.Manager.Token, "manager_csrf": f.Manager.CSRF, "reader_token": f.Reader.Token, "reader_csrf": f.Reader.CSRF})
+	descriptor, err := json.Marshal(map[string]any{"backend": *backend, "origin": origin, "org_id": f.OrgID, "owner_subject_id": f.Owner.SubjectID, "owner_token": f.Owner.Token, "observer_token": f.Observer.Token, "stranger_token": f.Stranger.Token, "manager_subject_id": f.Manager.SubjectID, "reader_subject_id": f.Reader.SubjectID, "approved_by": f.Approver.SubjectID, "authority_ids": f.AuthorityIDs, "manager_token": f.Manager.Token, "manager_csrf": f.Manager.CSRF, "reader_token": f.Reader.Token, "reader_csrf": f.Reader.CSRF})
 	if err != nil {
 		return err
 	}

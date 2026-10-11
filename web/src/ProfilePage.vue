@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue'
 
+const emit = defineEmits<{ 'session-expired': [] }>()
+
 type Session = {
   subject_id: string
   org_id: string
@@ -203,6 +205,7 @@ function showFailure(cause: unknown, operation: Operation) {
     cancelOperation()
     clearSensitive()
     session.value = null
+    if (status === 401) emit('session-expired')
   }
   errorMessage.value = failureMessages[status] ?? failureMessages[503]!
   notice.value = null

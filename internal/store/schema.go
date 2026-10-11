@@ -32,14 +32,20 @@ func (r *Repository) checkStructure(ctx context.Context, db queryer, version int
 			return err
 		}
 		for _, statement := range migrationStatements(ddl) {
-			if !strings.HasPrefix(statement, "CREATE TABLE ") && !strings.HasPrefix(statement, "CREATE INDEX ") && !strings.HasPrefix(statement, "CREATE TRIGGER ") {
+			if !strings.HasPrefix(statement, "CREATE TABLE ") && !strings.HasPrefix(statement, "CREATE INDEX ") && !strings.HasPrefix(statement, "CREATE UNIQUE INDEX ") && !strings.HasPrefix(statement, "CREATE TRIGGER ") {
 				continue
 			}
-			name := strings.Split(strings.Fields(statement)[2], "(")[0]
-			if strings.HasSuffix(name, "_v2") {
-				finalName := strings.TrimSuffix(name, "_v2")
-				statement = strings.Replace(statement, "CREATE TABLE "+name+"(", "CREATE TABLE "+finalName+"(", 1)
-				name = finalName
+			nameIndex := 2
+			if strings.HasPrefix(statement, "CREATE UNIQUE INDEX ") {
+				nameIndex = 3
+			}
+			name := strings.Split(strings.Fields(statement)[nameIndex], "(")[0]
+			for _, suffix := range []string{"_v2", "_v3", "_v4"} {
+				if strings.HasSuffix(name, suffix) {
+					finalName := strings.TrimSuffix(name, suffix)
+					statement = strings.Replace(statement, "CREATE TABLE "+name+"(", "CREATE TABLE "+finalName+"(", 1)
+					name = finalName
+				}
 			}
 			expected[name] = compactSQL(statement)
 		}

@@ -21,6 +21,7 @@ import (
 
 	"github.com/r404r/team-ledger/internal/authz"
 	"github.com/r404r/team-ledger/internal/fault"
+	"github.com/r404r/team-ledger/internal/identity"
 	"github.com/r404r/team-ledger/internal/organization"
 	"github.com/r404r/team-ledger/internal/value"
 )
@@ -31,13 +32,14 @@ var unsupportedMedia = &fault.Fault{Status: 415, Code: "INVALID_INPUT", Reason: 
 type handler struct {
 	service        *organization.Service
 	grants         *authz.Service
+	identities     *identity.Service
 	key            []byte
 	origin, static string
 }
 
-func New(service *organization.Service, grants *authz.Service, csrfKey []byte, origin, staticDir string) (http.Handler, error) {
+func New(service *organization.Service, grants *authz.Service, identities *identity.Service, csrfKey []byte, origin, staticDir string) (http.Handler, error) {
 	u, err := url.Parse(origin)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.RawPath != "" || service == nil || grants == nil || len(csrfKey) != 32 {
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.RawPath != "" || service == nil || grants == nil || identities == nil || len(csrfKey) != 32 {
 		return nil, errors.New("invalid HTTP configuration")
 	}
 	root, err := filepath.EvalSymlinks(staticDir)
@@ -52,7 +54,7 @@ func New(service *organization.Service, grants *authz.Service, csrfKey []byte, o
 	if err != nil || !info.Mode().IsRegular() {
 		return nil, errors.New("missing production index")
 	}
-	return &handler{service: service, grants: grants, key: bytes.Clone(csrfKey), origin: strings.TrimSuffix(origin, "/"), static: root}, nil
+	return &handler{service: service, grants: grants, identities: identities, key: bytes.Clone(csrfKey), origin: strings.TrimSuffix(origin, "/"), static: root}, nil
 }
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -65,6 +67,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !strings.HasPrefix(r.URL.Path, "/api/") {
 		h.staticFile(w, r, requestID)
+		return
+	}
+	if h.publicIdentityRoute(w, r, requestID) {
 		return
 	}
 	req := organization.Request{RequestID: requestID, Purpose: r.Header.Get("X-Access-Purpose"), Key: r.Header.Get("Idempotency-Key")}
@@ -103,6 +108,24 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, fault.Unauthenticated, requestID)
 		return
 	}
+	if r.Method != http.MethodGet {
+		if r.URL.RawQuery != "" || r.Header.Get("Origin") != h.origin || r.Header.Get("Sec-Fetch-Site") != "same-origin" || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(token)) != 1 {
+			h.fail(w, fault.Forbidden, requestID)
+			return
+		}
+		media, params, e := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if e != nil || media != "application/json" || len(params) > 1 || (len(params) == 1 && strings.ToLower(params["charset"]) != "utf-8") {
+			h.fail(w, unsupportedMedia, requestID)
+			return
+		}
+	}
+	if e := h.identities.Touch(r.Context(), req.TokenHash); e != nil {
+		h.fail(w, e, requestID)
+		return
+	}
+	if h.authenticatedIdentityRoute(w, r, req.TokenHash, requestID) {
+		return
+	}
 	if r.URL.Path == "/api/v1/session" && r.Method == http.MethodGet {
 		now := time.Now().UTC().Truncate(time.Microsecond)
 		if h.grants.Now != nil {
@@ -134,21 +157,22 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			scopeKind, scopeID = "employee", employeeScope
 		}
 		h.reply(w, 200, struct {
-			Subject      string                `json:"subject_id"`
-			Org          string                `json:"org_id"`
-			Epoch        string                `json:"auth_epoch"`
-			Capabilities []string              `json:"capabilities"`
-			CSRF         string                `json:"csrf_token"`
-			ScopeKind    string                `json:"scope_kind"`
-			ScopeID      string                `json:"scope_id"`
-			MFARecent    bool                  `json:"mfa_recent"`
-			MFAUntil     time.Time             `json:"mfa_valid_until"`
-			Authorities  []authz.AuthorityHint `json:"grant_authorities"`
-		}{snap.SubjectID, snap.OrgID, strconv.FormatInt(snap.AuthEpoch, 10), caps, token, scopeKind, scopeID, now.Before(snap.MFAUntil), snap.MFAUntil, authorities})
+			Subject           string                `json:"subject_id"`
+			Org               string                `json:"org_id"`
+			Epoch             string                `json:"auth_epoch"`
+			Capabilities      []string              `json:"capabilities"`
+			CSRF              string                `json:"csrf_token"`
+			ScopeKind         string                `json:"scope_kind"`
+			ScopeID           string                `json:"scope_id"`
+			MFARecent         bool                  `json:"mfa_recent"`
+			MFAUntil          time.Time             `json:"mfa_valid_until"`
+			Authorities       []authz.AuthorityHint `json:"grant_authorities"`
+			IdentityAvailable bool                  `json:"identity_available"`
+		}{snap.SubjectID, snap.OrgID, strconv.FormatInt(snap.AuthEpoch, 10), caps, token, scopeKind, scopeID, now.Before(snap.MFAUntil), snap.MFAUntil, authorities, h.identities.Available()})
 		return
 	}
 	if r.URL.Path == "/api/v1/access-grants" || strings.HasPrefix(r.URL.Path, "/api/v1/access-grants/") {
-		h.grantRoute(w, r, authz.Request{TokenHash: req.TokenHash, RequestID: req.RequestID, Purpose: req.Purpose, Key: req.Key}, token)
+		h.grantRoute(w, r, authz.Request{TokenHash: req.TokenHash, RequestID: req.RequestID, Purpose: req.Purpose, Key: req.Key})
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/"), "/")
@@ -175,15 +199,6 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.reply(w, 200, result)
-		return
-	}
-	if r.URL.RawQuery != "" || r.Header.Get("Origin") != h.origin || r.Header.Get("Sec-Fetch-Site") != "same-origin" || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(token)) != 1 {
-		h.fail(w, fault.Forbidden, requestID)
-		return
-	}
-	media, params, e := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if e != nil || media != "application/json" || len(params) > 1 || (len(params) == 1 && strings.ToLower(params["charset"]) != "utf-8") {
-		h.fail(w, unsupportedMedia, requestID)
 		return
 	}
 	if !value.ValidID(req.Key) || req.Key[14] != '4' || !strings.ContainsRune("89ab", rune(req.Key[19])) {
@@ -254,6 +269,10 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 		root = "issue"
 	case *authz.RevokeCommand:
 		root = "revoke"
+	case *authStepUpCommand:
+		root = "step_up"
+	case *authLogoutCommand:
+		root = "logout"
 	default:
 		return fault.Invalid
 	}
@@ -337,6 +356,8 @@ func walkJSON(d *json.Decoder, depth int, object string) error {
 }
 func allowedField(object, key string) bool {
 	switch object {
+	case "step_up":
+		return key == "action" || key == "return_to"
 	case "issue":
 		switch key {
 		case "subject_id", "capability", "category", "scope", "purpose", "valid_from", "expires_at", "mfa_required", "relation_bound", "relation_ref", "object_ref", "authority_id", "expected_revision":
@@ -369,7 +390,7 @@ func (h *handler) reply(w http.ResponseWriter, status int, v any) {
 func (h *handler) fail(w http.ResponseWriter, err error, id string) {
 	public := fault.Unavailable
 	// Only declared faults cross the boundary, never arbitrary error strings.
-	for _, known := range []*fault.Fault{bodyTooLarge, unsupportedMedia, fault.Invalid, fault.Unauthenticated, fault.NotFound, fault.Forbidden, fault.Conflict, fault.Mismatch, fault.Unavailable, fault.AuditUnavailable, fault.Busy} {
+	for _, known := range []*fault.Fault{bodyTooLarge, unsupportedMedia, fault.Invalid, fault.Unauthenticated, identity.MFARequired, fault.NotFound, fault.Forbidden, fault.Conflict, fault.Mismatch, fault.Unavailable, fault.AuditUnavailable, fault.Busy} {
 		if errors.Is(err, known) {
 			public = known
 			break

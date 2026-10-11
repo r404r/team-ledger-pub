@@ -18,7 +18,9 @@ import (
 	"time"
 
 	"github.com/r404r/team-ledger/internal/authz"
+	"github.com/r404r/team-ledger/internal/configfile"
 	"github.com/r404r/team-ledger/internal/httpapi"
+	"github.com/r404r/team-ledger/internal/identity"
 	"github.com/r404r/team-ledger/internal/organization"
 	"github.com/r404r/team-ledger/internal/sensitive"
 	"github.com/r404r/team-ledger/internal/store"
@@ -42,7 +44,7 @@ func secret(name string, size int) ([]byte, error) {
 	if e != nil {
 		return nil, e
 	}
-	b, e := protectedFile(path, size, true)
+	b, e := configfile.Read(path, size, true)
 	if e != nil {
 		return nil, e
 	}
@@ -53,38 +55,6 @@ func secret(name string, size int) ([]byte, error) {
 	return b, nil
 }
 
-// Linux secret policy requires service-owned 0400/0600 regular files.
-// Public trust anchors allow root/service ownership, but no group/other writes.
-// Read the checked descriptor, not a subsequently reopened path.
-func protectedFile(path string, limit int, confidential bool) ([]byte, error) {
-	f, e := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-	if e != nil {
-		return nil, errors.New("invalid protected file")
-	}
-	defer f.Close()
-	info, e := f.Stat()
-	if e != nil || !info.Mode().IsRegular() {
-		return nil, errors.New("invalid protected file")
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	mode := info.Mode().Perm()
-	if !ok {
-		return nil, errors.New("invalid protected file")
-	}
-	if confidential {
-		if stat.Uid != uint32(os.Geteuid()) || (mode != 0400 && mode != 0600) {
-			return nil, errors.New("invalid protected file")
-		}
-	} else if (stat.Uid != uint32(os.Geteuid()) && stat.Uid != 0) || mode&0022 != 0 {
-		return nil, errors.New("invalid trust file")
-	}
-	b, e := io.ReadAll(io.LimitReader(f, int64(limit+1)))
-	if e != nil || len(b) == 0 || len(b) > limit {
-		clear(b)
-		return nil, errors.New("invalid protected file size")
-	}
-	return b, nil
-}
 func run() error {
 	names := []string{"BACKEND", "DSN", "LISTEN", "PUBLIC_ORIGIN", "TLS_CERT_FILE", "TLS_KEY_FILE", "KMS_URL", "KMS_KEY", "WEB_DIR"}
 	cfg := map[string]string{}
@@ -122,7 +92,7 @@ func run() error {
 	if e != nil {
 		return e
 	}
-	token, e := protectedFile(tokenPath, 4096, true)
+	token, e := configfile.Read(tokenPath, 4096, true)
 	if e != nil {
 		return e
 	}
@@ -136,7 +106,7 @@ func run() error {
 		return errors.New("invalid trust store")
 	}
 	if ca := os.Getenv("TEAMLEDGER_KMS_CA_FILE"); ca != "" {
-		pem, e := protectedFile(ca, 1<<20, false)
+		pem, e := configfile.Read(ca, 1<<20, false)
 		if e != nil || !roots.AppendCertsFromPEM(pem) {
 			return errors.New("invalid KMS CA")
 		}
@@ -148,7 +118,7 @@ func run() error {
 	if e != nil {
 		return errors.New("invalid KMS configuration")
 	}
-	keyPEM, e := protectedFile(cfg["TLS_KEY_FILE"], 64<<10, true)
+	keyPEM, e := configfile.Read(cfg["TLS_KEY_FILE"], 64<<10, true)
 	if e != nil {
 		return e
 	}
@@ -185,7 +155,18 @@ func run() error {
 	}
 	service := &organization.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, DigestKey: digest, Now: time.Now}
 	grants := &authz.Service{Store: repo, DigestKey: digest, CursorKey: cursor, Now: time.Now}
-	handler, e := httpapi.New(service, grants, csrf, cfg["PUBLIC_ORIGIN"], cfg["WEB_DIR"])
+	oidcConfig, closeIdentity, e := identityConfiguration(cfg["PUBLIC_ORIGIN"], csrf, digest, cursor)
+	if e != nil {
+		return e
+	}
+	if closeIdentity != nil {
+		defer closeIdentity()
+	}
+	identities, e := identity.New(startup, repo, csrf, oidcConfig)
+	if e != nil {
+		return errors.New("identity unavailable")
+	}
+	handler, e := httpapi.New(service, grants, identities, csrf, cfg["PUBLIC_ORIGIN"], cfg["WEB_DIR"])
 	if e != nil {
 		return e
 	}
