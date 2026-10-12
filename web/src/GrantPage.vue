@@ -217,8 +217,8 @@ async function applyFilters() {
   if ((filters.subject && !uuid.test(filters.subject)) || (filters.grantID && !uuid.test(filters.grantID)) ||
       Boolean(filters.scopeKind) !== Boolean(filters.scopeID) || (filters.scopeID && !uuid.test(filters.scopeID)) ||
       filters.scopeKind && !['org', 'team', 'employee'].includes(filters.scopeKind) ||
-      filters.category && !['metadata', 'pii', 'shared', 'manager_private', 'hr_confidential', 'financial'].includes(filters.category) ||
-      filters.purpose && !['organization_management', 'interview_followup', 'compensation_management'].includes(filters.purpose) ||
+      filters.category && !['metadata', 'pii', 'audit', 'shared', 'manager_private', 'hr_confidential', 'financial'].includes(filters.category) ||
+      filters.purpose && !['organization_management', 'security_administration', 'interview_followup', 'compensation_management'].includes(filters.purpose) ||
       filters.capability && !capabilities.includes(filters.capability) ||
       filters.state && !['current', 'future', 'expired', 'revoked'].includes(filters.state) ||
       Boolean(filters.objectKind) !== Boolean(filters.objectID) ||

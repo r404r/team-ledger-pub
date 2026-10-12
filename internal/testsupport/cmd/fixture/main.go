@@ -122,6 +122,27 @@ func run() error {
 		return err
 	}
 	defer f.Close()
+	auditGrantID := value.NewID()
+	auditTx, err := f.Repo.DB.BeginTx(startup, nil)
+	if err != nil {
+		return err
+	}
+	defer auditTx.Rollback()
+	assignmentSQL := "INSERT INTO capability_assignment(org_id,subject_id,capability,scope_kind,scope_id) VALUES(?,?,'audit.read','org',?)"
+	grantSQL := "INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required) VALUES(?,?,?,'audit.read','audit','org',?,'security_administration',?,?,0,0,1)"
+	if *backend == "postgres" {
+		assignmentSQL = "INSERT INTO capability_assignment(org_id,subject_id,capability,scope_kind,scope_id) VALUES($1,$2,'audit.read','org',$3)"
+		grantSQL = "INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required) VALUES($1,$2,$3,'audit.read','audit','org',$4,'security_administration',$5,$6,false,false,true)"
+	}
+	if _, err = auditTx.ExecContext(startup, assignmentSQL, f.OrgID, f.Owner.SubjectID, f.OrgID); err != nil {
+		return err
+	}
+	if _, err = auditTx.ExecContext(startup, grantSQL, auditGrantID, f.OrgID, f.Owner.SubjectID, f.OrgID, f.Repo.BindTime(f.Now.Add(-time.Hour)), f.Repo.BindTime(f.Now.Add(24*time.Hour))); err != nil {
+		return err
+	}
+	if err = auditTx.Commit(); err != nil {
+		return err
+	}
 	cert := f.KMS.Server.TLS.Certificates[0]
 	leaf, err := x509.ParseCertificate(cert.Certificate[0])
 	if err != nil || leaf.VerifyHostname(host) != nil {

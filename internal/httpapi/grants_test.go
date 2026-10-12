@@ -222,7 +222,7 @@ func TestAPIGrantCursorAndAuditFailure(t *testing.T) {
 			apiSend(t, f, grantRequest(t, f, f.Manager, "GET", prefix+"&cursor="+cursor, "", ""), 409, nil)
 			receipts := f.Count(t, "grant_command_receipt")
 			grants := f.Count(t, "access_grant")
-			if err := f.Exec(context.Background(), "DROP TABLE audit_event", "DROP TABLE audit_event"); err != nil {
+			if err := f.DisableAudit(context.Background()); err != nil {
 				t.Fatal(err)
 			}
 			apiSend(t, f, grantRequest(t, f, f.Manager, "GET", "/api/v1/access-grants", "", ""), 503, nil)
@@ -270,7 +270,7 @@ func TestAPIGrantDeniedAuditFailurePreservesSafeCorrelation(t *testing.T) {
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			f := testsupport.NewHarness(t, backend)
-			if err := f.Exec(context.Background(), "DROP TABLE audit_event", "DROP TABLE audit_event"); err != nil {
+			if err := f.DisableAudit(context.Background()); err != nil {
 				t.Fatal(err)
 			}
 			for _, path := range []string{"/api/v1/access-grants", "/api/v1/access-grants?grant_id=" + value.NewID()} {

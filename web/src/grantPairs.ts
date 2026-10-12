@@ -1,10 +1,11 @@
 export const grantObjectKinds = ['interview', 'note_head', 'note_version', 'action_item', 'compensation_proposal', 'compensation_event', 'compensation_term'] as const
 export type ObjectReference = { kind: typeof grantObjectKinds[number]; id: string }
-export const grantCapabilities = ['organization.read', 'organization.write', 'pii.read', 'pii.write', 'interview.read', 'interview.write', 'note.read', 'note.write', 'note.publish', 'action.read', 'action.write', 'compensation.read', 'compensation.propose', 'compensation.approve', 'sensitive.export']
+export const grantCapabilities = ['organization.read', 'organization.write', 'pii.read', 'pii.write', 'audit.read', 'interview.read', 'interview.write', 'note.read', 'note.write', 'note.publish', 'action.read', 'action.write', 'compensation.read', 'compensation.propose', 'compensation.approve', 'sensitive.export']
 const categories = ['shared', 'manager_private', 'hr_confidential']
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export function validGrantPair(capability: string, category: string, purpose: string): boolean {
-  if (purpose === 'organization_management') return ['organization.read', 'organization.write'].includes(capability) && category === 'metadata' || ['pii.read', 'pii.write'].includes(capability) && category === 'pii'
+  if (purpose === 'security_administration') return capability === 'audit.read' && category === 'audit'
+  if (purpose === 'organization_management') return ['organization.read', 'organization.write'].includes(capability) && category === 'metadata' || ['pii.read', 'pii.write', 'sensitive.export'].includes(capability) && category === 'pii'
   if (purpose === 'compensation_management') return ['compensation.read', 'compensation.propose', 'compensation.approve', 'sensitive.export'].includes(capability) && category === 'financial'
   if (purpose !== 'interview_followup') return false
   if (['interview.read', 'interview.write'].includes(capability)) return category === 'metadata'

@@ -297,6 +297,21 @@ type EncryptedResult struct {
 	Envelope sensitive.Envelope
 }
 
+type ExportObject = organization.ExportObject
+type ExportCommand = organization.ExportCommand
+type ExportEvent struct {
+	EncodedJSON []byte `json:"-"`
+}
+type ExportTx interface {
+	organization.ExportTx
+	AssessmentResult(context.Context, string, string) (Result, sensitive.Envelope, error)
+}
+type ExportStore interface {
+	organization.ExportStore
+	AutomationStore
+	WithAssessmentExportTx(context.Context, string, func(ExportTx) error) error
+}
+
 type ServiceIdentity struct {
 	TokenHash []byte
 }

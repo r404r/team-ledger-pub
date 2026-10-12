@@ -164,7 +164,7 @@ func SupportedPair(capability, category, purpose string) bool {
 		return category == "metadata" && purpose == "organization_management"
 	case "pii.read", "pii.write":
 		return category == "pii" && purpose == "organization_management"
-	case "access_grant.manage":
+	case "access_grant.manage", "audit.read":
 		return category == "audit" && purpose == ManagementPurpose
 	case "interview.read", "interview.write", "interview_policy.manage":
 		return category == "metadata" && purpose == "interview_followup"
@@ -177,7 +177,7 @@ func SupportedPair(capability, category, purpose string) bool {
 	case "compensation.read", "compensation.propose", "compensation.approve", "bonus.target.manage", "bonus.propose", "bonus.approve", "bonus.payment.record", "compensation.extension.manage":
 		return category == "financial" && purpose == "compensation_management"
 	case "sensitive.export":
-		return (category == "metadata" || noteCategory(category)) && purpose == "interview_followup" || category == "financial" && purpose == "compensation_management"
+		return category == "pii" && purpose == "organization_management" || (category == "metadata" || noteCategory(category)) && purpose == "interview_followup" || category == "financial" && purpose == "compensation_management"
 	}
 	return false
 }

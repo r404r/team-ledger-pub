@@ -199,7 +199,7 @@ func TestStructureAuditFailureRollsBackEveryFactProjectionEpochAndReceipt(t *tes
 		for _, table := range []string{"structure_change", "structure_change_item", "structure_command_receipt", "organizational_payload", "team_lifecycle_history", "employee_lifecycle_history"} {
 			counts[table] = f.Count(t, table)
 		}
-		if err = f.Exec(ctx, "DROP TABLE audit_event", "DROP TABLE audit_event"); err != nil {
+		if err = f.DisableAudit(ctx); err != nil {
 			t.Fatal(err)
 		}
 		replacement := position(e, team.ID, "2026-01-01", "new audit rollback title")

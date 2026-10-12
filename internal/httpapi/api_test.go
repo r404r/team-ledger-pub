@@ -238,7 +238,7 @@ func TestDeniedAuditFailurePreservesRefusalAndReportsSafeCorrelation(t *testing.
 			var made organization.Result
 			apiSend(t, f, apiRequest(t, f, f.Owner, "POST", createPath, createJSON, value.NewID()), 201, &made)
 			calls := f.KMS.Calls.Load()
-			if err := f.Exec(ctx, "DROP TABLE audit_event", "DROP TABLE audit_event"); err != nil {
+			if err := f.DisableAudit(ctx); err != nil {
 				t.Fatal(err)
 			}
 			for _, tc := range []struct{ name, method, path, body string }{

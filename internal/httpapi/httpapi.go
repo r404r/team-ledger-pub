@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/r404r/team-ledger/internal/assessment"
+	"github.com/r404r/team-ledger/internal/audit"
 	"github.com/r404r/team-ledger/internal/authz"
 	"github.com/r404r/team-ledger/internal/compensation"
 	"github.com/r404r/team-ledger/internal/fault"
@@ -38,6 +39,7 @@ type handler struct {
 	interviews     *interview.Service
 	assessment     *assessment.Service
 	compensation   *compensation.Service
+	audit          *audit.Service
 	identities     *identity.Service
 	key            []byte
 	origin, static string
@@ -60,7 +62,11 @@ func New(service *organization.Service, interviews *interview.Service, assessmen
 	if err != nil || !info.Mode().IsRegular() {
 		return nil, errors.New("missing production index")
 	}
-	return &handler{service: service, interviews: interviews, assessment: assessmentService, compensation: compensation, grants: grants, identities: identities, key: bytes.Clone(csrfKey), origin: strings.TrimSuffix(origin, "/"), static: root}, nil
+	var auditService *audit.Service
+	if auditStore, ok := grants.Store.(audit.Store); ok {
+		auditService = &audit.Service{Store: auditStore, CursorKey: grants.CursorKey, Now: grants.Now}
+	}
+	return &handler{service: service, interviews: interviews, assessment: assessmentService, compensation: compensation, grants: grants, audit: auditService, identities: identities, key: bytes.Clone(csrfKey), origin: strings.TrimSuffix(origin, "/"), static: root}, nil
 }
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -69,6 +75,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Request-ID", requestID)
 	if r.TLS == nil || r.Host != strings.TrimPrefix(h.origin, "https://") {
 		h.fail(w, fault.Forbidden, requestID)
+		return
+	}
+	if h.healthRoute(w, r, requestID) {
 		return
 	}
 	if h.assessmentWorkerRoute(w, r, requestID) {
@@ -191,6 +200,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if len(authorities) > 0 {
 			caps = append(caps, "access_grant.manage")
 		}
+		if snap.Allows("audit.read", "audit", employeeScope, authz.ManagementPurpose, now) {
+			caps = append(caps, "audit.read")
+		}
 		sensitivityUntil, e := sensitivityDeadline(snap, now)
 		if e != nil {
 			h.fail(w, e, requestID)
@@ -252,6 +264,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/api/v1/access-grants" || strings.HasPrefix(r.URL.Path, "/api/v1/access-grants/") {
 		h.grantRoute(w, r, authz.Request{TokenHash: req.TokenHash, RequestID: req.RequestID, Purpose: req.Purpose, Key: req.Key})
+		return
+	}
+	if h.auditRoute(w, r, audit.Request{TokenHash: req.TokenHash, RequestID: req.RequestID, Purpose: req.Purpose}) {
+		return
+	}
+	if h.profileExportRoute(w, r, req) {
 		return
 	}
 	if h.compensationRoute(w, r, compensation.Request{TokenHash: req.TokenHash, RequestID: req.RequestID, Purpose: req.Purpose, Key: req.Key}) {
@@ -381,6 +399,8 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 	case *interview.ActionTransitionCommand:
 		root = "action_transition"
 	case *interview.ExportCommand:
+		root = "export_command"
+	case *organization.ExportCommand:
 		root = "export_command"
 	case *compensation.ProposalCommand:
 		root = "finance_proposal"

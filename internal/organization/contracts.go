@@ -75,6 +75,34 @@ type Audit struct {
 	At                                                                                time.Time
 }
 
+type ExportObject struct {
+	Kind             string `json:"kind"`
+	ID               string `json:"id"`
+	ExpectedRevision string `json:"expected_revision"`
+}
+type ExportCommand struct {
+	Format  string         `json:"format"`
+	Objects []ExportObject `json:"objects"`
+}
+type ExportEvent struct {
+	EncodedJSON []byte `json:"-"`
+}
+type ExportReceipt struct {
+	Digest   []byte
+	ExportID string
+}
+type ExportTx interface {
+	Reader
+	LockSubjects(context.Context, string, []string) error
+	ExportReceipt(context.Context, string, string, string, string) (ExportReceipt, bool, error)
+	SaveExportReceipt(context.Context, string, string, string, string, ExportReceipt, time.Time) error
+	Audit(context.Context, Audit) error
+}
+type ExportStore interface {
+	Store
+	WithExportTx(context.Context, string, func(ExportTx) error) error
+}
+
 type Reader interface {
 	StructureReader
 	Security(context.Context, []byte, string, string) (authz.Snapshot, error)

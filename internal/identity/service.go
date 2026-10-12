@@ -162,7 +162,7 @@ func AllowedReturn(raw string) bool {
 	interviewPage := u.Path == "/interviews" || len(parts) == 2 && parts[0] == "interviews" && value.ValidID(parts[1]) || len(parts) == 3 && parts[0] == "employees" && value.ValidID(parts[1]) && parts[2] == "interviews"
 	compensationPage := len(parts) == 3 && parts[0] == "employees" && value.ValidID(parts[1]) && parts[2] == "compensation"
 	bonusPage := len(parts) == 3 && parts[0] == "employees" && value.ValidID(parts[1]) && parts[2] == "bonuses"
-	if u.Path != "/" && u.Path != "/security/grants" && !employeePage && !historyPage && !orgPage && !interviewPage && !compensationPage && !bonusPage {
+	if u.Path != "/" && u.Path != "/security/grants" && u.Path != "/security/audit" && !employeePage && !historyPage && !orgPage && !interviewPage && !compensationPage && !bonusPage {
 		return false
 	}
 	if strings.Contains(raw, "?") {
@@ -182,7 +182,7 @@ func AllowedReturn(raw string) bool {
 
 // AllowedStepUpAction records intent only; recent MFA remains session-wide.
 func AllowedStepUpAction(action string) bool {
-	return action == "pii.write" || action == "access_grant.manage" || action == "note.publish" || action == "sensitive.export" || action == "interview_policy.manage" || authz.SupportedPair(action, "financial", "compensation_management")
+	return action == "pii.write" || action == "access_grant.manage" || action == "audit.read" || action == "note.publish" || action == "sensitive.export" || action == "interview_policy.manage" || authz.SupportedPair(action, "financial", "compensation_management")
 }
 func randomToken() (string, []byte, error) {
 	raw := make([]byte, 32)

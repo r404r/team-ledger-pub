@@ -659,3 +659,13 @@ describe('R4 finite financial grants without aggregate or export implication', (
     expect(api.commands()).toHaveLength(0)
   })
 })
+
+describe('R7 independent audit grant', () => {
+  it('accepts only the audit.read/audit/security_administration tuple without object scope', () => {
+    expect(validGrantPair('audit.read', 'audit', 'security_administration')).toBe(true)
+    expect(validGrantObject(null, 'audit.read', 'audit', 'security_administration')).toBe(true)
+    expect(validGrantPair('access_grant.manage', 'audit', 'security_administration')).toBe(false)
+    expect(validGrantPair('audit.read', 'pii', 'security_administration')).toBe(false)
+    expect(validGrantObject({ kind: 'note_version', id: OTHER }, 'audit.read', 'audit', 'security_administration')).toBe(false)
+  })
+})

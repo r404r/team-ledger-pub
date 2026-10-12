@@ -151,7 +151,7 @@ func TestCompensationRevisionCommitAndAuditFailuresReturnZeroDTO(t *testing.T) {
 					audits := f.Count(t, "audit_event")
 					switch boundary {
 					case "audit":
-						if err := f.Exec(ctx, "DROP TABLE audit_event", "DROP TABLE audit_event"); err != nil {
+						if err := f.DisableAudit(ctx); err != nil {
 							t.Fatal(err)
 						}
 					case "deferred_commit":

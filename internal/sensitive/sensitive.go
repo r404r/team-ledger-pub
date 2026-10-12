@@ -5,6 +5,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -40,6 +41,32 @@ type Envelope struct {
 }
 
 type Cipher struct{ Wrapper Wrapper }
+
+// RewrapKey rotates only the DEK wrapper. Payload ciphertext, AAD and business
+// facts remain outside this operation and therefore cannot be silently rebound.
+func RewrapKey(ctx context.Context, source, target Wrapper, current WrappedKey) (WrappedKey, error) {
+	if source == nil || target == nil || !validWrappedKey(current) || ctx.Err() != nil {
+		return WrappedKey{}, ErrUnavailable
+	}
+	dek, err := source.Unwrap(ctx, current)
+	if err != nil || len(dek) != 32 {
+		clear(dek)
+		return WrappedKey{}, ErrUnavailable
+	}
+	defer clear(dek)
+	next, err := target.Wrap(ctx, dek)
+	if err != nil || !validWrappedKey(next) || next.KEKID == current.KEKID && next.Version == current.Version {
+		clear(next.Data)
+		return WrappedKey{}, ErrUnavailable
+	}
+	verified, err := target.Unwrap(ctx, next)
+	defer clear(verified)
+	if err != nil || len(verified) != 32 || subtle.ConstantTimeCompare(dek, verified) != 1 {
+		clear(next.Data)
+		return WrappedKey{}, ErrUnavailable
+	}
+	return next, nil
+}
 
 func (c Cipher) Seal(ctx context.Context, binding Context, plaintext []byte) (Envelope, error) {
 	if len(plaintext) > maxPlaintext {

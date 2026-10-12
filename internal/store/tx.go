@@ -145,8 +145,10 @@ func insertAudit(ctx context.Context, db queryer, backend string, a organization
 	if backend == "sqlite" {
 		at = a.At.UTC().UnixMicro()
 	}
-	_, err := db.ExecContext(ctx, r.sql("INSERT INTO audit_event(id,org_id,subject_id,employee_id,grant_id,operation,purpose,request_id,outcome,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?)", "INSERT INTO audit_event(id,org_id,subject_id,employee_id,grant_id,operation,purpose,request_id,outcome,recorded_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"), a.ID, nullable(a.OrgID), nullable(a.SubjectID), nullable(a.EmployeeID), nullable(a.GrantID), a.Operation, a.Purpose, a.RequestID, a.Outcome, at)
-	if err != nil {
+	if _, err := db.ExecContext(ctx, r.sql("INSERT INTO audit_event(id,org_id,subject_id,employee_id,grant_id,operation,purpose,request_id,outcome,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?)", "INSERT INTO audit_event(id,org_id,subject_id,employee_id,grant_id,operation,purpose,request_id,outcome,recorded_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"), a.ID, nullable(a.OrgID), nullable(a.SubjectID), nullable(a.EmployeeID), nullable(a.GrantID), a.Operation, a.Purpose, a.RequestID, a.Outcome, at); err != nil {
+		return fault.AuditUnavailable
+	}
+	if _, err := db.ExecContext(ctx, r.sql("INSERT INTO audit_outbox(event_id,org_id,available_at) VALUES(?,?,?)", "INSERT INTO audit_outbox(event_id,org_id,available_at) VALUES($1,$2,$3)"), a.ID, nullable(a.OrgID), at); err != nil {
 		return fault.AuditUnavailable
 	}
 	return nil

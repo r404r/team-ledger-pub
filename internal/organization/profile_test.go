@@ -211,7 +211,7 @@ func TestPayloadTamperAndAuditFailureNeverReleasePlaintext(t *testing.T) {
 		if err = f.Exec(ctx, "UPDATE encrypted_payload SET sealed_bytes=? WHERE id=?", "UPDATE encrypted_payload SET sealed_bytes=$1 WHERE id=$2", original, version.ID); err != nil {
 			t.Fatal(err)
 		}
-		if err = f.Exec(ctx, "DROP TABLE audit_event", "DROP TABLE audit_event"); err != nil {
+		if err = f.DisableAudit(ctx); err != nil {
 			t.Fatal(err)
 		}
 		v, err = f.Service.Read(ctx, f.Request(f.Owner), id, "2026-10-11", true)

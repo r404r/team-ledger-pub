@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/r404r/team-ledger/internal/assessment"
 	"github.com/r404r/team-ledger/internal/authz"
 	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/interview"
@@ -175,11 +176,11 @@ func (h *handler) interviewRoute(w http.ResponseWriter, r *http.Request, req int
 			return true
 		}
 		started := false
-		_, err := h.interviews.Export(r.Context(), req, command, func(event interview.ExportEvent) error {
+		writeEvent := func(encoded []byte) error {
 			if r.Context().Err() != nil {
 				return r.Context().Err()
 			}
-			if len(event.EncodedJSON) == 0 {
+			if len(encoded) == 0 {
 				return fault.Unavailable
 			}
 			if !started {
@@ -187,18 +188,40 @@ func (h *handler) interviewRoute(w http.ResponseWriter, r *http.Request, req int
 				w.WriteHeader(http.StatusOK)
 				started = true
 			}
-			n, err := w.Write(event.EncodedJSON)
+			n, err := w.Write(encoded)
 			if err != nil {
 				return err
 			}
-			if n != len(event.EncodedJSON) {
+			if n != len(encoded) {
 				return io.ErrShortWrite
 			}
 			if flusher, ok := w.(http.Flusher); ok {
 				flusher.Flush()
 			}
 			return nil
-		})
+		}
+		ai := len(command.Objects) > 0
+		for _, object := range command.Objects {
+			if object.Kind != "assessment_result" {
+				ai = false
+			}
+		}
+		var err error
+		if ai {
+			converted := assessment.ExportCommand{Format: command.Format, Objects: make([]assessment.ExportObject, len(command.Objects))}
+			for index, object := range command.Objects {
+				converted.Objects[index] = assessment.ExportObject{Kind: object.Kind, ID: object.ID, ExpectedRevision: object.ExpectedRevision}
+			}
+			_, err = h.assessment.ExportResults(r.Context(), assessment.Request{TokenHash: req.TokenHash, Purpose: req.Purpose, Key: req.Key, RequestID: req.RequestID}, converted, func(event assessment.ExportEvent) error { return writeEvent(event.EncodedJSON) })
+		} else {
+			for _, object := range command.Objects {
+				if object.Kind == "assessment_result" {
+					h.fail(w, fault.Invalid, req.RequestID)
+					return true
+				}
+			}
+			_, err = h.interviews.Export(r.Context(), req, command, func(event interview.ExportEvent) error { return writeEvent(event.EncodedJSON) })
+		}
 		if err != nil && !started {
 			h.fail(w, err, req.RequestID)
 		}

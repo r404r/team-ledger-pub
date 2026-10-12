@@ -2,6 +2,7 @@ package assessment_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"testing"
@@ -92,6 +93,18 @@ func TestAssessmentIndependentApprovalLeaseFencingEncryptedDraftAndPublish(t *te
 		replayed, err := f.Assessment.Submit(ctx, worker, lease, document)
 		if err != nil || replayed.ID != draft.ID || replayed.Revision != draft.Revision {
 			t.Fatal("accepted worker result receipt replay:", replayed, err)
+		}
+		var exported []map[string]any
+		_, err = f.Assessment.ExportResults(ctx, assessmentRequest(f.FollowupManager), assessment.ExportCommand{Format: "ndjson", Objects: []assessment.ExportObject{{Kind: "assessment_result", ID: draft.ID, ExpectedRevision: draft.Revision}}}, func(event assessment.ExportEvent) error {
+			var decoded map[string]any
+			if decodeErr := json.Unmarshal(event.EncodedJSON, &decoded); decodeErr != nil {
+				return decodeErr
+			}
+			exported = append(exported, decoded)
+			return nil
+		})
+		if err != nil || len(exported) != 3 || exported[1]["kind"] != "assessment_result" {
+			t.Fatal("bounded AI result export:", exported, err)
 		}
 		var plaintextCount int
 		query := "SELECT count(*) FROM assessment_payload WHERE instr(CAST(sealed_bytes AS TEXT),?)>0"

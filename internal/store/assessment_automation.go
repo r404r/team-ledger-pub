@@ -313,12 +313,18 @@ func (r *Repository) FailAssessmentJob(ctx context.Context, org, worker, job str
 }
 
 func (r *Repository) AssessmentResult(ctx context.Context, org, id string) (assessment.Result, sensitive.Envelope, error) {
+	return r.read().assessmentResult(ctx, org, id)
+}
+func (t *transaction) AssessmentResult(ctx context.Context, org, id string) (assessment.Result, sensitive.Envelope, error) {
+	return t.reader.assessmentResult(ctx, org, id)
+}
+func (r reader) assessmentResult(ctx context.Context, org, id string) (assessment.Result, sensitive.Envelope, error) {
 	var out assessment.Result
 	var env sensitive.Envelope
 	var created, updated dbTime
 	query := "SELECT r.employee_id,r.job_id,r.current_revision,r.status,r.created_at,r.updated_at,v.source_digest,p.id,p.object_kind,p.purpose,p.schema_type,p.schema_version,p.format_version,p.algorithm,p.dek_id,p.kek_id,p.kek_version,p.wrapped_dek,p.sealed_bytes FROM assessment_result r JOIN assessment_result_revision v ON v.org_id=r.org_id AND v.result_id=r.id AND v.revision=r.current_revision JOIN assessment_payload p ON p.org_id=v.org_id AND p.id=v.payload_id WHERE r.org_id=? AND r.id=?"
 	pg := "SELECT r.employee_id,r.job_id,r.current_revision,r.status,r.created_at,r.updated_at,v.source_digest,p.id,p.object_kind,p.purpose,p.schema_type,p.schema_version,p.format_version,p.algorithm,p.dek_id,p.kek_id,p.kek_version,p.wrapped_dek,p.sealed_bytes FROM assessment_result r JOIN assessment_result_revision v ON v.org_id=r.org_id AND v.result_id=r.id AND v.revision=r.current_revision JOIN assessment_payload p ON p.org_id=v.org_id AND p.id=v.payload_id WHERE r.org_id=$1 AND r.id=$2"
-	err := r.DB.QueryRowContext(ctx, r.read().sql(query, pg), org, id).Scan(&out.EmployeeID, &out.JobID, &out.Revision, &out.Status, &created, &updated, &out.SourceDigest, &env.Context.VersionID, &env.Context.ObjectKind, &env.Context.Purpose, &env.Context.SchemaType, &env.Context.SchemaVersion, &env.FormatVersion, &env.Algorithm, &env.DEKID, &env.Key.KEKID, &env.Key.Version, &env.Key.Data, &env.SealedBytes)
+	err := r.db.QueryRowContext(ctx, r.sql(query, pg), org, id).Scan(&out.EmployeeID, &out.JobID, &out.Revision, &out.Status, &created, &updated, &out.SourceDigest, &env.Context.VersionID, &env.Context.ObjectKind, &env.Context.Purpose, &env.Context.SchemaType, &env.Context.SchemaVersion, &env.FormatVersion, &env.Algorithm, &env.DEKID, &env.Key.KEKID, &env.Key.Version, &env.Key.Data, &env.SealedBytes)
 	if errors.Is(err, sql.ErrNoRows) {
 		return out, env, fault.NotFound
 	}

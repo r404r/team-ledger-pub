@@ -980,7 +980,7 @@ func TestInterviewUnavailableKMSAndAuditRollbackAllFacts(t *testing.T) {
 					before := interviewFacts(t, f)
 					if failure == "kms" {
 						f.InterviewKMS.Fail.Store(true)
-					} else if err = f.Exec(ctx, "DROP TABLE audit_event", "DROP TABLE audit_event"); err != nil {
+					} else if err = f.DisableAudit(ctx); err != nil {
 						t.Fatal(err)
 					}
 					switch mutation {
@@ -1503,7 +1503,7 @@ func TestInterviewCancellationReasonRequiresIndependentCurrentSharedInterviewRea
 			}
 		}
 		f.InterviewKMS.Fail.Store(false)
-		if err := f.Exec(ctx, "DROP TABLE audit_event", "DROP TABLE audit_event"); err != nil {
+		if err := f.DisableAudit(ctx); err != nil {
 			t.Fatal(err)
 		}
 		denied, err := f.Interviews.Detail(ctx, f.InterviewRequest(f.Owner), r.ID, interview.DetailQuery{})

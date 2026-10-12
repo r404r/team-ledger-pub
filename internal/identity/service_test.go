@@ -617,6 +617,9 @@ func TestOIDCReturnRoutesAndActionBindingRejectOpenRedirects(t *testing.T) {
 	if !identity.AllowedReturn("/employees/"+employee+"/bonuses") || identity.AllowedReturn("/employees/"+employee+"/bonuses?reason=SYNTHETIC_FINANCIAL_BODY") {
 		t.Fatal("bonus return route must allow only its canonical body-free path")
 	}
+	if !identity.AllowedReturn("/security/audit") || identity.AllowedReturn("/security/audit?request_id=SYNTHETIC_AUDIT_PROBE") {
+		t.Fatal("audit return route must allow only its canonical body-free path")
+	}
 	for _, route := range []string{
 		"orgs/" + org + "/tree", "/orgs/" + org + "/unknown",
 		"/orgs/" + org + "/employees?q=SYNTHETIC_BODY_ONLY_SEARCH",

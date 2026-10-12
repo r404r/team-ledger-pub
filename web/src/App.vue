@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import ProfilePage from './ProfilePage.vue'
 import GrantPage from './GrantPage.vue'
+import AuditPage from './AuditPage.vue'
 import IdentityGate from './IdentityGate.vue'
 import OrganizationPage from './OrganizationPage.vue'
 import InterviewPage from './InterviewPage.vue'
@@ -11,6 +12,7 @@ import FollowupPage from './FollowupPage.vue'
 
 const pathname = ref(window.location.pathname)
 const grantsRoute = computed(() => /^\/security\/grants\/?$/.test(pathname.value))
+const auditRoute = computed(() => /^\/security\/audit\/?$/.test(pathname.value))
 const organizationRoute = computed(() => /^\/orgs\/[0-9a-f-]+\/(?:tree|employees)\/?$/.test(pathname.value) ||
   /^\/employees\/[0-9a-f-]+\/organization-history\/?$/.test(pathname.value))
 const interviewRoute = computed(() => /^\/interviews(?:\/[0-9a-f-]+)?\/?$/.test(pathname.value) ||
@@ -38,11 +40,13 @@ onBeforeUnmount(() => window.removeEventListener('popstate', readRoute))
     <nav aria-label="主导航">
       <a href="/" @click="navigate($event, '/')">人员资料</a>
       <a href="/security/grants" @click="navigate($event, '/security/grants')">授权</a>
+      <a href="/security/audit" @click="navigate($event, '/security/audit')">审计</a>
       <a :href="`/orgs/${orgID}/tree`" @click="navigate($event, `/orgs/${orgID}/tree`)">组织树</a>
       <a :href="`/orgs/${orgID}/employees`" @click="navigate($event, `/orgs/${orgID}/employees`)">员工目录</a>
       <a href="/interviews" @click="navigate($event, '/interviews')">面谈</a>
     </nav>
     <GrantPage v-if="grantsRoute" @session-expired="expireSession" />
+    <AuditPage v-else-if="auditRoute" @session-expired="expireSession" />
     <InterviewPage v-else-if="interviewRoute" @session-expired="expireSession" />
     <FollowupPage v-else-if="followupRoute" @session-expired="expireSession" />
     <CompensationPage v-else-if="compensationRoute" @session-expired="expireSession" />

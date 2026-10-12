@@ -574,7 +574,7 @@ func TestCompensationKMSAndAuditFailureRollbackAndNoRelease(t *testing.T) {
 				before := financeFacts(t, f, employee)
 				if failure == "kms" {
 					f.FinancialKMS.Fail.Store(true)
-				} else if err := f.Exec(context.Background(), "DROP TABLE audit_event", "DROP TABLE audit_event"); err != nil {
+				} else if err := f.DisableAudit(context.Background()); err != nil {
 					t.Fatal(err)
 				}
 				r, err := f.Compensation.TransitionProposal(context.Background(), financeRequest(f.CompApprover), p.ID, compensation.TransitionCommand{Action: "approve", Revision: p.Revision, CompRevision: basis, DecisionReason: "SYNTHETIC_FAULT_APPROVE"})
@@ -593,7 +593,7 @@ func TestCompensationKMSAndAuditFailureRollbackAndNoRelease(t *testing.T) {
 				financeApprove(t, f, employee, compensation.ProposalCommand{Kind: "initial", EffectiveDate: "2026-01-01", CompRevision: basis, After: financeTerms("100"), Reason: "SYNTHETIC_READ_FAULT"})
 				if failure == "kms" {
 					f.FinancialKMS.Fail.Store(true)
-				} else if err := f.Exec(context.Background(), "DROP TABLE audit_event", "DROP TABLE audit_event"); err != nil {
+				} else if err := f.DisableAudit(context.Background()); err != nil {
 					t.Fatal(err)
 				}
 				v, err := f.Compensation.Current(context.Background(), financeRequest(f.FinR), employee, compensation.CurrentQuery{AsOf: "2026-12-31"})

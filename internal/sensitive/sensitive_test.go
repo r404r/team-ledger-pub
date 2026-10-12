@@ -484,13 +484,20 @@ func TestKEKRewrapPreservesAuthenticatedPayload(t *testing.T) {
 		t.Fatal("synthetic original key must unwrap")
 	}
 	defer clear(dek)
-	rewrapped := cloneEnvelope(e)
-	rewrapped.Key.Version = 2
+	next := e.Key
+	next.Version = 2
 	aead, err := wrappingAEAD(2)
 	if err != nil {
 		t.Fatal("synthetic rotation key unavailable")
 	}
-	rewrapped.Key.Data = aead.Seal(nil, nil, dek, wrapAAD(rewrapped.Key))
+	next.Data = aead.Seal(nil, nil, dek, wrapAAD(next))
+	w.wrapResult = &next
+	key, err := sensitive.RewrapKey(context.Background(), w, w, e.Key)
+	if err != nil {
+		t.Fatal("verified key rewrap failed:", err)
+	}
+	rewrapped := cloneEnvelope(e)
+	rewrapped.Key = key
 	opened, err := (sensitive.Cipher{Wrapper: w}).Open(context.Background(), profileContext(), rewrapped)
 	if err != nil || !bytes.Equal(opened, syntheticProfile) {
 		t.Fatal("valid KEK rewrap must open unchanged payload without rebinding AAD")

@@ -1,0 +1,16 @@
+import { flushPromises, mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import AuditPage from './AuditPage.vue'
+const SUBJECT='10000000-0000-4000-8000-000000000001', ORG='10000000-0000-4000-8000-000000000002', EVENT='10000000-0000-4000-8000-000000000003', REQUEST='10000000-0000-4000-8000-000000000004'
+const session={subject_id:SUBJECT,org_id:ORG,capabilities:['audit.read'],mfa_recent:true,mfa_valid_until:'2027-01-01T00:00:00Z'}
+const event={id:EVENT,subject_id:SUBJECT,employee_id:null,grant_id:null,operation:'OP-SEC-02',purpose:'security_administration',request_id:REQUEST,outcome:'allowed',recorded_at:'2026-10-12T00:00:00.123456Z',actor_kind:'application',target_subject_id:null,target_employee_id:null}
+const page=(cursor:string|null=null)=>({items:[event],next_cursor:cursor,consistency:'current',authorization_until:'2027-01-01T00:00:00Z'})
+function response(status:number,body:unknown){return new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json'}})}
+let requests:URL[]=[]
+beforeEach(()=>{requests=[];vi.stubGlobal('fetch',vi.fn(async(input:RequestInfo|URL)=>{const url=new URL(String(input),location.href);requests.push(url);if(url.pathname==='/api/v1/session')return response(200,session);return response(200,page())}))})
+afterEach(()=>{vi.unstubAllGlobals()})
+describe('P-SEC-02 audit workbench',()=>{
+ it('shows only validated safe metadata and sends the security purpose',async()=>{const wrapper=mount(AuditPage);await flushPromises();expect(wrapper.text()).toContain('OP-SEC-02');expect(wrapper.text()).toContain(REQUEST);expect(wrapper.text()).not.toContain('prompt');expect(requests.map(r=>r.pathname)).toEqual(['/api/v1/session','/api/v1/audit-events']);expect(vi.mocked(fetch).mock.calls[0]![1]!.headers).toMatchObject({'X-Access-Purpose':'security_administration'});wrapper.unmount()})
+ it('uses an opaque continuation without local storage',async()=>{vi.stubGlobal('fetch',vi.fn(async(input:RequestInfo|URL)=>{const url=new URL(String(input),location.href);requests.push(url);if(url.pathname==='/api/v1/session')return response(200,session);return response(200,page(url.searchParams.has('cursor')?null:'opaque.cursor'))}));const wrapper=mount(AuditPage);await flushPromises();const next=wrapper.findAll('button').find(button=>button.text()==='下一页');expect(next).toBeDefined();await next!.trigger('click');await flushPromises();expect(requests.at(-1)?.searchParams.get('cursor')).toBe('opaque.cursor');expect(localStorage.length).toBe(0);expect(sessionStorage.length).toBe(0);wrapper.unmount()})
+ it('clears all events when current audit permission is absent',async()=>{vi.stubGlobal('fetch',vi.fn(async()=>response(200,{...session,capabilities:[]})));const wrapper=mount(AuditPage);await flushPromises();expect(wrapper.text()).toContain('权限');expect(wrapper.text()).not.toContain(REQUEST);wrapper.unmount()})
+})

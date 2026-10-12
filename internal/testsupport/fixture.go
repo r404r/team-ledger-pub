@@ -368,6 +368,13 @@ func (f *Fixture) Exec(ctx context.Context, sq, pg string, args ...any) error {
 	_, err := f.Repo.DB.ExecContext(ctx, q, args...)
 	return err
 }
+func (f *Fixture) DisableAudit(ctx context.Context) error {
+	if _, err := f.Repo.DB.ExecContext(ctx, "DROP TABLE audit_outbox"); err != nil {
+		return err
+	}
+	_, err := f.Repo.DB.ExecContext(ctx, "DROP TABLE audit_event")
+	return err
+}
 func (f *Fixture) Count(t testing.TB, table string) int {
 	t.Helper()
 	var n int

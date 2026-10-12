@@ -387,11 +387,15 @@ func insertMaintenanceAudit(ctx context.Context, q reader, m identity.Identity, 
 	if q.backend == "sqlite" {
 		at = now.UTC().UnixMicro()
 	}
+	id := value.NewID()
 	_, err := q.db.ExecContext(ctx, q.sql(
 		"INSERT INTO audit_event(id,org_id,subject_id,operation,purpose,request_id,outcome,recorded_at,actor_kind,actor_uid,actor_host_hash,target_subject_id,identity_digest,target_employee_id) VALUES(?,?,NULL,?,'security_administration',?,'allowed',?,'local_maintenance',?,?,?,?,?)",
 		"INSERT INTO audit_event(id,org_id,subject_id,operation,purpose,request_id,outcome,recorded_at,actor_kind,actor_uid,actor_host_hash,target_subject_id,identity_digest,target_employee_id) VALUES($1,$2,NULL,$3,'security_administration',$4,'allowed',$5,'local_maintenance',$6,$7,$8,$9,$10)"),
-		value.NewID(), m.OrgID, operation, requestID, at, actor.uid, actor.hostHash[:], m.SubjectID, m.Digest, nullable(m.EmployeeID))
+		id, m.OrgID, operation, requestID, at, actor.uid, actor.hostHash[:], m.SubjectID, m.Digest, nullable(m.EmployeeID))
 	if err != nil {
+		return fault.AuditUnavailable
+	}
+	if _, err = q.db.ExecContext(ctx, q.sql("INSERT INTO audit_outbox(event_id,org_id,available_at) VALUES(?,?,?)", "INSERT INTO audit_outbox(event_id,org_id,available_at) VALUES($1,$2,$3)"), id, m.OrgID, at); err != nil {
 		return fault.AuditUnavailable
 	}
 	return nil

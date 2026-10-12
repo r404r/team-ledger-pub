@@ -416,7 +416,7 @@ func migrationLedger(t *testing.T, repo *store.Repository) {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-	for _, version := range []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10} {
+	for _, version := range []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11} {
 		var found int
 		var backend, checksum string
 		if !rows.Next() || rows.Scan(&found, &backend, &checksum) != nil {

@@ -30,6 +30,30 @@ func grantCommand(f *testsupport.Fixture, capability, epoch string) authz.IssueC
 	}
 	return authz.IssueCommand{SubjectID: f.Reader.SubjectID, Capability: capability, Category: category, Scope: authz.Scope{Kind: "org", ID: f.OrgID}, Purpose: "organization_management", ValidFrom: f.Now.Add(-time.Minute).Format(time.RFC3339Nano), ExpiresAt: f.Now.Add(time.Hour).Format(time.RFC3339Nano), MFARequired: true, AuthorityID: f.AuthorityIDs[capability], ExpectedRevision: epoch}
 }
+func TestSecurityAdministrationAuthorityIssuesAuditRead(t *testing.T) {
+	grantBackends(t, func(t *testing.T, f *testsupport.Fixture) {
+		ctx := context.Background()
+		authorityID := value.NewID()
+		if err := f.Exec(ctx,
+			"INSERT INTO delegation_authority(id,org_id,manager_subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,mfa_required,approved_by,approved_at,policy_version) VALUES(?,?,?,'audit.read','audit','org',?,'security_administration',?,?,1,?,?,'fixture-security-policy')",
+			"INSERT INTO delegation_authority(id,org_id,manager_subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,mfa_required,approved_by,approved_at,policy_version) VALUES($1,$2,$3,'audit.read','audit','org',$4,'security_administration',$5,$6,true,$7,$8,'fixture-security-policy')",
+			authorityID, f.OrgID, f.Manager.SubjectID, f.OrgID, f.Repo.BindTime(f.Now.Add(-time.Hour)), f.Repo.BindTime(f.Now.Add(time.Hour)), f.Approver.SubjectID, f.Repo.BindTime(f.Now.Add(-2*time.Hour))); err != nil {
+			t.Fatal("security administration authority was rejected", err)
+		}
+		if err := f.Exec(ctx,
+			"INSERT INTO capability_assignment(org_id,subject_id,capability,scope_kind,scope_id) VALUES(?,?,'audit.read','org',?)",
+			"INSERT INTO capability_assignment(org_id,subject_id,capability,scope_kind,scope_id) VALUES($1,$2,'audit.read','org',$3)",
+			f.OrgID, f.Reader.SubjectID, f.OrgID); err != nil {
+			t.Fatal(err)
+		}
+		command := authz.IssueCommand{SubjectID: f.Reader.SubjectID, Capability: "audit.read", Category: "audit", Scope: authz.Scope{Kind: "org", ID: f.OrgID}, Purpose: authz.ManagementPurpose, ValidFrom: f.Now.Add(-time.Minute).Format(time.RFC3339Nano), ExpiresAt: f.Now.Add(time.Hour).Format(time.RFC3339Nano), MFARequired: true, AuthorityID: authorityID, ExpectedRevision: "1"}
+		result, err := f.Authz.Issue(ctx, managementRequest(f), command)
+		if err != nil || !value.ValidID(result.ID) || result.Status != "current" {
+			t.Fatal("real audit authority flow failed", result, err)
+		}
+	})
+}
+
 func makeEmployee(t *testing.T, f *testsupport.Fixture) string {
 	t.Helper()
 	r, err := f.Service.Create(context.Background(), f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{DisplayName: "SYNTHETIC_GRANTED_PROFILE"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
@@ -299,7 +323,7 @@ func TestGrantEpochAndRevisionCASAuditRollback(t *testing.T) {
 		if f.Count(t, "access_grant") != before || f.Count(t, "grant_command_receipt") != receipts || f.Count(t, "audit_event") != audits {
 			t.Fatal("CAS conflict persisted state")
 		}
-		if err := f.Exec(ctx, "DROP TABLE audit_event", "DROP TABLE audit_event"); err != nil {
+		if err := f.DisableAudit(ctx); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := f.Authz.Revoke(ctx, managementRequest(f), made.ID, authz.RevokeCommand{ExpectedRevision: "1", ExpectedAuthEpoch: made.AuthEpoch, Reason: "policy_change"}); !errors.Is(err, fault.AuditUnavailable) {
