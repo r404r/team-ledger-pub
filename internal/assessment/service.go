@@ -12,13 +12,18 @@ import (
 	"github.com/r404r/team-ledger/internal/authz"
 	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/organization"
+	"github.com/r404r/team-ledger/internal/sensitive"
 	"github.com/r404r/team-ledger/internal/value"
 )
 
 type Service struct {
-	Store     Store
-	DigestKey []byte
-	Now       func() time.Time
+	Store            Store
+	DigestKey        []byte
+	Now              func() time.Time
+	Cipher           sensitive.Cipher
+	ProviderPolicies map[string]ProviderPolicy
+	Workers          map[string]WorkerIdentity
+	ServiceSubjects  map[string]ServiceIdentity
 }
 
 func (s *Service) clock() time.Time {
@@ -82,7 +87,7 @@ func parseRevision(raw string) (int64, error) {
 }
 
 func policyView(policy Policy) PolicyView {
-	return PolicyView{Revision: strconv.FormatInt(policy.Revision, 10), Cadence: policy.Cadence, AnchorDate: policy.AnchorDate, Timezone: policy.Timezone, DueOffsetDays: policy.DueOffsetDays, LocalDueTime: policy.LocalDueTime, WindowThrough: policy.WindowThrough, PauseIntervals: append([]PauseInterval{}, policy.PauseIntervals...), Purpose: policy.Purpose, AIMode: policy.AIMode, RequiredFields: append([]string{}, policy.RequiredFields...), UpdatedBy: policy.UpdatedBy, UpdatedAt: policy.UpdatedAt}
+	return PolicyView{Revision: strconv.FormatInt(policy.Revision, 10), Cadence: policy.Cadence, AnchorDate: policy.AnchorDate, Timezone: policy.Timezone, DueOffsetDays: policy.DueOffsetDays, LocalDueTime: policy.LocalDueTime, WindowThrough: policy.WindowThrough, PauseIntervals: append([]PauseInterval{}, policy.PauseIntervals...), Purpose: policy.Purpose, AIMode: policy.AIMode, RequiredFields: append([]string{}, policy.RequiredFields...), Standing: policy.Standing, UpdatedBy: policy.UpdatedBy, UpdatedAt: policy.UpdatedAt}
 }
 
 func windowView(window Window) WindowView {
@@ -117,6 +122,23 @@ func (s *Service) PutPolicy(ctx context.Context, q Request, employee string, com
 	}
 	command.RequiredFields = append([]string(nil), command.RequiredFields...)
 	sort.Strings(command.RequiredFields)
+	if command.AIMode == "periodic_structured_v1" && command.Standing != nil {
+		if !value.ValidID(command.Standing.ServiceSubjectID) || !value.ValidID(command.Standing.ProviderPolicyID) || command.Standing.ServiceSubjectID == a.SubjectID || command.Standing.TemplateVersion != "periodic_structured_v1" {
+			return PolicyView{}, fault.Invalid
+		}
+		expires, parseErr := time.Parse(time.RFC3339Nano, command.Standing.ExpiresAt)
+		provider, providerOK := s.ProviderPolicies[command.Standing.ProviderPolicyID]
+		identity, serviceOK := s.ServiceSubjects[command.Standing.ServiceSubjectID]
+		if parseErr != nil || !expires.After(s.clock()) || expires.After(s.clock().AddDate(1, 0, 0)) || !providerOK || !provider.Enabled || !s.clock().Before(provider.ExpiresAt) || provider.Audience != command.Standing.Audience || !serviceOK || len(identity.TokenHash) != sha256.Size {
+			return PolicyView{}, fault.Forbidden
+		}
+		serviceActor, securityErr := s.Store.Security(ctx, identity.TokenHash, a.OrgID, employee)
+		if securityErr != nil || serviceActor.SubjectID != command.Standing.ServiceSubjectID || !serviceActor.Allows("assessment.request", "metadata", employee, "interview_followup", s.clock()) || !serviceActor.Allows("assessment.read", "metadata", employee, "interview_followup", s.clock()) {
+			return PolicyView{}, fault.Forbidden
+		}
+	} else if command.AIMode != "periodic_structured_v1" && command.Standing != nil {
+		return PolicyView{}, fault.Invalid
+	}
 	windows, err := GenerateWindows(command, expected+1)
 	if err != nil {
 		return PolicyView{}, fault.Invalid
@@ -360,7 +382,16 @@ func (s *Service) Status(ctx context.Context, q Request, employee string, query 
 		if policy.AIMode == "manual_approved" {
 			aiState = "awaiting_manual_input"
 		} else if policy.AIMode == "periodic_structured_v1" {
-			aiState, block = "blocked", "automation_not_enabled"
+			aiState = "ready"
+			if policy.Standing == nil {
+				aiState, block = "blocked", "automation_not_enabled"
+			} else if expires, parseErr := time.Parse(time.RFC3339Nano, policy.Standing.ExpiresAt); parseErr != nil || !s.clock().Before(expires) {
+				aiState, block = "blocked", "policy_expired"
+			} else if provider, ok := s.ProviderPolicies[policy.Standing.ProviderPolicyID]; !ok || !provider.Enabled || !s.clock().Before(provider.ExpiresAt) || provider.Audience != policy.Standing.Audience {
+				aiState, block = "blocked", "provider_not_approved"
+			} else if identity, ok := s.ServiceSubjects[policy.Standing.ServiceSubjectID]; !ok || len(identity.TokenHash) != sha256.Size {
+				aiState, block = "blocked", "authorization_unavailable"
+			}
 		}
 		policyOutput := policyView(policy)
 		out = StatusView{State: "configured", Policy: &policyOutput, Items: items, Coverage: coverage, AIState: aiState, AIBlockReason: block}

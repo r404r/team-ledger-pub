@@ -45,7 +45,7 @@ func requiredFields(object string, seen map[string]bool) bool {
 }
 
 func currentInterviewPermissions(snapshot authz.Snapshot, employee, team string, now time.Time) []interview.Permission {
-	permissions := make([]interview.Permission, 0, 18)
+	permissions := make([]interview.Permission, 0, 22)
 	add := func(capability, category string) {
 		allowed := snapshot.Allows(capability, category, employee, "interview_followup", now)
 		if team != "" {
@@ -55,7 +55,7 @@ func currentInterviewPermissions(snapshot authz.Snapshot, employee, team string,
 			permissions = append(permissions, interview.Permission{Capability: capability, Category: category})
 		}
 	}
-	for _, capability := range [...]string{"interview.read", "interview.write", "interview_policy.manage"} {
+	for _, capability := range [...]string{"interview.read", "interview.write", "interview_policy.manage", "assessment.request", "assessment.read", "assessment.input.approve", "assessment.publish"} {
 		add(capability, "metadata")
 	}
 	for _, category := range [...]string{"shared", "manager_private", "hr_confidential"} {

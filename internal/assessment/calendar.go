@@ -211,5 +211,11 @@ func canonicalPolicy(command PolicyCommand) string {
 		b.WriteByte('/')
 		b.WriteString(pause.To)
 	}
+	if command.Standing != nil {
+		for _, value := range []string{command.Standing.ServiceSubjectID, command.Standing.Audience, command.Standing.ExpiresAt, command.Standing.ProviderPolicyID, command.Standing.TemplateVersion} {
+			b.WriteByte('|')
+			b.WriteString(value)
+		}
+	}
 	return b.String()
 }

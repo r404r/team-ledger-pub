@@ -71,6 +71,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, fault.Forbidden, requestID)
 		return
 	}
+	if h.assessmentWorkerRoute(w, r, requestID) {
+		return
+	}
 	if !strings.HasPrefix(r.URL.Path, "/api/") {
 		h.staticFile(w, r, requestID)
 		return
@@ -389,8 +392,10 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 		root = "export_command"
 	case *compensation.BonusTargetCommand, *compensation.BonusTargetTransition, *compensation.BonusAwardCommand, *compensation.BonusAwardEditCommand, *compensation.BonusAwardTransition, *compensation.BonusPaymentCommand, *compensation.BonusExtensionCommand:
 		root = "bonus_command"
-	case *assessment.PolicyCommand:
-		root = "assessment_policy"
+	case *assessment.PolicyCommand, *assessment.AssessmentCommand, *assessment.ApproveCommand, *assessment.ResultCommand:
+		root = "assessment_command"
+	case *workerClaimCommand, *workerLeaseCommand, *workerHeartbeatCommand, *workerResultCommand, *workerFailCommand:
+		root = "assessment_worker"
 	default:
 		return fault.Invalid
 	}
@@ -398,7 +403,7 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 	d.UseNumber()
 	if strings.HasPrefix(root, "finance_") {
 		e = walkFinancialJSON(d, 0, root, false)
-	} else if root == "bonus_command" || root == "assessment_policy" {
+	} else if root == "bonus_command" || root == "assessment_command" || root == "assessment_worker" {
 		e = walkUniqueJSON(d, 0)
 	} else {
 		e = walkJSON(d, 0, root)

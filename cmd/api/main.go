@@ -184,6 +184,10 @@ func run() error {
 	if e != nil {
 		return errors.New("invalid TLS configuration")
 	}
+	assessmentProviders, assessmentWorkers, assessmentServices, workerRoots, e := assessmentConfiguration()
+	if e != nil {
+		return e
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	startup, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -198,7 +202,13 @@ func run() error {
 	}
 	service := &organization.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, DigestKey: digest, CursorKey: cursor, Now: time.Now}
 	interviews := &interview.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: interviewWrapper}, DigestKey: digest, CursorKey: cursor, Now: time.Now}
-	assessments := &assessment.Service{Store: repo, DigestKey: digest, Now: time.Now}
+	assessments := &assessment.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: interviewWrapper}, DigestKey: digest, ProviderPolicies: assessmentProviders, Workers: assessmentWorkers, ServiceSubjects: assessmentServices, Now: time.Now}
+	schedulerFailed := make(chan struct{}, 1)
+	go func() {
+		if runAssessmentScheduler(ctx, assessments) != nil {
+			schedulerFailed <- struct{}{}
+		}
+	}()
 	finance := &compensation.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: financialWrapper}, DigestKey: digest, CursorKey: cursor, BonusHMACKeys: bonusHMACKeys, BonusHMACKeyIDs: bonusHMACKeyIDs, BonusHMACActive: bonusHMACActive, Policy: policy, Now: time.Now}
 	grants := &authz.Service{Store: repo, DigestKey: digest, CursorKey: cursor, Now: time.Now}
 	oidcConfig, closeIdentity, e := identityConfiguration(cfg["PUBLIC_ORIGIN"], csrf, digest, cursor)
@@ -216,7 +226,12 @@ func run() error {
 	if e != nil {
 		return e
 	}
-	server := &http.Server{Addr: cfg["LISTEN"], Handler: handler, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10, ErrorLog: log.New(io.Discard, "", 0)}
+	serverTLS := &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}
+	if workerRoots != nil {
+		serverTLS.ClientAuth = tls.VerifyClientCertIfGiven
+		serverTLS.ClientCAs = workerRoots
+	}
+	server := &http.Server{Addr: cfg["LISTEN"], Handler: handler, TLSConfig: serverTLS, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10, ErrorLog: log.New(io.Discard, "", 0)}
 	listener, e := net.Listen("tcp", cfg["LISTEN"])
 	if e != nil {
 		return errors.New("listener unavailable")
@@ -228,6 +243,10 @@ func run() error {
 		if !errors.Is(e, http.ErrServerClosed) {
 			return errors.New("server failed")
 		}
+	case <-schedulerFailed:
+		server.Close()
+		<-done
+		return errors.New("assessment scheduler failed")
 	case <-ctx.Done():
 		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()

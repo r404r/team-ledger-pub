@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/r404r/team-ledger/internal/assessment"
 	"github.com/r404r/team-ledger/internal/fault"
@@ -46,6 +47,18 @@ func (r reader) assessmentPolicyQuery(ctx context.Context, table, suffix, org, e
 		return out, false, fault.Unavailable
 	}
 	out.OrgID, out.EmployeeID, out.Cadence.Count, out.DueOffsetDays, out.UpdatedAt = org, employee, cadenceCount, dueOffset, updated.Time
+	if out.AIMode == "periodic_structured_v1" {
+		var standing assessment.StandingPolicyCommand
+		var expires dbTime
+		err = r.db.QueryRowContext(ctx, r.sql("SELECT service_subject_id,audience,expires_at,provider_policy_id,template_version FROM assessment_standing_policy WHERE org_id=? AND employee_id=? AND policy_revision=?", "SELECT service_subject_id,audience,expires_at,provider_policy_id,template_version FROM assessment_standing_policy WHERE org_id=$1 AND employee_id=$2 AND policy_revision=$3"), org, employee, out.Revision).Scan(&standing.ServiceSubjectID, &standing.Audience, &expires, &standing.ProviderPolicyID, &standing.TemplateVersion)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return out, false, fault.Unavailable
+		}
+		if err == nil {
+			standing.ExpiresAt = expires.Time.Format(time.RFC3339Nano)
+			out.Standing = &standing
+		}
+	}
 	return out, true, nil
 }
 
@@ -219,6 +232,15 @@ func (t *transaction) SaveAssessmentPolicy(ctx context.Context, policy assessmen
 	}
 	if _, err = t.tx.ExecContext(ctx, t.sql("INSERT INTO interview_policy(org_id,employee_id,revision,cadence_unit,cadence_count,anchor_date,timezone,due_offset_days,local_due_time,window_through,pause_json,purpose,ai_mode,required_fields_json,updated_by,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(org_id,employee_id) DO UPDATE SET revision=excluded.revision,cadence_unit=excluded.cadence_unit,cadence_count=excluded.cadence_count,anchor_date=excluded.anchor_date,timezone=excluded.timezone,due_offset_days=excluded.due_offset_days,local_due_time=excluded.local_due_time,window_through=excluded.window_through,pause_json=excluded.pause_json,purpose=excluded.purpose,ai_mode=excluded.ai_mode,required_fields_json=excluded.required_fields_json,updated_by=excluded.updated_by,updated_at=excluded.updated_at", "INSERT INTO interview_policy(org_id,employee_id,revision,cadence_unit,cadence_count,anchor_date,timezone,due_offset_days,local_due_time,window_through,pause_json,purpose,ai_mode,required_fields_json,updated_by,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT(org_id,employee_id) DO UPDATE SET revision=excluded.revision,cadence_unit=excluded.cadence_unit,cadence_count=excluded.cadence_count,anchor_date=excluded.anchor_date,timezone=excluded.timezone,due_offset_days=excluded.due_offset_days,local_due_time=excluded.local_due_time,window_through=excluded.window_through,pause_json=excluded.pause_json,purpose=excluded.purpose,ai_mode=excluded.ai_mode,required_fields_json=excluded.required_fields_json,updated_by=excluded.updated_by,updated_at=excluded.updated_at"), args...); err != nil {
 		return safeError(err)
+	}
+	if policy.Standing != nil {
+		expires, parseErr := time.Parse(time.RFC3339Nano, policy.Standing.ExpiresAt)
+		if parseErr != nil {
+			return fault.Invalid
+		}
+		if _, err = t.tx.ExecContext(ctx, t.sql("INSERT INTO assessment_standing_policy(org_id,employee_id,policy_revision,service_subject_id,audience,expires_at,provider_policy_id,template_version,approved_by,approved_at) VALUES(?,?,?,?,?,?,?,?,?,?)", "INSERT INTO assessment_standing_policy(org_id,employee_id,policy_revision,service_subject_id,audience,expires_at,provider_policy_id,template_version,approved_by,approved_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"), policy.OrgID, policy.EmployeeID, policy.Revision, policy.Standing.ServiceSubjectID, policy.Standing.Audience, t.bindTime(expires), policy.Standing.ProviderPolicyID, policy.Standing.TemplateVersion, policy.UpdatedBy, t.bindTime(policy.UpdatedAt)); err != nil {
+			return safeError(err)
+		}
 	}
 	for _, window := range windows {
 		state, reason := "disabled", ""

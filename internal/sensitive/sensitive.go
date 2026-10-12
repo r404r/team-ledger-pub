@@ -260,6 +260,12 @@ func canonicalAAD(binding Context) ([]byte, error) {
 		}
 		purpose = "interview"
 		employeeOwned = true
+	case "assessment_result":
+		if binding.SchemaType != "assessment.result.v1" {
+			return nil, ErrInvalid
+		}
+		purpose = "interview"
+		employeeOwned = true
 	case "compensation_proposal":
 		if binding.SchemaType != "compensation.proposal.v1" {
 			return nil, ErrInvalid

@@ -450,8 +450,8 @@ func TestCompensationV7PopulatedV6UpgradePreservesAllOriginalColumnsAndHistory(t
 			}
 			after := interviewMigrationFacts(t, f.Repo)
 			migrationOriginalUnchanged(t, before, after)
-			if len(after["schema_version"]) != 9 {
-				t.Fatal("exact v9 migration ledger required")
+			if len(after["schema_version"]) != 10 {
+				t.Fatal("exact v10 migration ledger required")
 			}
 			runtimeUnchanged(t, map[string][][]any{"schema_version": ledger}, map[string][][]any{"schema_version": after["schema_version"][:6]})
 			for table := range after {

@@ -168,6 +168,8 @@ func SupportedPair(capability, category, purpose string) bool {
 		return category == "audit" && purpose == ManagementPurpose
 	case "interview.read", "interview.write", "interview_policy.manage":
 		return category == "metadata" && purpose == "interview_followup"
+	case "assessment.request", "assessment.read", "assessment.input.approve", "assessment.publish":
+		return category == "metadata" && purpose == "interview_followup"
 	case "note.read", "note.write", "note.publish":
 		return noteCategory(category) && purpose == "interview_followup"
 	case "action.read", "action.write":

@@ -31,26 +31,26 @@ type Credential struct {
 	Hash                   []byte
 }
 type Fixture struct {
-	Repo                                                                   *store.Repository
-	Service                                                                *organization.Service
-	Interviews                                                             *interview.Service
-	Assessment                                                             *assessment.Service
-	Compensation                                                           *compensation.Service
-	Authz                                                                  *authz.Service
-	AuthorityIDs                                                           map[string]string
-	Manager, Reader, Approver                                              Credential
-	FinR, CompW, CompApprover, FinExporter                                 Credential
-	BonusTargetW, BonusW, BonusApprover, BonusPayW, CompensationExtensionW Credential
-	FollowupManager                                                        Credential
-	CursorKey, BonusHMACKey                                                []byte
-	KMS                                                                    *VaultFixture
-	InterviewKMS                                                           *VaultFixture
-	FinancialKMS                                                           *VaultFixture
-	Server                                                                 *httptest.Server
-	OrgID, OtherOrgID, DSN, Backend                                        string
-	CSRFKey, DigestKey                                                     []byte
-	Owner, Observer, Stranger, OtherOwner                                  Credential
-	Now                                                                    time.Time
+	Repo                                                                      *store.Repository
+	Service                                                                   *organization.Service
+	Interviews                                                                *interview.Service
+	Assessment                                                                *assessment.Service
+	Compensation                                                              *compensation.Service
+	Authz                                                                     *authz.Service
+	AuthorityIDs                                                              map[string]string
+	Manager, Reader, Approver                                                 Credential
+	FinR, CompW, CompApprover, FinExporter                                    Credential
+	BonusTargetW, BonusW, BonusApprover, BonusPayW, CompensationExtensionW    Credential
+	FollowupManager                                                           Credential
+	CursorKey, BonusHMACKey, AssessmentWorkerDigest                           []byte
+	KMS                                                                       *VaultFixture
+	InterviewKMS                                                              *VaultFixture
+	FinancialKMS                                                              *VaultFixture
+	Server                                                                    *httptest.Server
+	OrgID, OtherOrgID, DSN, Backend, AssessmentProviderID, AssessmentWorkerID string
+	CSRFKey, DigestKey                                                        []byte
+	Owner, Observer, Stranger, OtherOwner                                     Credential
+	Now                                                                       time.Time
 }
 
 func randomBytes(n int) ([]byte, error) { b := make([]byte, n); _, err := rand.Read(b); return b, err }
@@ -175,7 +175,10 @@ func NewFixture(ctx context.Context, backend, dsn string) (_ *Fixture, err error
 		Now: func() time.Time { return f.Now },
 	}
 	f.Interviews = &interview.Service{Store: f.Repo, Cipher: sensitive.Cipher{Wrapper: interviewWrapper}, DigestKey: f.DigestKey, CursorKey: f.CursorKey, Now: func() time.Time { return f.Now }}
-	f.Assessment = &assessment.Service{Store: f.Repo, DigestKey: f.DigestKey, Now: func() time.Time { return f.Now }}
+	f.AssessmentProviderID, f.AssessmentWorkerID = value.NewID(), "fixture-assessment-worker"
+	workerDigest := sha256.Sum256([]byte("fixture-assessment-worker-certificate"))
+	f.AssessmentWorkerDigest = append([]byte(nil), workerDigest[:]...)
+	f.Assessment = &assessment.Service{Store: f.Repo, Cipher: sensitive.Cipher{Wrapper: interviewWrapper}, DigestKey: f.DigestKey, ProviderPolicies: map[string]assessment.ProviderPolicy{f.AssessmentProviderID: {ID: f.AssessmentProviderID, Audience: "manager_followup", Enabled: true, ExpiresAt: f.Now.Add(24 * time.Hour)}}, Workers: map[string]assessment.WorkerIdentity{f.AssessmentWorkerID: {OrgID: f.OrgID, CertDigest: f.AssessmentWorkerDigest}}, ServiceSubjects: map[string]assessment.ServiceIdentity{f.FollowupManager.SubjectID: {TokenHash: f.FollowupManager.Hash}}, Now: func() time.Time { return f.Now }}
 	f.Service = &organization.Service{Store: f.Repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, DigestKey: f.DigestKey, CursorKey: f.CursorKey, Now: func() time.Time { return f.Now }}
 	f.Authz = &authz.Service{Store: f.Repo, DigestKey: f.DigestKey, CursorKey: f.CursorKey, Now: func() time.Time { return f.Now }}
 	return f, nil
