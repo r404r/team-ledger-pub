@@ -172,7 +172,7 @@ func SupportedPair(capability, category, purpose string) bool {
 		return noteCategory(category) && purpose == "interview_followup"
 	case "action.read", "action.write":
 		return category == "shared" && purpose == "interview_followup"
-	case "compensation.read", "compensation.propose", "compensation.approve":
+	case "compensation.read", "compensation.propose", "compensation.approve", "bonus.target.manage", "bonus.propose", "bonus.approve", "bonus.payment.record", "compensation.extension.manage":
 		return category == "financial" && purpose == "compensation_management"
 	case "sensitive.export":
 		return (category == "metadata" || noteCategory(category)) && purpose == "interview_followup" || category == "financial" && purpose == "compensation_management"

@@ -382,6 +382,8 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 		root = "finance_transition"
 	case *compensation.ExportCommand:
 		root = "export_command"
+	case *compensation.BonusTargetCommand, *compensation.BonusTargetTransition, *compensation.BonusAwardCommand, *compensation.BonusAwardEditCommand, *compensation.BonusAwardTransition, *compensation.BonusPaymentCommand, *compensation.BonusExtensionCommand:
+		root = "bonus_command"
 	default:
 		return fault.Invalid
 	}
@@ -389,6 +391,8 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 	d.UseNumber()
 	if strings.HasPrefix(root, "finance_") {
 		e = walkFinancialJSON(d, 0, root, false)
+	} else if root == "bonus_command" {
+		e = walkUniqueJSON(d, 0)
 	} else {
 		e = walkJSON(d, 0, root)
 	}
@@ -408,6 +412,54 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 	}
 	return nil
 }
+func walkUniqueJSON(d *json.Decoder, depth int) error {
+	if depth > 8 {
+		return fault.Invalid
+	}
+	token, err := d.Token()
+	if err != nil {
+		return fault.Invalid
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := map[string]bool{}
+		for d.More() {
+			key, err := d.Token()
+			name, ok := key.(string)
+			if err != nil || !ok || seen[name] {
+				return fault.Invalid
+			}
+			seen[name] = true
+			if err = walkUniqueJSON(d, depth+1); err != nil {
+				return err
+			}
+		}
+		end, err := d.Token()
+		if err != nil || end != json.Delim('}') {
+			return fault.Invalid
+		}
+	case '[':
+		count := 0
+		for d.More() {
+			count++
+			if count > 100 || walkUniqueJSON(d, depth+1) != nil {
+				return fault.Invalid
+			}
+		}
+		end, err := d.Token()
+		if err != nil || end != json.Delim(']') {
+			return fault.Invalid
+		}
+	default:
+		return fault.Invalid
+	}
+	return nil
+}
+
 func walkJSON(d *json.Decoder, depth int, object string) error {
 	if depth > 8 {
 		return fault.Invalid

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -129,6 +130,27 @@ func run() error {
 	if e != nil {
 		return e
 	}
+	var bonusHMACKeys map[int64][]byte
+	var bonusHMACKeyIDs map[int64]string
+	var bonusHMACActive int64
+	if len(policy.ControlledBonusSources) != 0 {
+		activeText, activeKeyID := os.Getenv("TEAMLEDGER_BONUS_HMAC_ACTIVE_VERSION"), os.Getenv("TEAMLEDGER_BONUS_HMAC_ACTIVE_KEY_ID")
+		active, parseErr := strconv.ParseInt(activeText, 10, 64)
+		if parseErr != nil || active < 1 || strconv.FormatInt(active, 10) != activeText || !validConfigurationKeyID(activeKeyID) {
+			return errors.New("invalid bonus HMAC configuration")
+		}
+		bonusKey, err := secret("BONUS_HMAC_ACTIVE_KEY_FILE", 32)
+		if err != nil {
+			return err
+		}
+		defer clear(bonusKey)
+		if bytes.Equal(bonusKey, csrf) || bytes.Equal(bonusKey, digest) || bytes.Equal(bonusKey, cursor) {
+			return errors.New("keys must be distinct")
+		}
+		bonusHMACActive = active
+		bonusHMACKeys = map[int64][]byte{active: bonusKey}
+		bonusHMACKeyIDs = map[int64]string{active: activeKeyID}
+	}
 	var financialWrapper sensitive.Wrapper
 	if policy.Enabled {
 		var closeFinancialKeys func()
@@ -175,7 +197,7 @@ func run() error {
 	}
 	service := &organization.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, DigestKey: digest, CursorKey: cursor, Now: time.Now}
 	interviews := &interview.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: interviewWrapper}, DigestKey: digest, CursorKey: cursor, Now: time.Now}
-	finance := &compensation.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: financialWrapper}, DigestKey: digest, CursorKey: cursor, Policy: policy, Now: time.Now}
+	finance := &compensation.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: financialWrapper}, DigestKey: digest, CursorKey: cursor, BonusHMACKeys: bonusHMACKeys, BonusHMACKeyIDs: bonusHMACKeyIDs, BonusHMACActive: bonusHMACActive, Policy: policy, Now: time.Now}
 	grants := &authz.Service{Store: repo, DigestKey: digest, CursorKey: cursor, Now: time.Now}
 	oidcConfig, closeIdentity, e := identityConfiguration(cfg["PUBLIC_ORIGIN"], csrf, digest, cursor)
 	if e != nil {
@@ -217,4 +239,17 @@ func run() error {
 		}
 	}
 	return nil
+}
+
+func validConfigurationKeyID(value string) bool {
+	if len(value) < 1 || len(value) > 128 {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '_' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }

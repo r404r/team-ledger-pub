@@ -40,7 +40,7 @@ func (r *Repository) checkStructure(ctx context.Context, db queryer, version int
 				nameIndex = 3
 			}
 			name := strings.Split(strings.Fields(statement)[nameIndex], "(")[0]
-			for _, suffix := range []string{"_v2", "_v3", "_v4", "_v5", "_v6", "_v7"} {
+			for _, suffix := range []string{"_v2", "_v3", "_v4", "_v5", "_v6", "_v7", "_v8"} {
 				if strings.HasSuffix(name, suffix) {
 					finalName := strings.TrimSuffix(name, suffix)
 					statement = strings.Replace(statement, "CREATE TABLE "+name+"(", "CREATE TABLE "+finalName+"(", 1)
@@ -53,6 +53,7 @@ func (r *Repository) checkStructure(ctx context.Context, db queryer, version int
 				statement = strings.ReplaceAll(statement, table+"_v5", table)
 				statement = strings.ReplaceAll(statement, table+"_v6", table)
 				statement = strings.ReplaceAll(statement, table+"_v7", table)
+				statement = strings.ReplaceAll(statement, table+"_v8", table)
 			}
 			expected[name] = compactSQL(statement)
 		}
@@ -135,7 +136,7 @@ func (r *Repository) checkPostgresStructure(ctx context.Context, db queryer, ver
 		}
 		for _, statement := range migrationStatements(ddl) {
 			statement = strings.Replace(statement, "CREATE TABLE ", "CREATE TEMP TABLE ", 1)
-			for _, function := range []string{"delegation_authority_immutable", "structure_fact_immutable", "structure_relation_immutable", "structure_item_owner", "interview_fact_immutable", "interview_owner_immutable", "interview_source_approval", "interview_source_limit", "interview_transition_guard", "action_transition_guard", "compensation_grant_owner_immutable", "compensation_fact_immutable", "compensation_proposal_guard", "compensation_aggregate_guard"} {
+			for _, function := range []string{"delegation_authority_immutable", "structure_fact_immutable", "structure_relation_immutable", "structure_item_owner", "interview_fact_immutable", "interview_owner_immutable", "interview_source_approval", "interview_source_limit", "interview_transition_guard", "action_transition_guard", "compensation_grant_owner_immutable", "compensation_fact_immutable", "compensation_proposal_guard", "compensation_aggregate_guard", "bonus_fact_immutable", "hmac_state_org_insert"} {
 				statement = strings.Replace(statement, "CREATE FUNCTION "+function, "CREATE FUNCTION pg_temp."+function, 1)
 				statement = strings.Replace(statement, "EXECUTE FUNCTION "+function, "EXECUTE FUNCTION pg_temp."+function, 1)
 			}

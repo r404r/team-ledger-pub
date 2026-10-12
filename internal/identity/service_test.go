@@ -614,6 +614,9 @@ func TestOIDCReturnRoutesAndActionBindingRejectOpenRedirects(t *testing.T) {
 		}
 	}
 	org, employee := value.NewID(), value.NewID()
+	if !identity.AllowedReturn("/employees/"+employee+"/bonuses") || identity.AllowedReturn("/employees/"+employee+"/bonuses?reason=SYNTHETIC_FINANCIAL_BODY") {
+		t.Fatal("bonus return route must allow only its canonical body-free path")
+	}
 	for _, route := range []string{
 		"orgs/" + org + "/tree", "/orgs/" + org + "/unknown",
 		"/orgs/" + org + "/employees?q=SYNTHETIC_BODY_ONLY_SEARCH",

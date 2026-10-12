@@ -11,7 +11,7 @@ func noteCategory(category string) bool {
 }
 
 func requiresMFA(capability string) bool {
-	return capability == "access_grant.manage" || capability == "note.publish" || capability == "sensitive.export" || capability == "compensation.read" || capability == "compensation.propose" || capability == "compensation.approve"
+	return capability == "access_grant.manage" || capability == "note.publish" || capability == "sensitive.export" || SupportedPair(capability, "financial", "compensation_management")
 }
 
 func financialObjectKind(kind string) bool {

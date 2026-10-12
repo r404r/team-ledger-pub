@@ -12,16 +12,20 @@ type Service struct {
 	Store                Store
 	Cipher               sensitive.Cipher
 	DigestKey, CursorKey []byte
+	BonusHMACKeys        map[int64][]byte
+	BonusHMACKeyIDs      map[int64]string
+	BonusHMACActive      int64
 	Policy               Policy
 	Now                  func() time.Time
 }
 type Policy struct {
-	Enabled            bool           `json:"enabled"`
-	Currencies         map[string]int `json:"currencies"`
-	Units              []string       `json:"units"`
-	PaymentFrequencies []string       `json:"payment_frequencies"`
-	TaxBases           []string       `json:"tax_bases"`
-	RoundingModes      []string       `json:"rounding_modes"`
+	Enabled                bool           `json:"enabled"`
+	Currencies             map[string]int `json:"currencies"`
+	Units                  []string       `json:"units"`
+	PaymentFrequencies     []string       `json:"payment_frequencies"`
+	TaxBases               []string       `json:"tax_bases"`
+	RoundingModes          []string       `json:"rounding_modes"`
+	ControlledBonusSources []string       `json:"controlled_bonus_sources,omitempty"`
 }
 type Request struct {
 	TokenHash               []byte

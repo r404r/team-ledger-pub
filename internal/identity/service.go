@@ -21,6 +21,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/r404r/team-ledger/internal/authz"
 	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/value"
 	"golang.org/x/oauth2"
@@ -160,7 +161,8 @@ func AllowedReturn(raw string) bool {
 	orgPage := len(parts) == 3 && parts[0] == "orgs" && value.ValidID(parts[1]) && (parts[2] == "tree" || parts[2] == "employees")
 	interviewPage := u.Path == "/interviews" || len(parts) == 2 && parts[0] == "interviews" && value.ValidID(parts[1]) || len(parts) == 3 && parts[0] == "employees" && value.ValidID(parts[1]) && parts[2] == "interviews"
 	compensationPage := len(parts) == 3 && parts[0] == "employees" && value.ValidID(parts[1]) && parts[2] == "compensation"
-	if u.Path != "/" && u.Path != "/security/grants" && !employeePage && !historyPage && !orgPage && !interviewPage && !compensationPage {
+	bonusPage := len(parts) == 3 && parts[0] == "employees" && value.ValidID(parts[1]) && parts[2] == "bonuses"
+	if u.Path != "/" && u.Path != "/security/grants" && !employeePage && !historyPage && !orgPage && !interviewPage && !compensationPage && !bonusPage {
 		return false
 	}
 	if strings.Contains(raw, "?") {
@@ -180,7 +182,7 @@ func AllowedReturn(raw string) bool {
 
 // AllowedStepUpAction records intent only; recent MFA remains session-wide.
 func AllowedStepUpAction(action string) bool {
-	return action == "pii.write" || action == "access_grant.manage" || action == "note.publish" || action == "sensitive.export" || action == "compensation.read" || action == "compensation.propose" || action == "compensation.approve"
+	return action == "pii.write" || action == "access_grant.manage" || action == "note.publish" || action == "sensitive.export" || authz.SupportedPair(action, "financial", "compensation_management")
 }
 func randomToken() (string, []byte, error) {
 	raw := make([]byte, 32)

@@ -43,7 +43,7 @@ func (p Policy) Validate() error {
 			return invalid
 		}
 	}
-	for i, list := range [][]string{p.Units, p.PaymentFrequencies, p.TaxBases, p.RoundingModes} {
+	for i, list := range [][]string{p.Units, p.PaymentFrequencies, p.TaxBases, p.RoundingModes, p.ControlledBonusSources} {
 		if len(list) > 100 {
 			return invalid
 		}
@@ -57,6 +57,9 @@ func (p Policy) Validate() error {
 				return invalid
 			}
 			if i == 3 && v != "half_even" && v != "half_up" && v != "toward_zero" {
+				return invalid
+			}
+			if i == 4 && !finiteName(v) {
 				return invalid
 			}
 		}

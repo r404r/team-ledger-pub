@@ -369,7 +369,7 @@ func compensationNativeProof(f *testsupport.Fixture, digest []byte, action strin
 	return map[string]any{"state_hash": []byte(strings.ReplaceAll(value.NewID(), "-", "")), "binding_hash": bytes.Repeat([]byte{23}, 32), "sealed_bytes": bytes.Repeat([]byte{27}, 28), "key_version": 1, "created_at": f.Repo.BindTime(f.Now), "expires_at": f.Repo.BindTime(f.Now.Add(5 * time.Minute)), "mode": "step_up", "action": action, "return_route": "/employees", "previous_hash": f.Owner.Hash, "expected_org": f.OrgID, "expected_subject": f.Owner.SubjectID, "expected_epoch": 1, "expected_identity": digest, "consumed": false}
 }
 
-func TestCompensationV7OIDCProofActionAllowlist(t *testing.T) {
+func TestCompensationV8OIDCProofActionAllowlist(t *testing.T) {
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			f := testsupport.NewHarness(t, backend)
@@ -377,12 +377,12 @@ func TestCompensationV7OIDCProofActionAllowlist(t *testing.T) {
 			if err := grantSchemaInsert(f.Repo, "subject_identity", map[string]any{"digest": digest, "key_version": 1, "org_id": f.OrgID, "subject_id": f.Owner.SubjectID, "active": true}); err != nil {
 				t.Fatal(err)
 			}
-			for _, action := range []string{"pii.write", "access_grant.manage", "note.publish", "sensitive.export", "compensation.read", "compensation.propose", "compensation.approve"} {
+			for _, action := range []string{"pii.write", "access_grant.manage", "note.publish", "sensitive.export", "compensation.read", "compensation.propose", "compensation.approve", "bonus.target.manage", "bonus.propose", "bonus.approve", "bonus.payment.record", "compensation.extension.manage"} {
 				if err := grantSchemaInsert(f.Repo, "oidc_transaction", compensationNativeProof(f, digest, action)); err != nil {
 					t.Fatal("finite step-up intent must persist", action, err)
 				}
 			}
-			for _, action := range []string{"compensation.write", "compensation.extension.manage", "bonus.approve", "compensation.export"} {
+			for _, action := range []string{"compensation.write", "bonus.write", "compensation.export"} {
 				if err := grantSchemaInsert(f.Repo, "oidc_transaction", compensationNativeProof(f, digest, action)); err == nil {
 					t.Fatal("unimplemented proof intent persisted", action)
 				}
@@ -450,8 +450,8 @@ func TestCompensationV7PopulatedV6UpgradePreservesAllOriginalColumnsAndHistory(t
 			}
 			after := interviewMigrationFacts(t, f.Repo)
 			migrationOriginalUnchanged(t, before, after)
-			if len(after["schema_version"]) != 7 {
-				t.Fatal("exact v7 migration ledger required")
+			if len(after["schema_version"]) != 8 {
+				t.Fatal("exact v8 migration ledger required")
 			}
 			runtimeUnchanged(t, map[string][][]any{"schema_version": ledger}, map[string][][]any{"schema_version": after["schema_version"][:6]})
 			for table := range after {
@@ -464,7 +464,7 @@ func TestCompensationV7PopulatedV6UpgradePreservesAllOriginalColumnsAndHistory(t
 				t.Fatal("old encrypted payload/AAD must remain readable", err)
 			}
 			if err = f.Repo.CheckSchema(context.Background()); err != nil {
-				t.Fatal("v7 physical schema must pass exact reference", err)
+				t.Fatal("v8 physical schema must pass exact reference", err)
 			}
 			stable := interviewMigrationFacts(t, f.Repo)
 			if err = f.Repo.Migrate(context.Background()); err != nil {

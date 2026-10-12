@@ -30,23 +30,24 @@ type Credential struct {
 	Hash                   []byte
 }
 type Fixture struct {
-	Repo                                   *store.Repository
-	Service                                *organization.Service
-	Interviews                             *interview.Service
-	Compensation                           *compensation.Service
-	Authz                                  *authz.Service
-	AuthorityIDs                           map[string]string
-	Manager, Reader, Approver              Credential
-	FinR, CompW, CompApprover, FinExporter Credential
-	CursorKey                              []byte
-	KMS                                    *VaultFixture
-	InterviewKMS                           *VaultFixture
-	FinancialKMS                           *VaultFixture
-	Server                                 *httptest.Server
-	OrgID, OtherOrgID, DSN, Backend        string
-	CSRFKey, DigestKey                     []byte
-	Owner, Observer, Stranger, OtherOwner  Credential
-	Now                                    time.Time
+	Repo                                                                   *store.Repository
+	Service                                                                *organization.Service
+	Interviews                                                             *interview.Service
+	Compensation                                                           *compensation.Service
+	Authz                                                                  *authz.Service
+	AuthorityIDs                                                           map[string]string
+	Manager, Reader, Approver                                              Credential
+	FinR, CompW, CompApprover, FinExporter                                 Credential
+	BonusTargetW, BonusW, BonusApprover, BonusPayW, CompensationExtensionW Credential
+	CursorKey, BonusHMACKey                                                []byte
+	KMS                                                                    *VaultFixture
+	InterviewKMS                                                           *VaultFixture
+	FinancialKMS                                                           *VaultFixture
+	Server                                                                 *httptest.Server
+	OrgID, OtherOrgID, DSN, Backend                                        string
+	CSRFKey, DigestKey                                                     []byte
+	Owner, Observer, Stranger, OtherOwner                                  Credential
+	Now                                                                    time.Time
 }
 
 func randomBytes(n int) ([]byte, error) { b := make([]byte, n); _, err := rand.Read(b); return b, err }
@@ -89,6 +90,10 @@ func NewFixture(ctx context.Context, backend, dsn string) (_ *Fixture, err error
 	if err != nil {
 		return nil, err
 	}
+	f.BonusHMACKey, err = randomBytes(32)
+	if err != nil {
+		return nil, err
+	}
 	f.Manager, err = credential(f.CSRFKey)
 	if err != nil {
 		return nil, err
@@ -101,7 +106,7 @@ func NewFixture(ctx context.Context, backend, dsn string) (_ *Fixture, err error
 	if err != nil {
 		return nil, err
 	}
-	for _, target := range []*Credential{&f.FinR, &f.CompW, &f.CompApprover, &f.FinExporter} {
+	for _, target := range []*Credential{&f.FinR, &f.CompW, &f.CompApprover, &f.FinExporter, &f.BonusTargetW, &f.BonusW, &f.BonusApprover, &f.BonusPayW, &f.CompensationExtensionW} {
 		*target, err = credential(f.CSRFKey)
 		if err != nil {
 			return nil, err
@@ -155,12 +160,14 @@ func NewFixture(ctx context.Context, backend, dsn string) (_ *Fixture, err error
 	f.Compensation = &compensation.Service{
 		Store: f.Repo, Cipher: sensitive.Cipher{Wrapper: financialWrapper},
 		DigestKey: f.DigestKey, CursorKey: f.CursorKey,
+		BonusHMACKeys: map[int64][]byte{1: f.BonusHMACKey}, BonusHMACKeyIDs: map[int64]string{1: "bonus-payment-v1"}, BonusHMACActive: 1,
 		Policy: compensation.Policy{
-			Enabled: true, Currencies: map[string]int{"USD": 2, "CNY": 2, "JPY": 0},
-			Units:              []string{"month", "year", "hour"},
-			PaymentFrequencies: []string{"monthly", "annual", "hourly"},
-			TaxBases:           []string{"gross", "net", "not_applicable"},
-			RoundingModes:      []string{"half_even", "half_up", "toward_zero"},
+			Enabled: true, Currencies: map[string]int{"USD": 2, "CNY": 2, "JPY": 0, "EUR": 2},
+			Units:                  []string{"month", "year", "hour"},
+			PaymentFrequencies:     []string{"monthly", "annual", "hourly"},
+			TaxBases:               []string{"gross", "net", "not_applicable"},
+			RoundingModes:          []string{"half_even", "half_up", "toward_zero"},
+			ControlledBonusSources: []string{"fixture_payroll"},
 		},
 		Now: func() time.Time { return f.Now },
 	}
@@ -188,6 +195,7 @@ func (f *Fixture) Close() {
 	clear(f.CSRFKey)
 	clear(f.DigestKey)
 	clear(f.CursorKey)
+	clear(f.BonusHMACKey)
 }
 func (f *Fixture) seed(ctx context.Context) error {
 	tx, err := f.Repo.DB.BeginTx(ctx, nil)
@@ -215,7 +223,7 @@ func (f *Fixture) seed(ctx context.Context) error {
 		c    Credential
 		org  string
 		mode int
-	}{{f.Owner, f.OrgID, 2}, {f.Observer, f.OrgID, 1}, {f.Stranger, f.OrgID, 0}, {f.OtherOwner, f.OtherOrgID, 2}, {f.Manager, f.OrgID, -1}, {f.Reader, f.OrgID, 0}, {f.Approver, f.OrgID, -1}, {f.FinR, f.OrgID, -1}, {f.CompW, f.OrgID, -1}, {f.CompApprover, f.OrgID, -1}, {f.FinExporter, f.OrgID, -1}} {
+	}{{f.Owner, f.OrgID, 2}, {f.Observer, f.OrgID, 1}, {f.Stranger, f.OrgID, 0}, {f.OtherOwner, f.OtherOrgID, 2}, {f.Manager, f.OrgID, -1}, {f.Reader, f.OrgID, 0}, {f.Approver, f.OrgID, -1}, {f.FinR, f.OrgID, -1}, {f.CompW, f.OrgID, -1}, {f.CompApprover, f.OrgID, -1}, {f.FinExporter, f.OrgID, -1}, {f.BonusTargetW, f.OrgID, -1}, {f.BonusW, f.OrgID, -1}, {f.BonusApprover, f.OrgID, -1}, {f.BonusPayW, f.OrgID, -1}, {f.CompensationExtensionW, f.OrgID, -1}} {
 		if err = exec("INSERT INTO subject(org_id,id,active,auth_epoch) VALUES(?,?,1,1)", "INSERT INTO subject(org_id,id,active,auth_epoch) VALUES($1,$2,true,1)", entry.org, entry.c.SubjectID); err != nil {
 			return err
 		}

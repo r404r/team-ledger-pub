@@ -59,6 +59,9 @@ func currentCompensationPermissions(snapshot authz.Snapshot, employee, team stri
 }
 
 func (h *handler) compensationRoute(w http.ResponseWriter, r *http.Request, req compensation.Request) bool {
+	if h.bonusRoute(w, r, req) {
+		return true
+	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/"), "/")
 	current := len(parts) == 3 && parts[0] == "employees" && parts[2] == "compensation" && r.Method == http.MethodGet
 	changes := len(parts) == 4 && parts[0] == "employees" && parts[2] == "compensation" && parts[3] == "changes" && r.Method == http.MethodGet

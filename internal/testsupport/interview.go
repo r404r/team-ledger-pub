@@ -85,7 +85,7 @@ func (f *Fixture) seedCompensation(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, q, args...)
 		return err
 	}
-	for _, cap := range []string{"compensation.read", "compensation.propose", "compensation.approve", "sensitive.export"} {
+	for _, cap := range []string{"compensation.read", "compensation.propose", "compensation.approve", "sensitive.export", "bonus.target.manage", "bonus.propose", "bonus.approve", "bonus.payment.record", "compensation.extension.manage"} {
 		id := value.NewID()
 		f.AuthorityIDs[cap+"/financial"] = id
 		if err := exec(
@@ -105,6 +105,11 @@ func (f *Fixture) seedCompensation(ctx context.Context, tx *sql.Tx) error {
 		{f.CompW, []string{"compensation.read", "compensation.propose"}},
 		{f.CompApprover, []string{"compensation.read", "compensation.approve"}},
 		{f.FinExporter, []string{"compensation.read", "sensitive.export"}},
+		{f.BonusTargetW, []string{"compensation.read", "bonus.target.manage"}},
+		{f.BonusW, []string{"compensation.read", "bonus.propose"}},
+		{f.BonusApprover, []string{"compensation.read", "bonus.approve"}},
+		{f.BonusPayW, []string{"compensation.read", "bonus.payment.record"}},
+		{f.CompensationExtensionW, []string{"compensation.read", "compensation.extension.manage"}},
 	} {
 		for _, cap := range role.capabilities {
 			if err := exec(

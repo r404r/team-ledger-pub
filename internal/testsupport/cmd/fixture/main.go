@@ -157,20 +157,23 @@ func run() error {
 		{"kms-ca.pem", ca}, {"api-cert.pem", ca}, {"api-key.pem", pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: key})},
 		{"interview-kms.token", []byte(f.InterviewKMS.Token)}, {"interview-kms-ca.pem", interviewCA},
 		{"financial-kms.token", []byte(f.FinancialKMS.Token)}, {"financial-kms-ca.pem", financialCA},
-		{"compensation-policy.json", financialPolicy},
+		{"bonus-hmac-v1.key", f.BonusHMACKey}, {"compensation-policy.json", financialPolicy},
 	}
 	for _, file := range files {
 		if err = privateFile(filepath.Join(*directory, file.name), file.data); err != nil {
 			return err
 		}
 	}
-	financialActors := make(map[string]any, 4)
+	financialActors := make(map[string]any, 9)
 	for _, role := range []struct {
 		name       string
 		credential testsupport.Credential
 	}{
 		{"FinR", f.FinR}, {"CompW", f.CompW},
 		{"CompApprover", f.CompApprover}, {"FinExporter", f.FinExporter},
+		{"BonusTargetW", f.BonusTargetW}, {"BonusW", f.BonusW},
+		{"BonusApprover", f.BonusApprover}, {"BonusPayW", f.BonusPayW},
+		{"CompensationExtensionW", f.CompensationExtensionW},
 	} {
 		path := filepath.Join(*directory, role.name+".json")
 		actor, err := json.Marshal(map[string]string{
@@ -208,6 +211,9 @@ func run() error {
 		{"FINANCIAL_KMS_URL", f.FinancialKMS.Server.URL}, {"FINANCIAL_KMS_KEY", f.FinancialKMS.KeyName},
 		{"FINANCIAL_KMS_TOKEN_FILE", filepath.Join(*directory, "financial-kms.token")}, {"FINANCIAL_KMS_CA_FILE", filepath.Join(*directory, "financial-kms-ca.pem")},
 		{"COMPENSATION_POLICY_FILE", filepath.Join(*directory, "compensation-policy.json")},
+		{"BONUS_HMAC_ACTIVE_KEY_FILE", filepath.Join(*directory, "bonus-hmac-v1.key")},
+		{"BONUS_HMAC_ACTIVE_VERSION", "1"},
+		{"BONUS_HMAC_ACTIVE_KEY_ID", "bonus-payment-v1"},
 	}
 	var env strings.Builder
 	for _, entry := range config {

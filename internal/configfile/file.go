@@ -11,6 +11,17 @@ import (
 // 0400/0600 regular files; public trust anchors may be root/service-owned but
 // must not be writable by group or other users.
 func Read(path string, limit int, confidential bool) ([]byte, error) {
+	return read(path, limit, confidential, false)
+}
+
+// ReadRootTrust accepts only a root-owned regular file that is not writable by
+// group or other users. It is for fixed deployment trust roots, not operator
+// supplied inputs.
+func ReadRootTrust(path string, limit int) ([]byte, error) {
+	return read(path, limit, false, true)
+}
+
+func read(path string, limit int, confidential, rootOnly bool) ([]byte, error) {
 	f, e := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if e != nil {
 		return nil, errors.New("invalid protected file")
@@ -25,7 +36,11 @@ func Read(path string, limit int, confidential bool) ([]byte, error) {
 	if !ok {
 		return nil, errors.New("invalid protected file")
 	}
-	if confidential {
+	if rootOnly {
+		if stat.Uid != 0 || mode&0022 != 0 {
+			return nil, errors.New("invalid root trust file")
+		}
+	} else if confidential {
 		if stat.Uid != uint32(os.Geteuid()) || (mode != 0400 && mode != 0600) {
 			return nil, errors.New("invalid protected file")
 		}

@@ -278,6 +278,36 @@ func canonicalAAD(binding Context) ([]byte, error) {
 		}
 		purpose = "financial"
 		employeeOwned = true
+	case "bonus_target":
+		if binding.SchemaType != "bonus.target.v1" {
+			return nil, ErrInvalid
+		}
+		purpose = "financial"
+		employeeOwned = true
+	case "bonus_award":
+		if binding.SchemaType != "bonus.award.v1" {
+			return nil, ErrInvalid
+		}
+		purpose = "financial"
+		employeeOwned = true
+	case "bonus_decision":
+		if binding.SchemaType != "bonus.decision.v1" {
+			return nil, ErrInvalid
+		}
+		purpose = "financial"
+		employeeOwned = true
+	case "bonus_payment":
+		if binding.SchemaType != "bonus.payment.v1" {
+			return nil, ErrInvalid
+		}
+		purpose = "financial"
+		employeeOwned = true
+	case "compensation_extension":
+		if binding.SchemaType != "compensation_memo/v1" {
+			return nil, ErrInvalid
+		}
+		purpose = "financial"
+		employeeOwned = true
 	default:
 		return nil, ErrInvalid
 	}
