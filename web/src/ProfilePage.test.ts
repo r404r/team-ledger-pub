@@ -518,6 +518,7 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     expect(organization.text()).toContain(`administrative`)
     expect(organization.text()).toContain(OTHER_EMPLOYEE_ID)
     expect(page.find(`a[href="/employees/${EMPLOYEE_ID}/organization-history"]`).exists()).toBe(true)
+    expect(page.find(`a[href="/employees/${EMPLOYEE_ID}/compensation"]`).exists()).toBe(true)
     expect(page.find(`a[href="/orgs/${ORG_ID}/tree?as_of=${AS_OF}"]`).exists()).toBe(true)
     expect(page.text()).toContain('图版本 23')
   })

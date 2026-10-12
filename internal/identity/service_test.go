@@ -624,6 +624,9 @@ func TestOIDCReturnRoutesAndActionBindingRejectOpenRedirects(t *testing.T) {
 		"/employees/" + employee + "/organization-history?from=2026-01-01&to=2026-02-30",
 		"/interviews/new", "/interviews/" + employee + "?q=SYNTHETIC_PRIVATE_NOTE",
 		"/employees/" + employee + "/interviews?category=hr_confidential",
+		"/employees/" + employee + "/compensation?reason=SYNTHETIC_PRIVATE_REASON",
+		"/employees/" + employee + "/compensation?as_of=2026-02-30",
+		"/employees/" + employee + "/compensation?as_of=2026-01-01&as_of=2026-01-01",
 	} {
 		if _, err := h.s.Begin(context.Background(), identity.BeginRequest{Mode: "login", ReturnTo: route, RequestID: value.NewID()}); !errors.Is(err, fault.Invalid) {
 			t.Fatal("organization identity return must remain canonical, safe and body-search-free:", err)
@@ -733,7 +736,7 @@ func TestOIDCDiscoveryEndpointsAndTLSAreActuallyTrusted(t *testing.T) {
 func TestStepUpFreshMFAReusesSessionProofButNeverCreatesManagementPermission(t *testing.T) {
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
-			for _, action := range []string{"pii.write", "access_grant.manage", "note.publish", "sensitive.export"} {
+			for _, action := range []string{"pii.write", "access_grant.manage", "note.publish", "sensitive.export", "compensation.read", "compensation.propose", "compensation.approve"} {
 				t.Run(action, func(t *testing.T) {
 					for _, role := range []string{"manager", "owner", "reader"} {
 						t.Run(role, func(t *testing.T) {
@@ -805,6 +808,46 @@ func TestStepUpFreshMFAReusesSessionProofButNeverCreatesManagementPermission(t *
 								t.Fatal("step-up must revoke the original session even when its requested action lacked business permission:", err)
 							}
 						})
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestFinancialStepUpReturnsToRegisteredCompensationPageWithoutGrantingRights(t *testing.T) {
+	for _, backend := range []string{"sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) {
+			for _, action := range []string{"compensation.read", "compensation.propose", "compensation.approve", "sensitive.export"} {
+				t.Run(action, func(t *testing.T) {
+					h := newIdentityHarness(t, backend)
+					ctx := context.Background()
+					login := h.login(t, nil, nil)
+					oldHash := cookieHash(t, login.SessionCookie)
+					route := "/employees/" + value.NewID() + "/compensation?as_of=2026-10-12"
+					grants, assignments := h.f.Count(t, "access_grant"), h.f.Count(t, "capability_assignment")
+					a, err := h.s.Begin(ctx, identity.BeginRequest{
+						Mode: "step_up", Action: action, ReturnTo: route,
+						RequestID: value.NewID(), SessionHash: oldHash,
+					})
+					if err != nil {
+						t.Fatal("registered financial intent and safe return must begin real authentication:", err)
+					}
+					result, err := h.s.Complete(ctx, h.callback(t, a, map[string]any{"acr": h.cfg.MFAACR, "amr": h.cfg.MFAAMR}))
+					if err != nil {
+						t.Fatal("trusted same-subject financial step-up must complete:", err)
+					}
+					if result.ReturnTo != route {
+						t.Fatal("financial step-up must preserve the explicit safe return")
+					}
+					if err := h.s.Touch(ctx, cookieHash(t, result.SessionCookie)); err != nil {
+						t.Fatal("financial step-up must issue a real valid session:", err)
+					}
+					if h.f.Count(t, "access_grant") != grants || h.f.Count(t, "capability_assignment") != assignments {
+						t.Fatal("financial authentication intent cannot create roles or financial grants")
+					}
+					if err := h.s.Touch(ctx, oldHash); !errors.Is(err, fault.Unauthenticated) {
+						t.Fatal("financial step-up must revoke the old session:", err)
 					}
 				})
 			}

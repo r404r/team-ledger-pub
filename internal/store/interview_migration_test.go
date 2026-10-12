@@ -76,9 +76,7 @@ func TestInterviewV6PopulatedV5PreservesAllOriginalColumnsAndDecryptableHistory(
 			before := interviewMigrationFacts(t, f.Repo)
 			ledger := before["schema_version"]
 			delete(before, "schema_version")
-			if err := f.Repo.Migrate(context.Background()); err != nil {
-				t.Fatal("populated genuine v5 must migrate", err)
-			}
+			migrationInstallVersion(t, f.Repo, 6)
 			after := interviewMigrationFacts(t, f.Repo)
 			migrationOriginalUnchanged(t, before, after)
 			if len(after["schema_version"]) != len(ledger)+1 {
@@ -89,6 +87,11 @@ func TestInterviewV6PopulatedV5PreservesAllOriginalColumnsAndDecryptableHistory(
 				if f.Count(t, table) != 0 {
 					t.Fatal("migration must not invent interview facts", table)
 				}
+			}
+			// Verify the historical v6 cutover above, then advance to the current
+			// reader schema before exercising today's service and startup checks.
+			if err := f.Repo.Migrate(context.Background()); err != nil {
+				t.Fatal("preserved historical v6 must advance to current schema", err)
 			}
 			view, err := f.Service.Read(context.Background(), f.Request(f.Owner), employee.ID, "2026-01-01", true)
 			if err != nil || view.Profile == nil || view.Profile.DisplayName != "SYNTHETIC_V5_CURRENT" || view.Revision != "2" {

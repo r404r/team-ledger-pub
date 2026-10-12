@@ -73,3 +73,54 @@ func (f *Fixture) seedInterviews(ctx context.Context, tx *sql.Tx) error {
 	}
 	return nil
 }
+
+// seedCompensation records explicit synthetic responsibilities and approved
+// financial grants. Ordinary organization and interview roles get no finance rights.
+func (f *Fixture) seedCompensation(ctx context.Context, tx *sql.Tx) error {
+	exec := func(sq, pg string, args ...any) error {
+		q := sq
+		if f.Backend == "postgres" {
+			q = pg
+		}
+		_, err := tx.ExecContext(ctx, q, args...)
+		return err
+	}
+	for _, cap := range []string{"compensation.read", "compensation.propose", "compensation.approve", "sensitive.export"} {
+		id := value.NewID()
+		f.AuthorityIDs[cap+"/financial"] = id
+		if err := exec(
+			"INSERT INTO delegation_authority(id,org_id,manager_subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,mfa_required,approved_by,approved_at,policy_version) VALUES(?,?,?,?,'financial','org',?,'compensation_management',?,?,1,?,?,?)",
+			"INSERT INTO delegation_authority(id,org_id,manager_subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,mfa_required,approved_by,approved_at,policy_version) VALUES($1,$2,$3,$4,'financial','org',$5,'compensation_management',$6,$7,true,$8,$9,$10)",
+			id, f.OrgID, f.Manager.SubjectID, cap, f.OrgID,
+			f.Repo.BindTime(f.Now.Add(-time.Hour)), f.Repo.BindTime(f.Now.Add(24*time.Hour)),
+			f.CompApprover.SubjectID, f.Repo.BindTime(f.Now.Add(-2*time.Hour)), "fixture-policy-r4-explicit-synthetic"); err != nil {
+			return err
+		}
+	}
+	for _, role := range []struct {
+		credential   Credential
+		capabilities []string
+	}{
+		{f.FinR, []string{"compensation.read"}},
+		{f.CompW, []string{"compensation.read", "compensation.propose"}},
+		{f.CompApprover, []string{"compensation.read", "compensation.approve"}},
+		{f.FinExporter, []string{"compensation.read", "sensitive.export"}},
+	} {
+		for _, cap := range role.capabilities {
+			if err := exec(
+				"INSERT INTO capability_assignment(org_id,subject_id,capability,scope_kind,scope_id) VALUES(?,?,?,'org',?)",
+				"INSERT INTO capability_assignment(org_id,subject_id,capability,scope_kind,scope_id) VALUES($1,$2,$3,'org',$4)",
+				f.OrgID, role.credential.SubjectID, cap, f.OrgID); err != nil {
+				return err
+			}
+			if err := exec(
+				"INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required) VALUES(?,?,?,?,'financial','org',?,'compensation_management',?,?,0,0,1)",
+				"INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required) VALUES($1,$2,$3,$4,'financial','org',$5,'compensation_management',$6,$7,false,false,true)",
+				value.NewID(), f.OrgID, role.credential.SubjectID, cap, f.OrgID,
+				f.Repo.BindTime(f.Now.Add(-time.Hour)), f.Repo.BindTime(f.Now.Add(24*time.Hour))); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}

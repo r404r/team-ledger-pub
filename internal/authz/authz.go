@@ -95,6 +95,9 @@ func (s Snapshot) scopeMatches(kind, id, employee, team string, now time.Time) b
 }
 
 func (s Snapshot) relationQualified(g Grant, now time.Time) bool {
+	if g.Category == "financial" && g.RelationBound {
+		return false
+	}
 	if !g.RelationBound {
 		return g.RelationRef == nil && g.RelationActorEmployeeID == ""
 	}
@@ -169,8 +172,10 @@ func SupportedPair(capability, category, purpose string) bool {
 		return noteCategory(category) && purpose == "interview_followup"
 	case "action.read", "action.write":
 		return category == "shared" && purpose == "interview_followup"
+	case "compensation.read", "compensation.propose", "compensation.approve":
+		return category == "financial" && purpose == "compensation_management"
 	case "sensitive.export":
-		return (category == "metadata" || noteCategory(category)) && purpose == "interview_followup"
+		return (category == "metadata" || noteCategory(category)) && purpose == "interview_followup" || category == "financial" && purpose == "compensation_management"
 	}
 	return false
 }

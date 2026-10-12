@@ -602,3 +602,60 @@ describe('P-SEC-01 current sensitivity deadline', () => {
     expect(api.commands()).toHaveLength(1)
   })
 })
+
+describe('R4 finite financial grants without aggregate or export implication', () => {
+  it.each(['compensation.read', 'compensation.propose', 'compensation.approve', 'sensitive.export'])('requires financial category and compensation_management for %s', capability => {
+    expect(validGrantPair(capability, 'financial', 'compensation_management')).toBe(true)
+    expect(validGrantPair(capability, 'shared', 'compensation_management')).toBe(false)
+    expect(validGrantPair(capability, 'financial', 'interview_followup')).toBe(false)
+  })
+  it('keeps exact immutable event and term grants read/export-only, not proposal or aggregate mutation authority', () => {
+    for (const kind of ['compensation_event', 'compensation_term'] as const) {
+      expect(validGrantObject({ kind, id: OTHER }, 'compensation.read', 'financial', 'compensation_management')).toBe(true)
+      expect(validGrantObject({ kind, id: OTHER }, 'sensitive.export', 'financial', 'compensation_management')).toBe(true)
+      expect(validGrantObject({ kind, id: OTHER }, 'compensation.propose', 'financial', 'compensation_management')).toBe(false)
+      expect(validGrantObject({ kind, id: OTHER }, 'compensation.approve', 'financial', 'compensation_management')).toBe(false)
+    }
+    expect(validGrantObject({ kind: 'compensation_proposal', id: OTHER }, 'compensation.approve', 'financial', 'compensation_management')).toBe(true)
+    expect(validGrantObject({ kind: 'note_version', id: OTHER }, 'compensation.read', 'financial', 'compensation_management')).toBe(false)
+    expect(validSourceApproval([{ kind: 'note_version', id: OTHER }], 'compensation.propose', 'financial')).toBe(false)
+  })
+  it('previews and submits an independently approved exact financial term grant without requesting any financial payload', async () => {
+    const financialAuthority = { ...authority, capability: 'compensation.read', category: 'financial', purpose: 'compensation_management' }
+    api.session = { ...session, grant_authorities: [financialAuthority] }
+    api.replies = []; api.reply('GET', '/api/v1/access-grants', 200, { ...list([]), authorities: [financialAuthority] })
+    const page = await open()
+    await action(page, /^新建授权$/).trigger('click')
+    await field(page, /受授权主体/).setValue(READER)
+    await field(page, /生效时间/).setValue(START); await field(page, /到期时间/).setValue(END)
+    await page.get('#grant-object-kind').setValue('compensation_term'); await page.get('#grant-object-id').setValue(OTHER)
+    await action(page, /^预览授权$/).trigger('click'); await settle()
+    expect(page.get('[aria-label="授权预览"]').text()).toContain('compensation_term')
+    api.reply('POST', '/api/v1/access-grants', 403, { code: 'DENIED' })
+    await action(page, /^确认授予$/).trigger('click'); await settle()
+    expect(JSON.parse(api.commands()[0]!.body!)).toMatchObject({ capability: 'compensation.read', category: 'financial', purpose: 'compensation_management', object_ref: { kind: 'compensation_term', id: OTHER }, mfa_required: true })
+    expect(api.requests.some(request => request.url.pathname.includes('/compensation') || request.url.pathname.includes('/sensitive-exports'))).toBe(false)
+  })
+  it('refuses to downgrade MFA for financial grants even if delegated authority does not otherwise require it', async () => {
+    const financialAuthority = { ...authority, capability: 'compensation.read', category: 'financial', purpose: 'compensation_management', mfa_required: false }
+    api.session = { ...session, grant_authorities: [financialAuthority] }
+    api.replies = []; api.reply('GET', '/api/v1/access-grants', 200, { ...list([]), authorities: [financialAuthority] })
+    const page = await open()
+    await action(page, /^新建授权$/).trigger('click'); await field(page, /受授权主体/).setValue(READER)
+    await field(page, /生效时间/).setValue(START); await field(page, /到期时间/).setValue(END)
+    expect(page.get('#grant-mfa').attributes('disabled')).toBeDefined()
+    expect((page.get('#grant-mfa').element as HTMLInputElement).checked).toBe(true)
+    await action(page, /^预览授权$/).trigger('click'); await settle()
+    expect(page.find('[aria-label="授权预览"]').exists()).toBe(true); expect(api.commands()).toHaveLength(0)
+  })
+  it('filters safe financial metadata with a typed exact event without granting business read', async () => {
+    const page = await open()
+    await page.get('#grant-filter-category').setValue('financial'); await page.get('#grant-filter-purpose').setValue('compensation_management')
+    await page.get('#grant-filter-capability').setValue('compensation.read'); await page.get('#grant-filter-object-kind').setValue('compensation_event'); await page.get('#grant-filter-object-id').setValue(OTHER)
+    api.reply('GET', '/api/v1/access-grants', 200, list([]))
+    await action(page, /^应用筛选$/).trigger('click'); await settle()
+    const request = api.requests.filter(request => request.url.pathname === '/api/v1/access-grants').at(-1)!
+    expect(Object.fromEntries(request.url.searchParams)).toMatchObject({ category: 'financial', purpose: 'compensation_management', capability: 'compensation.read', object_kind: 'compensation_event', object_id: OTHER })
+    expect(api.commands()).toHaveLength(0)
+  })
+})

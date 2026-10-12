@@ -219,16 +219,16 @@ func validFilter(f Filter) bool {
 	if (f.ScopeKind == "") != (f.ScopeID == "") || f.ScopeKind != "" && f.ScopeKind != "org" && f.ScopeKind != "employee" && f.ScopeKind != "team" {
 		return false
 	}
-	if f.Category != "" && f.Category != "metadata" && f.Category != "pii" && f.Category != "audit" && !noteCategory(f.Category) {
+	if f.Category != "" && f.Category != "metadata" && f.Category != "pii" && f.Category != "audit" && f.Category != "financial" && !noteCategory(f.Category) {
 		return false
 	}
-	if f.Purpose != "" && f.Purpose != "organization_management" && f.Purpose != ManagementPurpose && f.Purpose != "interview_followup" {
+	if f.Purpose != "" && f.Purpose != "organization_management" && f.Purpose != ManagementPurpose && f.Purpose != "interview_followup" && f.Purpose != "compensation_management" {
 		return false
 	}
-	if f.ObjectKind != "" && f.ObjectKind != "interview" && f.ObjectKind != "note_head" && f.ObjectKind != "note_version" && f.ObjectKind != "action_item" || f.ObjectID != "" && f.ObjectKind == "" {
+	if f.ObjectKind != "" && f.ObjectKind != "interview" && f.ObjectKind != "note_head" && f.ObjectKind != "note_version" && f.ObjectKind != "action_item" && !financialObjectKind(f.ObjectKind) || f.ObjectID != "" && f.ObjectKind == "" {
 		return false
 	}
-	if f.Capability != "" && f.Capability != "organization.read" && f.Capability != "organization.write" && f.Capability != "pii.read" && f.Capability != "pii.write" && f.Capability != "access_grant.manage" && f.Capability != "interview.read" && f.Capability != "interview.write" && f.Capability != "note.read" && f.Capability != "note.write" && f.Capability != "note.publish" && f.Capability != "action.read" && f.Capability != "action.write" && f.Capability != "sensitive.export" {
+	if f.Capability != "" && f.Capability != "organization.read" && f.Capability != "organization.write" && f.Capability != "pii.read" && f.Capability != "pii.write" && f.Capability != "access_grant.manage" && f.Capability != "interview.read" && f.Capability != "interview.write" && f.Capability != "note.read" && f.Capability != "note.write" && f.Capability != "note.publish" && f.Capability != "action.read" && f.Capability != "action.write" && f.Capability != "sensitive.export" && f.Capability != "compensation.read" && f.Capability != "compensation.propose" && f.Capability != "compensation.approve" {
 		return false
 	}
 	return f.State == "" || f.State == "current" || f.State == "future" || f.State == "expired" || f.State == "revoked"

@@ -410,6 +410,9 @@ func (t *transaction) InsertGrant(ctx context.Context, g authz.GrantDTO) error {
 	if g.OrgID != t.org || g.AuthorityID == nil || g.IssuedBy == nil || g.IssuedAt == nil {
 		return fault.Invalid
 	}
+	if g.Category == "financial" && (g.RelationBound || g.RelationRef != nil) {
+		return fault.Invalid
+	}
 	var employee, team, relationKind, reportingID, membershipID, actor any
 	if g.Scope.Kind == "employee" {
 		employee = g.Scope.ID
@@ -440,7 +443,7 @@ func (t *transaction) InsertGrant(ctx context.Context, g authz.GrantDTO) error {
 	} else if g.RelationRef != nil {
 		return fault.Invalid
 	}
-	var objectKind, objectID, objectEmployee, interviewID, headID, versionID, actionID any
+	var objectKind, objectID, objectEmployee, interviewID, headID, versionID, actionID, proposalID, eventID, termID any
 	if g.ObjectRef != nil {
 		if !authz.ValidObjectReference(*g.ObjectRef) || !authz.ObjectPair(g.Capability, g.Category, g.ObjectRef.Kind) || !value.ValidID(g.ObjectEmployeeID) {
 			return fault.Invalid
@@ -455,11 +458,17 @@ func (t *transaction) InsertGrant(ctx context.Context, g authz.GrantDTO) error {
 			versionID = g.ObjectRef.ID
 		case "action_item":
 			actionID = g.ObjectRef.ID
+		case "compensation_proposal":
+			proposalID = g.ObjectRef.ID
+		case "compensation_event":
+			eventID = g.ObjectRef.ID
+		case "compensation_term":
+			termID = g.ObjectRef.ID
 		}
 	}
 	_, err := t.tx.ExecContext(ctx, t.sql(
-		"INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,purpose,valid_from,expires_at,mfa_required,authority_id,issued_by,issued_at,team_id,relation_bound,relation_kind,reporting_line_id,membership_id,relation_actor_employee_id,object_kind,object_ref,object_employee_id,interview_id,note_head_id,note_version_id,action_item_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-		"INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,purpose,valid_from,expires_at,mfa_required,authority_id,issued_by,issued_at,team_id,relation_bound,relation_kind,reporting_line_id,membership_id,relation_actor_employee_id,object_kind,object_ref,object_employee_id,interview_id,note_head_id,note_version_id,action_item_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)"), g.ID, g.OrgID, g.SubjectID, g.Capability, g.Category, g.Scope.Kind, g.Scope.ID, employee, g.Purpose, t.bindTime(g.ValidFrom), t.bindTime(g.ExpiresAt), g.MFARequired, *g.AuthorityID, *g.IssuedBy, t.bindTime(*g.IssuedAt), team, g.RelationBound, relationKind, reportingID, membershipID, actor, objectKind, objectID, objectEmployee, interviewID, headID, versionID, actionID)
+		"INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,purpose,valid_from,expires_at,mfa_required,authority_id,issued_by,issued_at,team_id,relation_bound,relation_kind,reporting_line_id,membership_id,relation_actor_employee_id,object_kind,object_ref,object_employee_id,interview_id,note_head_id,note_version_id,action_item_id,compensation_proposal_id,compensation_event_id,compensation_term_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,purpose,valid_from,expires_at,mfa_required,authority_id,issued_by,issued_at,team_id,relation_bound,relation_kind,reporting_line_id,membership_id,relation_actor_employee_id,object_kind,object_ref,object_employee_id,interview_id,note_head_id,note_version_id,action_item_id,compensation_proposal_id,compensation_event_id,compensation_term_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)"), g.ID, g.OrgID, g.SubjectID, g.Capability, g.Category, g.Scope.Kind, g.Scope.ID, employee, g.Purpose, t.bindTime(g.ValidFrom), t.bindTime(g.ExpiresAt), g.MFARequired, *g.AuthorityID, *g.IssuedBy, t.bindTime(*g.IssuedAt), team, g.RelationBound, relationKind, reportingID, membershipID, actor, objectKind, objectID, objectEmployee, interviewID, headID, versionID, actionID, proposalID, eventID, termID)
 	if err != nil {
 		return safeError(err)
 	}

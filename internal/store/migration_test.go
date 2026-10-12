@@ -416,7 +416,7 @@ func migrationLedger(t *testing.T, repo *store.Repository) {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-	for _, version := range []int{1, 2, 3, 4, 5, 6} {
+	for _, version := range []int{1, 2, 3, 4, 5, 6, 7} {
 		var found int
 		var backend, checksum string
 		if !rows.Next() || rows.Scan(&found, &backend, &checksum) != nil {
@@ -428,7 +428,7 @@ func migrationLedger(t *testing.T, repo *store.Repository) {
 		}
 	}
 	if rows.Next() || rows.Err() != nil {
-		t.Fatal("ledger must contain exactly the six supported versions")
+		t.Fatal("ledger must contain exactly the supported versions")
 	}
 }
 

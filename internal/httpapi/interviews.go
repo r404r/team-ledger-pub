@@ -15,6 +15,16 @@ import (
 
 func requiredFields(object string, seen map[string]bool) bool {
 	switch object {
+	case "finance_proposal":
+		return len(seen) == 7
+	case "finance_draft", "finance_terms":
+		return len(seen) == 8
+	case "finance_transition":
+		return len(seen) == 4
+	case "finance_member", "finance_component":
+		return len(seen) == 6
+	case "finance_before":
+		return len(seen) >= 1 && len(seen) <= 2
 	case "issue":
 		return len(seen) == 13 && !seen["approved_source_refs"] || len(seen) == 14
 	case "revoke", "source_ref", "export_object", "action_transition":

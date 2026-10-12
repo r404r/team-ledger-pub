@@ -3,14 +3,22 @@ package testsupport
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/r404r/team-ledger/internal/sensitive"
 )
@@ -34,7 +42,7 @@ type VaultFixture struct {
 }
 
 func NewVaultFixture(keyName string) (*VaultFixture, error) {
-	if keyName != "dev002-pii" && keyName != "dev008-interview" {
+	if keyName != "dev002-pii" && keyName != "dev008-interview" && keyName != "dev009-financial" {
 		return nil, sensitive.ErrInvalid
 	}
 	key := make([]byte, 32)
@@ -57,7 +65,36 @@ func NewVaultFixture(keyName string) (*VaultFixture, error) {
 		return nil, err
 	}
 	f := &VaultFixture{key: key, aead: aead, KeyName: keyName, Token: base64.RawURLEncoding.EncodeToString(token[:])}
-	f.Server = httptest.NewTLSServer(http.HandlerFunc(f.serve))
+	if keyName == "dev009-financial" {
+		tlsKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			clear(key)
+			return nil, err
+		}
+		serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+		if err != nil {
+			clear(key)
+			return nil, err
+		}
+		template := &x509.Certificate{
+			SerialNumber: serial, Subject: pkix.Name{CommonName: "Synthetic financial Transit"},
+			NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
+			KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+			ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+			BasicConstraintsValid: true, IsCA: true,
+			IPAddresses: []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+		}
+		der, err := x509.CreateCertificate(rand.Reader, template, template, &tlsKey.PublicKey, tlsKey)
+		if err != nil {
+			clear(key)
+			return nil, err
+		}
+		f.Server = httptest.NewUnstartedServer(http.HandlerFunc(f.serve))
+		f.Server.TLS = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: tlsKey}}}
+		f.Server.StartTLS()
+	} else {
+		f.Server = httptest.NewTLSServer(http.HandlerFunc(f.serve))
+	}
 	return f, nil
 }
 

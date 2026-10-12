@@ -159,7 +159,8 @@ func AllowedReturn(raw string) bool {
 	historyPage := len(parts) == 3 && parts[0] == "employees" && value.ValidID(parts[1]) && parts[2] == "organization-history"
 	orgPage := len(parts) == 3 && parts[0] == "orgs" && value.ValidID(parts[1]) && (parts[2] == "tree" || parts[2] == "employees")
 	interviewPage := u.Path == "/interviews" || len(parts) == 2 && parts[0] == "interviews" && value.ValidID(parts[1]) || len(parts) == 3 && parts[0] == "employees" && value.ValidID(parts[1]) && parts[2] == "interviews"
-	if u.Path != "/" && u.Path != "/security/grants" && !employeePage && !historyPage && !orgPage && !interviewPage {
+	compensationPage := len(parts) == 3 && parts[0] == "employees" && value.ValidID(parts[1]) && parts[2] == "compensation"
+	if u.Path != "/" && u.Path != "/security/grants" && !employeePage && !historyPage && !orgPage && !interviewPage && !compensationPage {
 		return false
 	}
 	if strings.Contains(raw, "?") {
@@ -179,7 +180,7 @@ func AllowedReturn(raw string) bool {
 
 // AllowedStepUpAction records intent only; recent MFA remains session-wide.
 func AllowedStepUpAction(action string) bool {
-	return action == "pii.write" || action == "access_grant.manage" || action == "note.publish" || action == "sensitive.export"
+	return action == "pii.write" || action == "access_grant.manage" || action == "note.publish" || action == "sensitive.export" || action == "compensation.read" || action == "compensation.propose" || action == "compensation.approve"
 }
 func randomToken() (string, []byte, error) {
 	raw := make([]byte, 32)

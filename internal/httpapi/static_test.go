@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/r404r/team-ledger/internal/authz"
+	"github.com/r404r/team-ledger/internal/compensation"
 	"github.com/r404r/team-ledger/internal/httpapi"
 	"github.com/r404r/team-ledger/internal/identity"
 	"github.com/r404r/team-ledger/internal/interview"
@@ -19,7 +20,7 @@ func TestSupportedPageAllowsExplicitBusinessDateOnly(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<!doctype html><title>Synthetic page</title>"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := httpapi.New(&organization.Service{}, &interview.Service{}, &authz.Service{}, &identity.Service{}, make([]byte, 32), "https://fixture.invalid", dir)
+	handler, err := httpapi.New(&organization.Service{}, &interview.Service{}, &compensation.Service{}, &authz.Service{}, &identity.Service{}, make([]byte, 32), "https://fixture.invalid", dir)
 	if err != nil {
 		t.Fatal(err)
 	}

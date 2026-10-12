@@ -129,6 +129,7 @@ func TestAPIStartupRequiresProtectedCredentialFiles(t *testing.T) {
 					env["INTERVIEW_KMS_KEY"] = f.InterviewKMS.KeyName
 					env["INTERVIEW_KMS_TOKEN_FILE"] = filepath.Join(dir, "interview.token")
 					env["INTERVIEW_KMS_CA_FILE"] = filepath.Join(dir, "interview-cert.pem")
+					env["COMPENSATION_POLICY_FILE"] = ""
 					if tc.name == "interview_key_equals_pii" {
 						env["INTERVIEW_KMS_KEY"] = f.KMS.KeyName
 					}
@@ -203,6 +204,115 @@ func TestAPIStartupRequiresProtectedCredentialFiles(t *testing.T) {
 						}
 					}
 				})
+			}
+		})
+	}
+}
+
+func TestCompensationPolicyRejectsUnapprovedConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"duplicate_approval", `{"enabled":true,"enabled":false}`},
+		{"duplicate_currency", `{"enabled":false,"currencies":{"USD":2,"USD":0}}`},
+		{"unknown_policy", `{"enabled":false,"allow_self_approval":true}`},
+		{"missing_approval", `{}`},
+		{"null_approval", `{"enabled":null}`},
+		{"null_currency_scale", `{"enabled":false,"currencies":{"USD":null}}`},
+		{"incomplete_active_policy", `{"enabled":true}`},
+		{"trailing_policy", `{"enabled":false}{"enabled":true}`},
+		{"invalid_utf8", "{\"enabled\":false,\"units\":[\"\xff\"]}"},
+		{"invalid_currency_scale", `{"enabled":false,"currencies":{"USD":10}}`},
+		{"unknown_tax_basis", `{"enabled":false,"tax_bases":["invented_tax"]}`},
+		{"unknown_rounding_mode", `{"enabled":false,"rounding_modes":["invented_rounding"]}`},
+		{"duplicate_units", `{"enabled":false,"units":["month","month"]}`},
+		{"oversize", strings.Repeat(" ", 64<<10) + `{"enabled":false}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "policy.json")
+			if err := os.WriteFile(path, []byte(tc.body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("TEAMLEDGER_COMPENSATION_POLICY_FILE", path)
+			if _, err := compensationPolicy(); err == nil {
+				t.Fatal("unapproved or malformed configuration accepted")
+			}
+		})
+	}
+	t.Run("writable_policy", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "policy.json")
+		if err := os.WriteFile(path, []byte(`{"enabled":false}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0666); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("TEAMLEDGER_COMPENSATION_POLICY_FILE", path)
+		if _, err := compensationPolicy(); err == nil {
+			t.Fatal("mutable untrusted policy accepted")
+		}
+	})
+}
+
+func TestFinancialKeyConfigurationRequiresIndependentCredentials(t *testing.T) {
+	f := testsupport.NewHarness(t, "sqlite")
+	cert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: f.InterviewKMS.Server.TLS.Certificates[0].Certificate[0]})
+	for _, tc := range []string{"missing_url", "missing_key", "missing_token", "missing_ca", "pii_key", "interview_key", "pii_token", "interview_token", "public_token", "writable_ca", "invalid_ca", "insecure_url"} {
+		t.Run(tc, func(t *testing.T) {
+			dir := t.TempDir()
+			token := "synthetic-independent-financial-token"
+			switch tc {
+			case "pii_token":
+				token = f.KMS.Token
+			case "interview_token":
+				token = f.InterviewKMS.Token
+			}
+			for name, data := range map[string][]byte{"financial.token": []byte(token), "interview.token": []byte(f.InterviewKMS.Token), "financial.pem": cert} {
+				if tc == "invalid_ca" && name == "financial.pem" {
+					data = []byte("not a trust anchor")
+				}
+				if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc == "public_token" {
+				if err := os.Chmod(filepath.Join(dir, "financial.token"), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc == "writable_ca" {
+				if err := os.Chmod(filepath.Join(dir, "financial.pem"), 0666); err != nil {
+					t.Fatal(err)
+				}
+			}
+			values := map[string]string{"URL": f.InterviewKMS.Server.URL, "KEY": "synthetic-financial-key", "TOKEN_FILE": filepath.Join(dir, "financial.token"), "CA_FILE": filepath.Join(dir, "financial.pem")}
+			switch tc {
+			case "missing_url":
+				values["URL"] = ""
+			case "missing_key":
+				values["KEY"] = ""
+			case "missing_token":
+				values["TOKEN_FILE"] = ""
+			case "missing_ca":
+				values["CA_FILE"] = ""
+			case "pii_key":
+				values["KEY"] = f.KMS.KeyName
+			case "interview_key":
+				values["KEY"] = f.InterviewKMS.KeyName
+			case "insecure_url":
+				values["URL"] = "http://127.0.0.1"
+			}
+			for name, value := range values {
+				t.Setenv("TEAMLEDGER_FINANCIAL_KMS_"+name, value)
+			}
+			t.Setenv("TEAMLEDGER_INTERVIEW_KMS_TOKEN_FILE", filepath.Join(dir, "interview.token"))
+			wrapper, closeKeys, err := financialKeyService(map[string]string{"KMS_KEY": f.KMS.KeyName, "INTERVIEW_KMS_KEY": f.InterviewKMS.KeyName}, f.KMS.Token)
+			if closeKeys != nil {
+				defer closeKeys()
+			}
+			if err == nil || wrapper != nil {
+				t.Fatal("financial encryption accepted insecure or shared credentials")
 			}
 		})
 	}

@@ -20,6 +20,7 @@ const phase = ref<Phase>('checking')
 const session = shallowRef<SessionHint | null>(null)
 const returnTo = ref(knownReturnRoute())
 const interviewIntent = ref<'note.publish' | 'sensitive.export'>('note.publish')
+const compensationIntent = ref<'compensation.read' | 'compensation.propose' | 'compensation.approve' | 'sensitive.export'>('compensation.read')
 const protectedGeneration = ref(0)
 let alive = false
 let generation = 0
@@ -31,7 +32,8 @@ const loginURL = computed(() => `/api/v1/auth/login?${new URLSearchParams({ retu
 const identityAvailable = computed(() => session.value?.identity_available !== false)
 const canLogout = computed(() => session.value !== null && !['logging-out', 'logout-failed', 'login-redirecting'].includes(phase.value))
 const interviewRoute = computed(() => /^\/interviews(?:\/|$)/.test(returnTo.value) || /^\/employees\/[^/]+\/interviews$/.test(returnTo.value))
-const stepUpAction = computed(() => returnTo.value.split('?')[0] === '/security/grants' ? 'access_grant.manage' : interviewRoute.value ? interviewIntent.value : 'pii.write')
+const compensationRoute = computed(() => /^\/employees\/[^/]+\/compensation(?:\?|$)/.test(returnTo.value))
+const stepUpAction = computed(() => returnTo.value.split('?')[0] === '/security/grants' ? 'access_grant.manage' : compensationRoute.value ? compensationIntent.value : interviewRoute.value ? interviewIntent.value : 'pii.write')
 
 function validDate(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
@@ -46,11 +48,13 @@ function knownReturnRoute() {
   const organization = /^\/orgs\/([0-9a-f-]+)\/(tree|employees)\/?$/.exec(url.pathname)
   const interview = /^\/interviews\/([0-9a-f-]+)\/?$/.exec(url.pathname)
   const employeeInterviews = /^\/employees\/([0-9a-f-]+)\/interviews\/?$/.exec(url.pathname)
+  const compensation = /^\/employees\/([0-9a-f-]+)\/compensation\/?$/.exec(url.pathname)
   if (employee && uuid.test(employee[1]!)) path = `/employees/${employee[1]}`
   else if (history && uuid.test(history[1]!)) path = `/employees/${history[1]}/organization-history`
   else if (organization && uuid.test(organization[1]!)) path = `/orgs/${organization[1]}/${organization[2]}`
   else if (interview && uuid.test(interview[1]!)) path = `/interviews/${interview[1]}`
   else if (employeeInterviews && uuid.test(employeeInterviews[1]!)) path = `/employees/${employeeInterviews[1]}/interviews`
+  else if (compensation && uuid.test(compensation[1]!)) path = `/employees/${compensation[1]}/compensation`
   else if (/^\/interviews\/?$/.test(url.pathname)) path = '/interviews'
   else if (/^\/security\/grants\/?$/.test(url.pathname)) path = '/security/grants'
   else if (url.pathname === '/') path = '/'
@@ -120,6 +124,7 @@ async function checkSession() {
   try {
     const response = await fetch('/api/v1/session', {
       credentials: 'same-origin', cache: 'no-store', signal: operation.controller.signal,
+      headers: compensationRoute.value ? { 'X-Access-Purpose': 'compensation_management' } : undefined,
     })
     if (!isCurrent(operation)) return
     if (response.status === 401) { expireSession(); return }
@@ -255,8 +260,10 @@ onBeforeUnmount(() => {
       <button type="button" @click="checkSession">重新核对会话（清空当前页面）</button>
       <label v-if="interviewRoute && identityAvailable" for="interview-stepup-intent">重新验证意图</label>
       <select v-if="interviewRoute && identityAvailable" id="interview-stepup-intent" v-model="interviewIntent"><option value="note.publish">发布笔记</option><option value="sensitive.export">敏感导出</option></select>
-      <button v-if="identityAvailable" type="button" @click="stepUp">{{ stepUpAction === 'access_grant.manage' ? '重新验证授权管理 MFA' : stepUpAction === 'note.publish' ? '重新验证笔记发布 MFA' : stepUpAction === 'sensitive.export' ? '重新验证敏感导出 MFA' : '重新验证资料写入 MFA' }}</button>
-      <p v-if="interviewRoute">MFA 是会话级近期认证；所选意图不是动作票据，不自动发布或导出。</p>
+      <label v-if="compensationRoute && identityAvailable" for="compensation-stepup-intent">财务重新验证意图</label>
+      <select v-if="compensationRoute && identityAvailable" id="compensation-stepup-intent" v-model="compensationIntent"><option value="compensation.read">财务读取</option><option value="compensation.propose">薪酬提出</option><option value="compensation.approve">独立薪酬审批</option><option value="sensitive.export">财务敏感导出</option></select>
+      <button v-if="identityAvailable" type="button" @click="stepUp">{{ compensationRoute ? '重新验证财务 MFA' : stepUpAction === 'access_grant.manage' ? '重新验证授权管理 MFA' : stepUpAction === 'note.publish' ? '重新验证笔记发布 MFA' : stepUpAction === 'sensitive.export' ? '重新验证敏感导出 MFA' : '重新验证资料写入 MFA' }}</button>
+      <p v-if="interviewRoute || compensationRoute">MFA 是会话级近期认证；认证后重载并明确重新确认，不自动提交、审批或导出。</p>
       <p v-if="!identityAvailable">可信登录与 MFA 设施未启用，不能在本地完成验证。</p>
     </template>
     <p v-else-if="phase === 'checking'" role="status">正在核对服务端会话；受保护页面尚未开放。</p>

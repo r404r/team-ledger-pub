@@ -11,11 +11,15 @@ func noteCategory(category string) bool {
 }
 
 func requiresMFA(capability string) bool {
-	return capability == "access_grant.manage" || capability == "note.publish" || capability == "sensitive.export"
+	return capability == "access_grant.manage" || capability == "note.publish" || capability == "sensitive.export" || capability == "compensation.read" || capability == "compensation.propose" || capability == "compensation.approve"
+}
+
+func financialObjectKind(kind string) bool {
+	return kind == "compensation_proposal" || kind == "compensation_event" || kind == "compensation_term"
 }
 
 func ValidObjectReference(ref ObjectReference) bool {
-	return value.ValidID(ref.ID) && (ref.Kind == "interview" || ref.Kind == "note_head" || ref.Kind == "note_version" || ref.Kind == "action_item")
+	return value.ValidID(ref.ID) && (ref.Kind == "interview" || ref.Kind == "note_head" || ref.Kind == "note_version" || ref.Kind == "action_item" || financialObjectKind(ref.Kind))
 }
 
 // ObjectPair confines a grant to a typed family. Immutable versions cannot be
@@ -30,16 +34,23 @@ func ObjectPair(capability, category, kind string) bool {
 		return noteCategory(category) && (kind == "interview" || kind == "note_head")
 	case "action.read", "action.write":
 		return category == "shared" && (kind == "interview" || kind == "action_item")
+	case "compensation.read":
+		return category == "financial" && financialObjectKind(kind)
+	case "compensation.propose", "compensation.approve":
+		return category == "financial" && kind == "compensation_proposal"
 	case "sensitive.export":
-		return category == "metadata" && kind == "interview" || noteCategory(category) && (kind == "interview" || kind == "note_head" || kind == "note_version" || category == "shared" && kind == "action_item")
+		return category == "metadata" && kind == "interview" || noteCategory(category) && (kind == "interview" || kind == "note_head" || kind == "note_version" || category == "shared" && kind == "action_item") || category == "financial" && financialObjectKind(kind)
 	}
 	return false
 }
 
-// CanonicalLineage accepts only parent-to-child tuples supplied by the typed
-// object reader: interview, interview/head[/version], or interview/action.
-// It does not manufacture ownership from caller-supplied object IDs.
+// CanonicalLineage accepts parent-to-child interview tuples or a singleton
+// exact financial object. Financial events/terms never imply a proposal or
+// aggregate. Ownership is supplied by the typed object reader, not callers.
 func CanonicalLineage(lineage ...ObjectReference) bool {
+	if len(lineage) == 1 && financialObjectKind(lineage[0].Kind) {
+		return ValidObjectReference(lineage[0])
+	}
 	if len(lineage) < 1 || len(lineage) > 3 || lineage[0].Kind != "interview" {
 		return false
 	}

@@ -29,6 +29,12 @@ func (r reader) Object(ctx context.Context, org string, ref authz.ObjectReferenc
 		query = "SELECT employee_id,category,version_no,interview_id,head_id,status FROM note_version"
 	case "action_item":
 		query = "SELECT employee_id,'shared',revision,interview_id,'','' FROM action_item"
+	case "compensation_proposal":
+		query = "SELECT employee_id,'financial',revision,'','','' FROM compensation_proposal"
+	case "compensation_event":
+		query = "SELECT employee_id,'financial',sequence,'','','' FROM compensation_event"
+	case "compensation_term":
+		query = "SELECT employee_id,'financial',version_no,'','','' FROM compensation_terms_version"
 	}
 	query += r.sql(" WHERE org_id=? AND id=?", " WHERE org_id=$1 AND id=$2")
 	info := authz.ObjectInfo{Reference: ref}
@@ -45,12 +51,16 @@ func (r reader) Object(ctx context.Context, org string, ref authz.ObjectReferenc
 		return authz.ObjectInfo{}, fault.Unavailable
 	}
 	info.Revision, info.Published = strconv.FormatInt(revision, 10), status == "published"
-	info.Lineage = []authz.ObjectReference{{Kind: "interview", ID: interview}}
-	if head != "" {
-		info.Lineage = append(info.Lineage, authz.ObjectReference{Kind: "note_head", ID: head})
-	}
-	if ref.Kind == "note_version" || ref.Kind == "action_item" {
-		info.Lineage = append(info.Lineage, ref)
+	if info.Category == "financial" {
+		info.Lineage = []authz.ObjectReference{ref}
+	} else {
+		info.Lineage = []authz.ObjectReference{{Kind: "interview", ID: interview}}
+		if head != "" {
+			info.Lineage = append(info.Lineage, authz.ObjectReference{Kind: "note_head", ID: head})
+		}
+		if ref.Kind == "note_version" || ref.Kind == "action_item" {
+			info.Lineage = append(info.Lineage, ref)
+		}
 	}
 	if !authz.CanonicalLineage(info.Lineage...) {
 		return authz.ObjectInfo{}, fault.Unavailable

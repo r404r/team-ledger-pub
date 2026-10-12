@@ -10,6 +10,9 @@ import (
 )
 
 func normalizeObjectCommand(command *IssueCommand) bool {
+	if command.Category == "financial" && (command.RelationBound || command.RelationRef != nil) {
+		return false
+	}
 	if command.ObjectRef != nil && (!ValidObjectReference(*command.ObjectRef) || !ObjectPair(command.Capability, command.Category, command.ObjectRef.Kind)) {
 		return false
 	}

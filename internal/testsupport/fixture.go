@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/r404r/team-ledger/internal/authz"
+	"github.com/r404r/team-ledger/internal/compensation"
 	"github.com/r404r/team-ledger/internal/httpapi"
 	"github.com/r404r/team-ledger/internal/identity"
 	"github.com/r404r/team-ledger/internal/interview"
@@ -29,20 +30,23 @@ type Credential struct {
 	Hash                   []byte
 }
 type Fixture struct {
-	Repo                                  *store.Repository
-	Service                               *organization.Service
-	Interviews                            *interview.Service
-	Authz                                 *authz.Service
-	AuthorityIDs                          map[string]string
-	Manager, Reader, Approver             Credential
-	CursorKey                             []byte
-	KMS                                   *VaultFixture
-	InterviewKMS                          *VaultFixture
-	Server                                *httptest.Server
-	OrgID, OtherOrgID, DSN, Backend       string
-	CSRFKey, DigestKey                    []byte
-	Owner, Observer, Stranger, OtherOwner Credential
-	Now                                   time.Time
+	Repo                                   *store.Repository
+	Service                                *organization.Service
+	Interviews                             *interview.Service
+	Compensation                           *compensation.Service
+	Authz                                  *authz.Service
+	AuthorityIDs                           map[string]string
+	Manager, Reader, Approver              Credential
+	FinR, CompW, CompApprover, FinExporter Credential
+	CursorKey                              []byte
+	KMS                                    *VaultFixture
+	InterviewKMS                           *VaultFixture
+	FinancialKMS                           *VaultFixture
+	Server                                 *httptest.Server
+	OrgID, OtherOrgID, DSN, Backend        string
+	CSRFKey, DigestKey                     []byte
+	Owner, Observer, Stranger, OtherOwner  Credential
+	Now                                    time.Time
 }
 
 func randomBytes(n int) ([]byte, error) { b := make([]byte, n); _, err := rand.Read(b); return b, err }
@@ -97,6 +101,12 @@ func NewFixture(ctx context.Context, backend, dsn string) (_ *Fixture, err error
 	if err != nil {
 		return nil, err
 	}
+	for _, target := range []*Credential{&f.FinR, &f.CompW, &f.CompApprover, &f.FinExporter} {
+		*target, err = credential(f.CSRFKey)
+		if err != nil {
+			return nil, err
+		}
+	}
 	f.AuthorityIDs = make(map[string]string, 4)
 	f.Owner, err = credential(f.CSRFKey)
 	if err != nil {
@@ -133,6 +143,27 @@ func NewFixture(ctx context.Context, backend, dsn string) (_ *Fixture, err error
 	if err != nil {
 		return nil, err
 	}
+	f.FinancialKMS, err = NewVaultFixture("dev009-financial")
+	if err != nil {
+		return nil, err
+	}
+	financialWrapper, err := f.FinancialKMS.Wrapper()
+	if err != nil {
+		return nil, err
+	}
+	// This explicit synthetic policy is fixture data, not a production approval.
+	f.Compensation = &compensation.Service{
+		Store: f.Repo, Cipher: sensitive.Cipher{Wrapper: financialWrapper},
+		DigestKey: f.DigestKey, CursorKey: f.CursorKey,
+		Policy: compensation.Policy{
+			Enabled: true, Currencies: map[string]int{"USD": 2, "CNY": 2, "JPY": 0},
+			Units:              []string{"month", "year", "hour"},
+			PaymentFrequencies: []string{"monthly", "annual", "hourly"},
+			TaxBases:           []string{"gross", "net", "not_applicable"},
+			RoundingModes:      []string{"half_even", "half_up", "toward_zero"},
+		},
+		Now: func() time.Time { return f.Now },
+	}
 	f.Interviews = &interview.Service{Store: f.Repo, Cipher: sensitive.Cipher{Wrapper: interviewWrapper}, DigestKey: f.DigestKey, CursorKey: f.CursorKey, Now: func() time.Time { return f.Now }}
 	f.Service = &organization.Service{Store: f.Repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, DigestKey: f.DigestKey, CursorKey: f.CursorKey, Now: func() time.Time { return f.Now }}
 	f.Authz = &authz.Service{Store: f.Repo, DigestKey: f.DigestKey, CursorKey: f.CursorKey, Now: func() time.Time { return f.Now }}
@@ -147,6 +178,9 @@ func (f *Fixture) Close() {
 	}
 	if f.InterviewKMS != nil {
 		f.InterviewKMS.Close()
+	}
+	if f.FinancialKMS != nil {
+		f.FinancialKMS.Close()
 	}
 	if f.Repo != nil {
 		f.Repo.Close()
@@ -181,7 +215,7 @@ func (f *Fixture) seed(ctx context.Context) error {
 		c    Credential
 		org  string
 		mode int
-	}{{f.Owner, f.OrgID, 2}, {f.Observer, f.OrgID, 1}, {f.Stranger, f.OrgID, 0}, {f.OtherOwner, f.OtherOrgID, 2}, {f.Manager, f.OrgID, -1}, {f.Reader, f.OrgID, 0}, {f.Approver, f.OrgID, -1}} {
+	}{{f.Owner, f.OrgID, 2}, {f.Observer, f.OrgID, 1}, {f.Stranger, f.OrgID, 0}, {f.OtherOwner, f.OtherOrgID, 2}, {f.Manager, f.OrgID, -1}, {f.Reader, f.OrgID, 0}, {f.Approver, f.OrgID, -1}, {f.FinR, f.OrgID, -1}, {f.CompW, f.OrgID, -1}, {f.CompApprover, f.OrgID, -1}, {f.FinExporter, f.OrgID, -1}} {
 		if err = exec("INSERT INTO subject(org_id,id,active,auth_epoch) VALUES(?,?,1,1)", "INSERT INTO subject(org_id,id,active,auth_epoch) VALUES($1,$2,true,1)", entry.org, entry.c.SubjectID); err != nil {
 			return err
 		}
@@ -226,6 +260,9 @@ func (f *Fixture) seed(ctx context.Context) error {
 		}
 	}
 	if err = f.seedInterviews(ctx, tx); err != nil {
+		return err
+	}
+	if err = f.seedCompensation(ctx, tx); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -282,7 +319,7 @@ func NewHarness(t testing.TB, backend string) *Fixture {
 		t.Fatal(err)
 	}
 	identities.Now = f.Service.Now
-	handler, err := httpapi.New(f.Service, f.Interviews, f.Authz, identities, f.CSRFKey, "https://"+server.Listener.Addr().String(), dir)
+	handler, err := httpapi.New(f.Service, f.Interviews, f.Compensation, f.Authz, identities, f.CSRFKey, "https://"+server.Listener.Addr().String(), dir)
 	if err != nil {
 		server.Close()
 		t.Fatal(err)

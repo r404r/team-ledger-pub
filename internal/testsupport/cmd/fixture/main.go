@@ -141,6 +141,14 @@ func run() error {
 	for _, der := range interviewCert.Certificate {
 		interviewCA = append(interviewCA, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
 	}
+	var financialCA []byte
+	for _, der := range f.FinancialKMS.Server.TLS.Certificates[0].Certificate {
+		financialCA = append(financialCA, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
+	}
+	financialPolicy, err := json.Marshal(f.Compensation.Policy)
+	if err != nil {
+		return err
+	}
 	files := []struct {
 		name string
 		data []byte
@@ -148,11 +156,46 @@ func run() error {
 		{"csrf.key", f.CSRFKey}, {"digest.key", f.DigestKey}, {"cursor.key", f.CursorKey}, {"kms.token", []byte(f.KMS.Token)},
 		{"kms-ca.pem", ca}, {"api-cert.pem", ca}, {"api-key.pem", pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: key})},
 		{"interview-kms.token", []byte(f.InterviewKMS.Token)}, {"interview-kms-ca.pem", interviewCA},
+		{"financial-kms.token", []byte(f.FinancialKMS.Token)}, {"financial-kms-ca.pem", financialCA},
+		{"compensation-policy.json", financialPolicy},
 	}
 	for _, file := range files {
 		if err = privateFile(filepath.Join(*directory, file.name), file.data); err != nil {
 			return err
 		}
+	}
+	financialActors := make(map[string]any, 4)
+	for _, role := range []struct {
+		name       string
+		credential testsupport.Credential
+	}{
+		{"FinR", f.FinR}, {"CompW", f.CompW},
+		{"CompApprover", f.CompApprover}, {"FinExporter", f.FinExporter},
+	} {
+		path := filepath.Join(*directory, role.name+".json")
+		actor, err := json.Marshal(map[string]string{
+			"subject_id": role.credential.SubjectID,
+			"token":      role.credential.Token, "csrf": role.credential.CSRF,
+		})
+		if err != nil {
+			return err
+		}
+		if err := privateFile(path, append(actor, '\n')); err != nil {
+			clear(actor)
+			return err
+		}
+		clear(actor)
+		financialActors[role.name] = map[string]string{"subject_id": role.credential.SubjectID, "credential_file": path}
+	}
+	manifest, err := json.Marshal(map[string]any{
+		"backend": *backend, "origin": origin, "org_id": f.OrgID,
+		"actors": financialActors, "policy_file": filepath.Join(*directory, "compensation-policy.json"),
+	})
+	if err != nil {
+		return err
+	}
+	if err := privateFile(filepath.Join(*directory, "financial-manifest.json"), append(manifest, '\n')); err != nil {
+		return err
 	}
 	config := []struct{ name, value string }{
 		{"BACKEND", *backend}, {"DSN", dsn}, {"LISTEN", listen}, {"PUBLIC_ORIGIN", origin},
@@ -162,6 +205,9 @@ func run() error {
 		{"DIGEST_KEY_FILE", filepath.Join(*directory, "digest.key")}, {"CURSOR_KEY_FILE", filepath.Join(*directory, "cursor.key")}, {"WEB_DIR", *web},
 		{"INTERVIEW_KMS_URL", f.InterviewKMS.Server.URL}, {"INTERVIEW_KMS_KEY", f.InterviewKMS.KeyName},
 		{"INTERVIEW_KMS_TOKEN_FILE", filepath.Join(*directory, "interview-kms.token")}, {"INTERVIEW_KMS_CA_FILE", filepath.Join(*directory, "interview-kms-ca.pem")},
+		{"FINANCIAL_KMS_URL", f.FinancialKMS.Server.URL}, {"FINANCIAL_KMS_KEY", f.FinancialKMS.KeyName},
+		{"FINANCIAL_KMS_TOKEN_FILE", filepath.Join(*directory, "financial-kms.token")}, {"FINANCIAL_KMS_CA_FILE", filepath.Join(*directory, "financial-kms-ca.pem")},
+		{"COMPENSATION_POLICY_FILE", filepath.Join(*directory, "compensation-policy.json")},
 	}
 	var env strings.Builder
 	for _, entry := range config {
@@ -226,6 +272,18 @@ func run() error {
 					f.InterviewKMS.Fail.Store(true)
 				case "interview_kms_up":
 					f.InterviewKMS.Fail.Store(false)
+				case "financial_kms_down":
+					f.FinancialKMS.Fail.Store(true)
+				case "financial_kms_up":
+					f.FinancialKMS.Fail.Store(false)
+				case "revoke_finr":
+					err = revokeSubject(control, f, f.FinR.SubjectID, "compensation_management")
+				case "revoke_compw":
+					err = revokeSubject(control, f, f.CompW.SubjectID, "compensation_management")
+				case "revoke_compapprover":
+					err = revokeSubject(control, f, f.CompApprover.SubjectID, "compensation_management")
+				case "revoke_finexporter":
+					err = revokeSubject(control, f, f.FinExporter.SubjectID, "compensation_management")
 				case "revoke_owner_pii":
 					err = revoke(control, f, "organization_management")
 				case "revoke_owner_interview":
@@ -266,6 +324,10 @@ func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'
 
 // This direct SQL control is test-only; it does not implement OP-SEC-03.
 func revoke(ctx context.Context, f *testsupport.Fixture, purpose string) error {
+	return revokeSubject(ctx, f, f.Owner.SubjectID, purpose)
+}
+
+func revokeSubject(ctx context.Context, f *testsupport.Fixture, subject, purpose string) error {
 	tx, err := f.Repo.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -279,7 +341,7 @@ func revoke(ctx context.Context, f *testsupport.Fixture, purpose string) error {
 		if _, err = tx.ExecContext(ctx, "UPDATE authorization_guard SET auth_epoch=auth_epoch+1 WHERE org_id=$1", f.OrgID); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, "UPDATE access_grant SET revoked=true,revision=revision+1,revoked_by=$4,revoked_at=$5,revoke_reason='policy_change' WHERE org_id=$1 AND subject_id=$2 AND purpose=$3 AND revoked=false AND ($3='interview_followup' OR category='pii')", f.OrgID, f.Owner.SubjectID, purpose, f.Manager.SubjectID, f.Repo.BindTime(time.Now().UTC().Truncate(time.Microsecond)))
+		_, err = tx.ExecContext(ctx, "UPDATE access_grant SET revoked=true,revision=revision+1,revoked_by=$4,revoked_at=$5,revoke_reason='policy_change' WHERE org_id=$1 AND subject_id=$2 AND purpose=$3 AND revoked=false AND ($3='interview_followup' OR ($3='compensation_management' AND category='financial') OR category='pii')", f.OrgID, subject, purpose, f.Manager.SubjectID, f.Repo.BindTime(time.Now().UTC().Truncate(time.Microsecond)))
 	} else {
 		// The first write obtains SQLite's writer/organization guard before grants.
 		result, e := tx.ExecContext(ctx, "UPDATE authorization_guard SET auth_epoch=auth_epoch+1 WHERE org_id=?", f.OrgID)
@@ -290,7 +352,7 @@ func revoke(ctx context.Context, f *testsupport.Fixture, purpose string) error {
 		if e != nil || n != 1 {
 			return errors.New("missing guard")
 		}
-		_, err = tx.ExecContext(ctx, "UPDATE access_grant SET revoked=1,revision=revision+1,revoked_by=?,revoked_at=?,revoke_reason='policy_change' WHERE org_id=? AND subject_id=? AND purpose=? AND revoked=0 AND (?='interview_followup' OR category='pii')", f.Manager.SubjectID, f.Repo.BindTime(time.Now().UTC().Truncate(time.Microsecond)), f.OrgID, f.Owner.SubjectID, purpose, purpose)
+		_, err = tx.ExecContext(ctx, "UPDATE access_grant SET revoked=1,revision=revision+1,revoked_by=?,revoked_at=?,revoke_reason='policy_change' WHERE org_id=? AND subject_id=? AND purpose=? AND revoked=0 AND (?='interview_followup' OR (?='compensation_management' AND category='financial') OR category='pii')", f.Manager.SubjectID, f.Repo.BindTime(time.Now().UTC().Truncate(time.Microsecond)), f.OrgID, subject, purpose, purpose, purpose)
 	}
 	if err != nil {
 		return err
@@ -299,7 +361,7 @@ func revoke(ctx context.Context, f *testsupport.Fixture, purpose string) error {
 }
 
 func counts(ctx context.Context, f *testsupport.Fixture) (map[string]any, error) {
-	response := map[string]any{"kms_calls": f.KMS.Calls.Load(), "interview_kms_calls": f.InterviewKMS.Calls.Load()}
+	response := map[string]any{"kms_calls": f.KMS.Calls.Load(), "interview_kms_calls": f.InterviewKMS.Calls.Load(), "financial_kms_calls": f.FinancialKMS.Calls.Load()}
 	tx, err := f.Repo.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err

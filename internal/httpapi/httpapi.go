@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/r404r/team-ledger/internal/authz"
+	"github.com/r404r/team-ledger/internal/compensation"
 	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/identity"
 	"github.com/r404r/team-ledger/internal/interview"
@@ -34,14 +35,15 @@ type handler struct {
 	service        *organization.Service
 	grants         *authz.Service
 	interviews     *interview.Service
+	compensation   *compensation.Service
 	identities     *identity.Service
 	key            []byte
 	origin, static string
 }
 
-func New(service *organization.Service, interviews *interview.Service, grants *authz.Service, identities *identity.Service, csrfKey []byte, origin, staticDir string) (http.Handler, error) {
+func New(service *organization.Service, interviews *interview.Service, compensation *compensation.Service, grants *authz.Service, identities *identity.Service, csrfKey []byte, origin, staticDir string) (http.Handler, error) {
 	u, err := url.Parse(origin)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.RawPath != "" || service == nil || interviews == nil || grants == nil || identities == nil || len(csrfKey) != 32 {
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.RawPath != "" || service == nil || interviews == nil || compensation == nil || grants == nil || identities == nil || len(csrfKey) != 32 {
 		return nil, errors.New("invalid HTTP configuration")
 	}
 	root, err := filepath.EvalSymlinks(staticDir)
@@ -56,7 +58,7 @@ func New(service *organization.Service, interviews *interview.Service, grants *a
 	if err != nil || !info.Mode().IsRegular() {
 		return nil, errors.New("missing production index")
 	}
-	return &handler{service: service, interviews: interviews, grants: grants, identities: identities, key: bytes.Clone(csrfKey), origin: strings.TrimSuffix(origin, "/"), static: root}, nil
+	return &handler{service: service, interviews: interviews, compensation: compensation, grants: grants, identities: identities, key: bytes.Clone(csrfKey), origin: strings.TrimSuffix(origin, "/"), static: root}, nil
 }
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -95,7 +97,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	snap, err := h.service.Session(r.Context(), req, employeeScope)
+	financeSession := r.URL.Path == "/api/v1/session" && r.Method == http.MethodGet && req.Purpose == "compensation_management"
+	authEmployee := employeeScope
+	if financeSession {
+		authEmployee = ""
+	}
+	snap, err := h.service.Session(r.Context(), req, authEmployee)
 	if err != nil {
 		h.fail(w, err, requestID)
 		return
@@ -103,6 +110,24 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if invalidScope {
 		h.fail(w, fault.Invalid, requestID)
 		return
+	}
+	if financeSession && employeeScope != "" {
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		if h.compensation.Now != nil {
+			now = h.compensation.Now().UTC().Truncate(time.Microsecond)
+		}
+		if !now.Before(snap.MFAUntil) {
+			// Without recent MFA release only the caller's unscoped session;
+			// the requested employee is not an authority or an existence hint.
+			employeeScope = ""
+		} else {
+			scoped, e := h.compensationSession(r, req, employeeScope, now)
+			if e != nil {
+				h.fail(w, e, requestID)
+				return
+			}
+			snap = scoped
+		}
 	}
 	mac := hmac.New(sha256.New, h.key)
 	mac.Write([]byte("TEAMLEDGER-CSRF\x00"))
@@ -167,6 +192,22 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		interviewPermissions := currentInterviewPermissions(snap, employeeScope, teamScope, now)
+		compensationPermissions := []compensation.Permission{}
+		if financeSession && h.compensation.Policy.Enabled {
+			compensationPermissions = currentCompensationPermissions(snap, employeeScope, teamScope, now)
+		}
+		for _, permission := range compensationPermissions {
+			present := false
+			for _, cap := range caps {
+				if cap == permission.Capability {
+					present = true
+					break
+				}
+			}
+			if !present {
+				caps = append(caps, permission.Capability)
+			}
+		}
 		for _, permission := range interviewPermissions {
 			present := false
 			for _, cap := range caps {
@@ -187,24 +228,28 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			scopeKind, scopeID = "team", teamScope
 		}
 		h.reply(w, 200, struct {
-			Subject              string                 `json:"subject_id"`
-			Org                  string                 `json:"org_id"`
-			Epoch                string                 `json:"auth_epoch"`
-			Capabilities         []string               `json:"capabilities"`
-			CSRF                 string                 `json:"csrf_token"`
-			ScopeKind            string                 `json:"scope_kind"`
-			ScopeID              string                 `json:"scope_id"`
-			MFARecent            bool                   `json:"mfa_recent"`
-			MFAUntil             time.Time              `json:"mfa_valid_until"`
-			Authorities          []authz.AuthorityHint  `json:"grant_authorities"`
-			IdentityAvailable    bool                   `json:"identity_available"`
-			InterviewPermissions []interview.Permission `json:"interview_permissions"`
-			SensitivityUntil     time.Time              `json:"sensitivity_valid_until"`
-		}{snap.SubjectID, snap.OrgID, strconv.FormatInt(snap.AuthEpoch, 10), caps, token, scopeKind, scopeID, now.Before(snap.MFAUntil), snap.MFAUntil, authorities, h.identities.Available(), interviewPermissions, sensitivityUntil})
+			Subject                 string                    `json:"subject_id"`
+			Org                     string                    `json:"org_id"`
+			Epoch                   string                    `json:"auth_epoch"`
+			Capabilities            []string                  `json:"capabilities"`
+			CSRF                    string                    `json:"csrf_token"`
+			ScopeKind               string                    `json:"scope_kind"`
+			ScopeID                 string                    `json:"scope_id"`
+			MFARecent               bool                      `json:"mfa_recent"`
+			MFAUntil                time.Time                 `json:"mfa_valid_until"`
+			Authorities             []authz.AuthorityHint     `json:"grant_authorities"`
+			IdentityAvailable       bool                      `json:"identity_available"`
+			InterviewPermissions    []interview.Permission    `json:"interview_permissions"`
+			CompensationPermissions []compensation.Permission `json:"compensation_permissions"`
+			SensitivityUntil        time.Time                 `json:"sensitivity_valid_until"`
+		}{snap.SubjectID, snap.OrgID, strconv.FormatInt(snap.AuthEpoch, 10), caps, token, scopeKind, scopeID, now.Before(snap.MFAUntil), snap.MFAUntil, authorities, h.identities.Available(), interviewPermissions, compensationPermissions, sensitivityUntil})
 		return
 	}
 	if r.URL.Path == "/api/v1/access-grants" || strings.HasPrefix(r.URL.Path, "/api/v1/access-grants/") {
 		h.grantRoute(w, r, authz.Request{TokenHash: req.TokenHash, RequestID: req.RequestID, Purpose: req.Purpose, Key: req.Key})
+		return
+	}
+	if h.compensationRoute(w, r, compensation.Request{TokenHash: req.TokenHash, RequestID: req.RequestID, Purpose: req.Purpose, Key: req.Key}) {
 		return
 	}
 	if h.interviewRoute(w, r, interview.Request{TokenHash: req.TokenHash, RequestID: req.RequestID, Purpose: req.Purpose, Key: req.Key}) {
@@ -329,12 +374,25 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 		root = "action_transition"
 	case *interview.ExportCommand:
 		root = "export_command"
+	case *compensation.ProposalCommand:
+		root = "finance_proposal"
+	case *compensation.DraftCommand:
+		root = "finance_draft"
+	case *compensation.TransitionCommand:
+		root = "finance_transition"
+	case *compensation.ExportCommand:
+		root = "export_command"
 	default:
 		return fault.Invalid
 	}
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.UseNumber()
-	if e = walkJSON(d, 0, root); e != nil {
+	if strings.HasPrefix(root, "finance_") {
+		e = walkFinancialJSON(d, 0, root, false)
+	} else {
+		e = walkJSON(d, 0, root)
+	}
+	if e != nil {
 		return e
 	}
 	if _, e = d.Token(); e != io.EOF {

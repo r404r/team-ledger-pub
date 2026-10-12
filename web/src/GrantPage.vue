@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue'
-import { grantCapabilities as capabilities, validGrantPair, validGrantObject, validSourceApproval, type ObjectReference } from './grantPairs'
+import { grantCapabilities as capabilities, grantObjectKinds, validGrantPair, validGrantObject, validSourceApproval, type ObjectReference } from './grantPairs'
 
 const emit = defineEmits<{ 'session-expired': []; 'grant-result': [kind: 'issue' | 'revoke'] }>()
 
@@ -217,12 +217,12 @@ async function applyFilters() {
   if ((filters.subject && !uuid.test(filters.subject)) || (filters.grantID && !uuid.test(filters.grantID)) ||
       Boolean(filters.scopeKind) !== Boolean(filters.scopeID) || (filters.scopeID && !uuid.test(filters.scopeID)) ||
       filters.scopeKind && !['org', 'team', 'employee'].includes(filters.scopeKind) ||
-      filters.category && !['metadata', 'pii', 'shared', 'manager_private', 'hr_confidential'].includes(filters.category) ||
-      filters.purpose && !['organization_management', 'interview_followup'].includes(filters.purpose) ||
+      filters.category && !['metadata', 'pii', 'shared', 'manager_private', 'hr_confidential', 'financial'].includes(filters.category) ||
+      filters.purpose && !['organization_management', 'interview_followup', 'compensation_management'].includes(filters.purpose) ||
       filters.capability && !capabilities.includes(filters.capability) ||
       filters.state && !['current', 'future', 'expired', 'revoked'].includes(filters.state) ||
       Boolean(filters.objectKind) !== Boolean(filters.objectID) ||
-      filters.objectKind && (!['interview', 'note_head', 'note_version', 'action_item'].includes(filters.objectKind) || !uuid.test(filters.objectID)) ||
+      filters.objectKind && (!grantObjectKinds.includes(filters.objectKind as ObjectReference['kind']) || !uuid.test(filters.objectID)) ||
       !/^[1-9][0-9]*$/.test(filters.limit) || Number(filters.limit) > 100) {
     error.value = '筛选 ID 须为规范 UUID，scope 须成对，页大小须为 1..100。'; return
   }
@@ -252,7 +252,7 @@ function chooseAuthority() {
   if (!selected) return
   const scope = selected.delegable_scopes[0]!
   form.scopeKind = scope.kind; form.scopeID = scope.id
-  form.mfa = selected.mfa_required || ['note.publish', 'sensitive.export'].includes(selected.capability)
+  form.mfa = selected.mfa_required || selected.category === 'financial' || ['note.publish', 'sensitive.export'].includes(selected.capability)
 }
 function newGrant() {
   if (busy.value || uncertain.value || !manageable.value) return
@@ -284,8 +284,8 @@ function previewGrant() {
   if ((!form.objectKind && form.objectID) || !validGrantObject(object, authority.capability, authority.category, authority.purpose) ||
       !validSourceApproval(sources, authority.capability, authority.category) ||
       sources.length > 0 && form.scopeKind !== 'employee' ||
-      ['note.publish', 'sensitive.export'].includes(authority.capability) && !form.mfa) {
-    preview.value = null; error.value = '对象须为当前类别允许的明确类型与 UUID，并仍满足已批准范围；来源批准须为最多十个唯一 note_version，仅用于 note.publish 或 shared action.write。发布与导出必须 MFA。'; return
+      (['note.publish', 'sensitive.export'].includes(authority.capability) || authority.category === 'financial') && !form.mfa) {
+    preview.value = null; error.value = '对象须为当前类别允许的明确类型与 UUID，并仍满足已批准范围；来源批准须为最多十个唯一 note_version，仅用于 note.publish 或 shared action.write。发布、导出与财务必须 MFA。'; return
   }
   preview.value = { context: session.value, authority, body: JSON.stringify({
     subject_id: form.subject, capability: authority.capability, category: authority.category,
@@ -393,12 +393,12 @@ onBeforeUnmount(() => {
           <label for="grant-filter-subject">筛选主体 ID</label><input id="grant-filter-subject" v-model="filters.subject" />
           <label for="grant-filter-scope-kind">筛选 scope 类型</label><select id="grant-filter-scope-kind" v-model="filters.scopeKind"><option value="">全部</option><option value="org">org</option><option value="team">team</option><option value="employee">employee</option></select>
           <label for="grant-filter-scope-id">筛选 scope ID</label><input id="grant-filter-scope-id" v-model="filters.scopeID" />
-          <label for="grant-filter-category">筛选类别</label><select id="grant-filter-category" v-model="filters.category"><option value="">全部</option><option v-for="category in ['metadata', 'pii', 'shared', 'manager_private', 'hr_confidential']" :key="category" :value="category">{{ category }}</option></select>
-          <label for="grant-filter-purpose">筛选目的</label><select id="grant-filter-purpose" v-model="filters.purpose"><option value="">全部</option><option value="organization_management">organization_management</option><option value="interview_followup">interview_followup</option></select>
+          <label for="grant-filter-category">筛选类别</label><select id="grant-filter-category" v-model="filters.category"><option value="">全部</option><option v-for="category in ['metadata', 'pii', 'shared', 'manager_private', 'hr_confidential', 'financial']" :key="category" :value="category">{{ category }}</option></select>
+          <label for="grant-filter-purpose">筛选目的</label><select id="grant-filter-purpose" v-model="filters.purpose"><option value="">全部</option><option value="organization_management">organization_management</option><option value="interview_followup">interview_followup</option><option value="compensation_management">compensation_management</option></select>
           <label for="grant-filter-state">筛选状态</label><select id="grant-filter-state" v-model="filters.state"><option value="">全部</option><option value="current">current</option><option value="future">future</option><option value="expired">expired</option><option value="revoked">revoked</option></select>
           <label for="grant-filter-id">筛选授权 ID</label><input id="grant-filter-id" v-model="filters.grantID" />
           <label for="grant-filter-capability">筛选能力</label><select id="grant-filter-capability" v-model="filters.capability"><option value="">全部</option><option v-for="capability in capabilities" :key="capability" :value="capability">{{ capability }}</option></select>
-          <label for="grant-filter-object-kind">筛选对象类型（须与 ID 成对）</label><select id="grant-filter-object-kind" v-model="filters.objectKind"><option value="">全部</option><option v-for="kind in ['interview', 'note_head', 'note_version', 'action_item']" :key="kind" :value="kind">{{ kind }}</option></select>
+          <label for="grant-filter-object-kind">筛选对象类型（须与 ID 成对）</label><select id="grant-filter-object-kind" v-model="filters.objectKind"><option value="">全部</option><option v-for="kind in grantObjectKinds" :key="kind" :value="kind">{{ kind }}</option></select>
           <label for="grant-filter-object-id">筛选具体对象 ID</label><input id="grant-filter-object-id" v-model="filters.objectID" />
           <label for="grant-filter-limit">每页条数</label><input id="grant-filter-limit" v-model="filters.limit" type="number" min="1" max="100" />
           <button type="submit">应用筛选</button>
@@ -445,15 +445,16 @@ onBeforeUnmount(() => {
         <label for="grant-scope-id">授权 scope ID</label><input id="grant-scope-id" v-model="form.scopeID" required autocomplete="off" />
         <label for="grant-start">生效时间（RFC3339 UTC，最多六位小数）</label><input id="grant-start" v-model="form.validFrom" placeholder="YYYY-MM-DDTHH:mm:ss.ffffffZ" required autocomplete="off" />
         <label for="grant-end">到期时间（RFC3339 UTC，最多六位小数）</label><input id="grant-end" v-model="form.expiresAt" placeholder="YYYY-MM-DDTHH:mm:ss.ffffffZ" required autocomplete="off" />
-        <label for="grant-mfa"><input id="grant-mfa" v-model="form.mfa" type="checkbox" :disabled="selectedAuthority?.mfa_required || ['note.publish', 'sensitive.export'].includes(selectedAuthority?.capability ?? '')" />被授予人使用此授权须 MFA（发布与导出不可降低）</label>
+        <label for="grant-mfa"><input id="grant-mfa" v-model="form.mfa" type="checkbox" :disabled="selectedAuthority?.mfa_required || selectedAuthority?.category === 'financial' || ['note.publish', 'sensitive.export'].includes(selectedAuthority?.capability ?? '')" />被授予人使用此授权须 MFA（发布、导出与财务不可降低）</label>
         <label for="grant-relation-kind">关系绑定类型（可留空）</label>
         <select id="grant-relation-kind" v-model="form.relationKind" @change="form.relationID = ''"><option value="">独立授权</option><option value="reporting_line">reporting_line（经理任职）</option><option value="team_membership">team_membership（团队任职）</option></select>
         <label v-if="form.relationKind" for="grant-relation-id">原任职关系 ID（不可猜测或自动填入）</label>
         <input v-if="form.relationKind" id="grant-relation-id" v-model="form.relationID" required autocomplete="off" />
-        <label for="grant-object-kind">对象类型（可留空；具体历史版本只批准该版本）</label><select id="grant-object-kind" v-model="form.objectKind" @change="form.objectID = ''"><option value="">无对象限制</option><option v-for="kind in ['interview', 'note_head', 'note_version', 'action_item']" :key="kind" :value="kind">{{ kind }}</option></select>
+        <label for="grant-object-kind">对象类型（可留空；具体历史版本只批准该版本）</label><select id="grant-object-kind" v-model="form.objectKind" @change="form.objectID = ''"><option value="">无对象限制</option><option v-for="kind in grantObjectKinds" :key="kind" :value="kind">{{ kind }}</option></select>
         <label v-if="form.objectKind" for="grant-object-id">明确对象 ID</label><input v-if="form.objectKind" id="grant-object-id" v-model="form.objectID" required autocomplete="off" />
         <label for="grant-source-ids">独立批准的最小来源版本 ID（note_version，空白分隔，最多十个；不填源正文）</label><textarea id="grant-source-ids" v-model="form.sourceIDs" autocomplete="off" />
         <p>源批准者仍须当前源读取权与目标委派权。这里只独立授予权限，不发布笔记；授予成功后发布失败是不同结果，不自动复制私有文字。</p>
+        <p>financial / compensation_management 与提出、审批、导出能力独立；明确 compensation_event 或 compensation_term 只授该不可变对象，不授整名员工的现状或其他历史。金融授权不得降低 MFA。</p>
         <p>服务器核对目标主体的已批准员工映射、当前原任职与范围。换任职、结束或更正不使旧引用复活；不自动授经理或团队权限。</p>
         <button type="submit">预览授权</button>
         <button type="button" @click="editing = false; form.subject = ''; form.validFrom = ''; form.expiresAt = ''">取消新建</button>

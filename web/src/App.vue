@@ -5,6 +5,7 @@ import GrantPage from './GrantPage.vue'
 import IdentityGate from './IdentityGate.vue'
 import OrganizationPage from './OrganizationPage.vue'
 import InterviewPage from './InterviewPage.vue'
+import CompensationPage from './CompensationPage.vue'
 
 const pathname = ref(window.location.pathname)
 const grantsRoute = computed(() => /^\/security\/grants\/?$/.test(pathname.value))
@@ -12,6 +13,7 @@ const organizationRoute = computed(() => /^\/orgs\/[0-9a-f-]+\/(?:tree|employees
   /^\/employees\/[0-9a-f-]+\/organization-history\/?$/.test(pathname.value))
 const interviewRoute = computed(() => /^\/interviews(?:\/[0-9a-f-]+)?\/?$/.test(pathname.value) ||
   /^\/employees\/[0-9a-f-]+\/interviews\/?$/.test(pathname.value))
+const compensationRoute = computed(() => /^\/employees\/[0-9a-f-]+\/compensation\/?$/.test(pathname.value))
 
 function readRoute() {
   pathname.value = window.location.pathname
@@ -38,6 +40,7 @@ onBeforeUnmount(() => window.removeEventListener('popstate', readRoute))
     </nav>
     <GrantPage v-if="grantsRoute" @session-expired="expireSession" />
     <InterviewPage v-else-if="interviewRoute" @session-expired="expireSession" />
+    <CompensationPage v-else-if="compensationRoute" @session-expired="expireSession" />
     <OrganizationPage v-else-if="organizationRoute" @session-expired="expireSession" />
     <ProfilePage v-else @session-expired="expireSession" />
   </IdentityGate>

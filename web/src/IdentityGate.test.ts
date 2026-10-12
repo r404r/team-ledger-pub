@@ -459,3 +459,29 @@ describe('shared gate current sensitivity clock boundary', () => {
     expect(api.matching('GET', '/api/v1/session')).toHaveLength(readsBeforeBoundary)
   })
 })
+
+describe('R4 financial MFA intents and strict safe return routes', () => {
+  it.each(['compensation.read', 'compensation.propose', 'compensation.approve', 'sensitive.export'])('submits finite %s intent without issuing any financial operation', async intent => {
+    history.replaceState({}, '', `/employees/${EMPLOYEE}/compensation?as_of=${AS_OF}`)
+    const page = mount(IdentityGate, { attachTo: document.body, slots: { default: '<p>financial protected slot</p>' } }); pages.push(page); await settled()
+    expect(api.matching('GET', '/api/v1/session')[0]!.headers.get('X-Access-Purpose')).toBe('compensation_management')
+    await page.get('#compensation-stepup-intent').setValue(intent)
+    const pending = api.defer('POST', '/api/v1/auth/step-up')
+    await action(page, /^重新验证财务 MFA$/).trigger('click'); await settled()
+    expect(JSON.parse(api.matching('POST', '/api/v1/auth/step-up')[0]!.body!)).toEqual({ action: intent, return_to: `/employees/${EMPLOYEE}/compensation?as_of=${AS_OF}` })
+    expect(page.text()).not.toContain('financial protected slot')
+    pending.resolve(200, { authorization_url: PROVIDER_URL }); await settled()
+    expect(providerNavigation).toHaveBeenCalledOnce(); expect(api.requests.filter(request => request.method === 'POST')).toHaveLength(1)
+  })
+  it.each([
+    [`/employees/${EMPLOYEE}/compensation/?as_of=${AS_OF}`, `/employees/${EMPLOYEE}/compensation?as_of=${AS_OF}`],
+    [`/employees/${EMPLOYEE}/compensation?as_of=${AS_OF}&reason=synthetic-financial-secret`, `/employees/${EMPLOYEE}/compensation`],
+    [`/employees/${EMPLOYEE}/compensation?as_of=2026-02-30`, `/employees/${EMPLOYEE}/compensation`],
+    [`/employees/not-a-uuid/compensation`, '/'],
+  ])('retains only canonical financial route/date (%s)', async (route, expected) => {
+    history.replaceState({}, '', route); api.reply('GET', '/api/v1/session', 401, { code: 'UNAUTHENTICATED' })
+    const page = await open(); const login = page.get('a[href^="/api/v1/auth/login"]')
+    expect(new URL(login.attributes('href')!, location.href).searchParams.get('return_to')).toBe(expected)
+    expect(login.attributes('href')).not.toContain('synthetic-financial-secret')
+  })
+})

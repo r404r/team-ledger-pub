@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/r404r/team-ledger/internal/authz"
+	"github.com/r404r/team-ledger/internal/compensation"
 	"github.com/r404r/team-ledger/internal/configfile"
 	"github.com/r404r/team-ledger/internal/httpapi"
 	"github.com/r404r/team-ledger/internal/identity"
@@ -124,6 +125,19 @@ func run() error {
 		return e
 	}
 	defer closeInterviewKeys()
+	policy, e := compensationPolicy()
+	if e != nil {
+		return e
+	}
+	var financialWrapper sensitive.Wrapper
+	if policy.Enabled {
+		var closeFinancialKeys func()
+		financialWrapper, closeFinancialKeys, e = financialKeyService(cfg, tokenText)
+		if e != nil {
+			return e
+		}
+		defer closeFinancialKeys()
+	}
 	keyPEM, e := configfile.Read(cfg["TLS_KEY_FILE"], 64<<10, true)
 	if e != nil {
 		return e
@@ -161,6 +175,7 @@ func run() error {
 	}
 	service := &organization.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, DigestKey: digest, CursorKey: cursor, Now: time.Now}
 	interviews := &interview.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: interviewWrapper}, DigestKey: digest, CursorKey: cursor, Now: time.Now}
+	finance := &compensation.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: financialWrapper}, DigestKey: digest, CursorKey: cursor, Policy: policy, Now: time.Now}
 	grants := &authz.Service{Store: repo, DigestKey: digest, CursorKey: cursor, Now: time.Now}
 	oidcConfig, closeIdentity, e := identityConfiguration(cfg["PUBLIC_ORIGIN"], csrf, digest, cursor)
 	if e != nil {
@@ -173,7 +188,7 @@ func run() error {
 	if e != nil {
 		return errors.New("identity unavailable")
 	}
-	handler, e := httpapi.New(service, interviews, grants, identities, csrf, cfg["PUBLIC_ORIGIN"], cfg["WEB_DIR"])
+	handler, e := httpapi.New(service, interviews, finance, grants, identities, csrf, cfg["PUBLIC_ORIGIN"], cfg["WEB_DIR"])
 	if e != nil {
 		return e
 	}
