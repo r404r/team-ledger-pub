@@ -369,7 +369,7 @@ func compensationNativeProof(f *testsupport.Fixture, digest []byte, action strin
 	return map[string]any{"state_hash": []byte(strings.ReplaceAll(value.NewID(), "-", "")), "binding_hash": bytes.Repeat([]byte{23}, 32), "sealed_bytes": bytes.Repeat([]byte{27}, 28), "key_version": 1, "created_at": f.Repo.BindTime(f.Now), "expires_at": f.Repo.BindTime(f.Now.Add(5 * time.Minute)), "mode": "step_up", "action": action, "return_route": "/employees", "previous_hash": f.Owner.Hash, "expected_org": f.OrgID, "expected_subject": f.Owner.SubjectID, "expected_epoch": 1, "expected_identity": digest, "consumed": false}
 }
 
-func TestCompensationV8OIDCProofActionAllowlist(t *testing.T) {
+func TestAssessmentV9OIDCProofActionAllowlist(t *testing.T) {
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			f := testsupport.NewHarness(t, backend)
@@ -377,7 +377,7 @@ func TestCompensationV8OIDCProofActionAllowlist(t *testing.T) {
 			if err := grantSchemaInsert(f.Repo, "subject_identity", map[string]any{"digest": digest, "key_version": 1, "org_id": f.OrgID, "subject_id": f.Owner.SubjectID, "active": true}); err != nil {
 				t.Fatal(err)
 			}
-			for _, action := range []string{"pii.write", "access_grant.manage", "note.publish", "sensitive.export", "compensation.read", "compensation.propose", "compensation.approve", "bonus.target.manage", "bonus.propose", "bonus.approve", "bonus.payment.record", "compensation.extension.manage"} {
+			for _, action := range []string{"pii.write", "access_grant.manage", "note.publish", "sensitive.export", "compensation.read", "compensation.propose", "compensation.approve", "bonus.target.manage", "bonus.propose", "bonus.approve", "bonus.payment.record", "compensation.extension.manage", "interview_policy.manage"} {
 				if err := grantSchemaInsert(f.Repo, "oidc_transaction", compensationNativeProof(f, digest, action)); err != nil {
 					t.Fatal("finite step-up intent must persist", action, err)
 				}
@@ -450,8 +450,8 @@ func TestCompensationV7PopulatedV6UpgradePreservesAllOriginalColumnsAndHistory(t
 			}
 			after := interviewMigrationFacts(t, f.Repo)
 			migrationOriginalUnchanged(t, before, after)
-			if len(after["schema_version"]) != 8 {
-				t.Fatal("exact v8 migration ledger required")
+			if len(after["schema_version"]) != 9 {
+				t.Fatal("exact v9 migration ledger required")
 			}
 			runtimeUnchanged(t, map[string][][]any{"schema_version": ledger}, map[string][][]any{"schema_version": after["schema_version"][:6]})
 			for table := range after {

@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/r404r/team-ledger/internal/assessment"
 	"github.com/r404r/team-ledger/internal/authz"
 	"github.com/r404r/team-ledger/internal/compensation"
 	"github.com/r404r/team-ledger/internal/configfile"
@@ -197,6 +198,7 @@ func run() error {
 	}
 	service := &organization.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, DigestKey: digest, CursorKey: cursor, Now: time.Now}
 	interviews := &interview.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: interviewWrapper}, DigestKey: digest, CursorKey: cursor, Now: time.Now}
+	assessments := &assessment.Service{Store: repo, DigestKey: digest, Now: time.Now}
 	finance := &compensation.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: financialWrapper}, DigestKey: digest, CursorKey: cursor, BonusHMACKeys: bonusHMACKeys, BonusHMACKeyIDs: bonusHMACKeyIDs, BonusHMACActive: bonusHMACActive, Policy: policy, Now: time.Now}
 	grants := &authz.Service{Store: repo, DigestKey: digest, CursorKey: cursor, Now: time.Now}
 	oidcConfig, closeIdentity, e := identityConfiguration(cfg["PUBLIC_ORIGIN"], csrf, digest, cursor)
@@ -210,7 +212,7 @@ func run() error {
 	if e != nil {
 		return errors.New("identity unavailable")
 	}
-	handler, e := httpapi.New(service, interviews, finance, grants, identities, csrf, cfg["PUBLIC_ORIGIN"], cfg["WEB_DIR"])
+	handler, e := httpapi.New(service, interviews, assessments, finance, grants, identities, csrf, cfg["PUBLIC_ORIGIN"], cfg["WEB_DIR"])
 	if e != nil {
 		return e
 	}

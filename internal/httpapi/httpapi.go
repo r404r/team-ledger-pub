@@ -19,6 +19,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/r404r/team-ledger/internal/assessment"
 	"github.com/r404r/team-ledger/internal/authz"
 	"github.com/r404r/team-ledger/internal/compensation"
 	"github.com/r404r/team-ledger/internal/fault"
@@ -35,15 +36,16 @@ type handler struct {
 	service        *organization.Service
 	grants         *authz.Service
 	interviews     *interview.Service
+	assessment     *assessment.Service
 	compensation   *compensation.Service
 	identities     *identity.Service
 	key            []byte
 	origin, static string
 }
 
-func New(service *organization.Service, interviews *interview.Service, compensation *compensation.Service, grants *authz.Service, identities *identity.Service, csrfKey []byte, origin, staticDir string) (http.Handler, error) {
+func New(service *organization.Service, interviews *interview.Service, assessmentService *assessment.Service, compensation *compensation.Service, grants *authz.Service, identities *identity.Service, csrfKey []byte, origin, staticDir string) (http.Handler, error) {
 	u, err := url.Parse(origin)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.RawPath != "" || service == nil || interviews == nil || compensation == nil || grants == nil || identities == nil || len(csrfKey) != 32 {
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.RawPath != "" || service == nil || interviews == nil || assessmentService == nil || compensation == nil || grants == nil || identities == nil || len(csrfKey) != 32 {
 		return nil, errors.New("invalid HTTP configuration")
 	}
 	root, err := filepath.EvalSymlinks(staticDir)
@@ -58,7 +60,7 @@ func New(service *organization.Service, interviews *interview.Service, compensat
 	if err != nil || !info.Mode().IsRegular() {
 		return nil, errors.New("missing production index")
 	}
-	return &handler{service: service, interviews: interviews, compensation: compensation, grants: grants, identities: identities, key: bytes.Clone(csrfKey), origin: strings.TrimSuffix(origin, "/"), static: root}, nil
+	return &handler{service: service, interviews: interviews, assessment: assessmentService, compensation: compensation, grants: grants, identities: identities, key: bytes.Clone(csrfKey), origin: strings.TrimSuffix(origin, "/"), static: root}, nil
 }
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -252,6 +254,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.compensationRoute(w, r, compensation.Request{TokenHash: req.TokenHash, RequestID: req.RequestID, Purpose: req.Purpose, Key: req.Key}) {
 		return
 	}
+	if h.assessmentRoute(w, r, assessment.Request{TokenHash: req.TokenHash, RequestID: req.RequestID, Purpose: req.Purpose, Key: req.Key}) {
+		return
+	}
 	if h.interviewRoute(w, r, interview.Request{TokenHash: req.TokenHash, RequestID: req.RequestID, Purpose: req.Purpose, Key: req.Key}) {
 		return
 	}
@@ -384,6 +389,8 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 		root = "export_command"
 	case *compensation.BonusTargetCommand, *compensation.BonusTargetTransition, *compensation.BonusAwardCommand, *compensation.BonusAwardEditCommand, *compensation.BonusAwardTransition, *compensation.BonusPaymentCommand, *compensation.BonusExtensionCommand:
 		root = "bonus_command"
+	case *assessment.PolicyCommand:
+		root = "assessment_policy"
 	default:
 		return fault.Invalid
 	}
@@ -391,7 +398,7 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 	d.UseNumber()
 	if strings.HasPrefix(root, "finance_") {
 		e = walkFinancialJSON(d, 0, root, false)
-	} else if root == "bonus_command" {
+	} else if root == "bonus_command" || root == "assessment_policy" {
 		e = walkUniqueJSON(d, 0)
 	} else {
 		e = walkJSON(d, 0, root)

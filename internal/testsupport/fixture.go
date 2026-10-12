@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/r404r/team-ledger/internal/assessment"
 	"github.com/r404r/team-ledger/internal/authz"
 	"github.com/r404r/team-ledger/internal/compensation"
 	"github.com/r404r/team-ledger/internal/httpapi"
@@ -33,12 +34,14 @@ type Fixture struct {
 	Repo                                                                   *store.Repository
 	Service                                                                *organization.Service
 	Interviews                                                             *interview.Service
+	Assessment                                                             *assessment.Service
 	Compensation                                                           *compensation.Service
 	Authz                                                                  *authz.Service
 	AuthorityIDs                                                           map[string]string
 	Manager, Reader, Approver                                              Credential
 	FinR, CompW, CompApprover, FinExporter                                 Credential
 	BonusTargetW, BonusW, BonusApprover, BonusPayW, CompensationExtensionW Credential
+	FollowupManager                                                        Credential
 	CursorKey, BonusHMACKey                                                []byte
 	KMS                                                                    *VaultFixture
 	InterviewKMS                                                           *VaultFixture
@@ -106,7 +109,7 @@ func NewFixture(ctx context.Context, backend, dsn string) (_ *Fixture, err error
 	if err != nil {
 		return nil, err
 	}
-	for _, target := range []*Credential{&f.FinR, &f.CompW, &f.CompApprover, &f.FinExporter, &f.BonusTargetW, &f.BonusW, &f.BonusApprover, &f.BonusPayW, &f.CompensationExtensionW} {
+	for _, target := range []*Credential{&f.FinR, &f.CompW, &f.CompApprover, &f.FinExporter, &f.BonusTargetW, &f.BonusW, &f.BonusApprover, &f.BonusPayW, &f.CompensationExtensionW, &f.FollowupManager} {
 		*target, err = credential(f.CSRFKey)
 		if err != nil {
 			return nil, err
@@ -172,6 +175,7 @@ func NewFixture(ctx context.Context, backend, dsn string) (_ *Fixture, err error
 		Now: func() time.Time { return f.Now },
 	}
 	f.Interviews = &interview.Service{Store: f.Repo, Cipher: sensitive.Cipher{Wrapper: interviewWrapper}, DigestKey: f.DigestKey, CursorKey: f.CursorKey, Now: func() time.Time { return f.Now }}
+	f.Assessment = &assessment.Service{Store: f.Repo, DigestKey: f.DigestKey, Now: func() time.Time { return f.Now }}
 	f.Service = &organization.Service{Store: f.Repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, DigestKey: f.DigestKey, CursorKey: f.CursorKey, Now: func() time.Time { return f.Now }}
 	f.Authz = &authz.Service{Store: f.Repo, DigestKey: f.DigestKey, CursorKey: f.CursorKey, Now: func() time.Time { return f.Now }}
 	return f, nil
@@ -223,7 +227,7 @@ func (f *Fixture) seed(ctx context.Context) error {
 		c    Credential
 		org  string
 		mode int
-	}{{f.Owner, f.OrgID, 2}, {f.Observer, f.OrgID, 1}, {f.Stranger, f.OrgID, 0}, {f.OtherOwner, f.OtherOrgID, 2}, {f.Manager, f.OrgID, -1}, {f.Reader, f.OrgID, 0}, {f.Approver, f.OrgID, -1}, {f.FinR, f.OrgID, -1}, {f.CompW, f.OrgID, -1}, {f.CompApprover, f.OrgID, -1}, {f.FinExporter, f.OrgID, -1}, {f.BonusTargetW, f.OrgID, -1}, {f.BonusW, f.OrgID, -1}, {f.BonusApprover, f.OrgID, -1}, {f.BonusPayW, f.OrgID, -1}, {f.CompensationExtensionW, f.OrgID, -1}} {
+	}{{f.Owner, f.OrgID, 2}, {f.Observer, f.OrgID, 1}, {f.Stranger, f.OrgID, 0}, {f.OtherOwner, f.OtherOrgID, 2}, {f.Manager, f.OrgID, -1}, {f.Reader, f.OrgID, 0}, {f.Approver, f.OrgID, -1}, {f.FinR, f.OrgID, -1}, {f.CompW, f.OrgID, -1}, {f.CompApprover, f.OrgID, -1}, {f.FinExporter, f.OrgID, -1}, {f.BonusTargetW, f.OrgID, -1}, {f.BonusW, f.OrgID, -1}, {f.BonusApprover, f.OrgID, -1}, {f.BonusPayW, f.OrgID, -1}, {f.CompensationExtensionW, f.OrgID, -1}, {f.FollowupManager, f.OrgID, -1}} {
 		if err = exec("INSERT INTO subject(org_id,id,active,auth_epoch) VALUES(?,?,1,1)", "INSERT INTO subject(org_id,id,active,auth_epoch) VALUES($1,$2,true,1)", entry.org, entry.c.SubjectID); err != nil {
 			return err
 		}
@@ -327,7 +331,7 @@ func NewHarness(t testing.TB, backend string) *Fixture {
 		t.Fatal(err)
 	}
 	identities.Now = f.Service.Now
-	handler, err := httpapi.New(f.Service, f.Interviews, f.Compensation, f.Authz, identities, f.CSRFKey, "https://"+server.Listener.Addr().String(), dir)
+	handler, err := httpapi.New(f.Service, f.Interviews, f.Assessment, f.Compensation, f.Authz, identities, f.CSRFKey, "https://"+server.Listener.Addr().String(), dir)
 	if err != nil {
 		server.Close()
 		t.Fatal(err)

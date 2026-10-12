@@ -18,8 +18,8 @@ func (f *Fixture) seedInterviews(ctx context.Context, tx *sql.Tx) error {
 		return err
 	}
 	type pair struct{ capability, category string }
-	pairs := make([]pair, 0, 17)
-	pairs = append(pairs, pair{"interview.read", "metadata"}, pair{"interview.write", "metadata"}, pair{"action.read", "shared"}, pair{"action.write", "shared"}, pair{"sensitive.export", "metadata"})
+	pairs := make([]pair, 0, 18)
+	pairs = append(pairs, pair{"interview.read", "metadata"}, pair{"interview.write", "metadata"}, pair{"interview_policy.manage", "metadata"}, pair{"action.read", "shared"}, pair{"action.write", "shared"}, pair{"sensitive.export", "metadata"})
 	for _, category := range [...]string{"shared", "manager_private", "hr_confidential"} {
 		for _, capability := range [...]string{"note.read", "note.write", "note.publish", "sensitive.export"} {
 			pairs = append(pairs, pair{capability, category})
@@ -31,7 +31,7 @@ func (f *Fixture) seedInterviews(ctx context.Context, tx *sql.Tx) error {
 		if err := exec(
 			"INSERT INTO delegation_authority(id,org_id,manager_subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,mfa_required,approved_by,approved_at,policy_version) VALUES(?,?,?,?,?,'org',?,'interview_followup',?,?,?,?,?,?)",
 			"INSERT INTO delegation_authority(id,org_id,manager_subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,mfa_required,approved_by,approved_at,policy_version) VALUES($1,$2,$3,$4,$5,'org',$6,'interview_followup',$7,$8,$9,$10,$11,$12)",
-			id, f.OrgID, f.Manager.SubjectID, p.capability, p.category, f.OrgID, f.Repo.BindTime(f.Now.Add(-time.Hour)), f.Repo.BindTime(f.Now.Add(24*time.Hour)), p.capability == "note.publish" || p.capability == "sensitive.export", f.Approver.SubjectID, f.Repo.BindTime(f.Now.Add(-2*time.Hour)), "fixture-policy-r3-explicit"); err != nil {
+			id, f.OrgID, f.Manager.SubjectID, p.capability, p.category, f.OrgID, f.Repo.BindTime(f.Now.Add(-time.Hour)), f.Repo.BindTime(f.Now.Add(24*time.Hour)), p.capability == "note.publish" || p.capability == "sensitive.export" || p.capability == "interview_policy.manage", f.Approver.SubjectID, f.Repo.BindTime(f.Now.Add(-2*time.Hour)), "fixture-policy-r3-explicit"); err != nil {
 			return err
 		}
 	}
@@ -45,6 +45,7 @@ func (f *Fixture) seedInterviews(ctx context.Context, tx *sql.Tx) error {
 		{f.Reader, f.OrgID, false},
 		{f.Stranger, f.OrgID, false},
 		{f.Manager, f.OrgID, false},
+		{f.FollowupManager, f.OrgID, true},
 	} {
 		assigned := make(map[string]bool, 8)
 		for _, p := range pairs {
@@ -62,7 +63,7 @@ func (f *Fixture) seedInterviews(ctx context.Context, tx *sql.Tx) error {
 			}
 			// These initial fixture facts follow the existing trusted bootstrap
 			// convention; explicit sharing still requires a real Issue approval.
-			mfa := p.capability == "note.publish" || p.capability == "sensitive.export"
+			mfa := p.capability == "note.publish" || p.capability == "sensitive.export" || p.capability == "interview_policy.manage"
 			if err := exec(
 				"INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required) VALUES(?,?,?,?,?,'org',?,'interview_followup',?,?,0,0,?)",
 				"INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required) VALUES($1,$2,$3,$4,$5,'org',$6,'interview_followup',$7,$8,false,false,$9)",

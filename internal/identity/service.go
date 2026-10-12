@@ -182,7 +182,7 @@ func AllowedReturn(raw string) bool {
 
 // AllowedStepUpAction records intent only; recent MFA remains session-wide.
 func AllowedStepUpAction(action string) bool {
-	return action == "pii.write" || action == "access_grant.manage" || action == "note.publish" || action == "sensitive.export" || authz.SupportedPair(action, "financial", "compensation_management")
+	return action == "pii.write" || action == "access_grant.manage" || action == "note.publish" || action == "sensitive.export" || action == "interview_policy.manage" || authz.SupportedPair(action, "financial", "compensation_management")
 }
 func randomToken() (string, []byte, error) {
 	raw := make([]byte, 32)

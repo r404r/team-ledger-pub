@@ -164,7 +164,7 @@ func run() error {
 			return err
 		}
 	}
-	financialActors := make(map[string]any, 9)
+	financialActors := make(map[string]any, 10)
 	for _, role := range []struct {
 		name       string
 		credential testsupport.Credential
@@ -173,7 +173,7 @@ func run() error {
 		{"CompApprover", f.CompApprover}, {"FinExporter", f.FinExporter},
 		{"BonusTargetW", f.BonusTargetW}, {"BonusW", f.BonusW},
 		{"BonusApprover", f.BonusApprover}, {"BonusPayW", f.BonusPayW},
-		{"CompensationExtensionW", f.CompensationExtensionW},
+		{"CompensationExtensionW", f.CompensationExtensionW}, {"FollowupManager", f.FollowupManager},
 	} {
 		path := filepath.Join(*directory, role.name+".json")
 		actor, err := json.Marshal(map[string]string{
