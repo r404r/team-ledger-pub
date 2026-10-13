@@ -57,7 +57,7 @@ func approvalFiles(t *testing.T, org string, version int64, keyID, approver stri
 func TestBonusHMACCLIReindexesExistingEncryptedPayment(t *testing.T) {
 	f := testsupport.NewHarness(t, "sqlite")
 	ctx := context.Background()
-	created, err := f.Service.Create(ctx, f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{DisplayName: "SYNTHETIC_BONUS_CLI"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
+	created, err := f.Service.Create(ctx, f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{LocalName: "SYNTHETIC_BONUS_CLI"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
 	if err != nil {
 		t.Fatal(err)
 	}

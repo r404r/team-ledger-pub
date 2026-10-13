@@ -7,10 +7,12 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/r404r/team-ledger/internal/authz"
 	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/sensitive"
 	"github.com/r404r/team-ledger/internal/value"
@@ -180,14 +182,12 @@ func (s *Service) ChangeWorkforce(ctx context.Context, request Request, org stri
 	if !value.ValidID(org) || !value.ValidID(request.Key) || request.Purpose != "organization_management" || !validWorkforceChange(command) {
 		return WorkforceChangeResult{}, fault.Invalid
 	}
-	snapshot, err := s.authorize(ctx, s.Store, request, org, "", operation)
+	snapshot, err := s.authenticateWorkforceRoot(ctx, s.Store, request, org)
 	if err != nil {
 		return WorkforceChangeResult{}, s.denied(ctx, request, snapshot, operation, err)
 	}
-	needsPII := workforceChangesNeedPII(command)
-	if !snapshot.Allows("organization.write", "metadata", "", request.Purpose, s.clock()) ||
-		needsPII && (!snapshot.Allows("pii.read", "pii", "", request.Purpose, s.clock()) || !snapshot.Allows("pii.write", "pii", "", request.Purpose, s.clock())) {
-		return WorkforceChangeResult{}, s.denied(ctx, request, snapshot, operation, fault.Forbidden)
+	if err = s.authorizeWorkforceEndpoints(ctx, s.Store, request, snapshot, command); err != nil {
+		return WorkforceChangeResult{}, s.denied(ctx, request, snapshot, operation, err)
 	}
 	expectedCatalog, _ := value.Revision(command.ExpectedCatalogRevision)
 	expectedGraph, _ := value.Revision(command.ExpectedGraphRevision)
@@ -260,13 +260,12 @@ func (s *Service) ChangeWorkforce(ctx context.Context, request Request, org stri
 		if err := tx.LockSubjects(ctx, org, []string{snapshot.SubjectID}); err != nil {
 			return err
 		}
-		current, err := s.authorize(ctx, tx, request, org, "", operation)
+		current, err := s.authenticateWorkforceRoot(ctx, tx, request, org)
 		if err != nil {
 			return err
 		}
-		if !current.Allows("organization.write", "metadata", "", request.Purpose, s.clock()) ||
-			needsPII && (!current.Allows("pii.read", "pii", "", request.Purpose, s.clock()) || !current.Allows("pii.write", "pii", "", request.Purpose, s.clock())) {
-			return fault.Forbidden
+		if err = s.authorizeWorkforceEndpoints(ctx, tx, request, current, command); err != nil {
+			return err
 		}
 		if receipt, found, err := tx.WorkforceReceipt(ctx, org, current.SubjectID, operation, request.Key); err != nil {
 			return err
@@ -297,6 +296,72 @@ func (s *Service) ChangeWorkforce(ctx context.Context, request Request, org stri
 		return WorkforceChangeResult{}, s.denied(ctx, request, snapshot, operation, err)
 	}
 	return result, nil
+}
+
+func (s *Service) authenticateWorkforceRoot(ctx context.Context, reader Reader, request Request, org string) (authz.Snapshot, error) {
+	if len(request.TokenHash) != 32 || reader == nil {
+		return authz.Snapshot{}, fault.Unauthenticated
+	}
+	snapshot, err := reader.Security(ctx, request.TokenHash, "", "")
+	if err != nil {
+		return snapshot, err
+	}
+	if !snapshot.Valid(s.clock()) {
+		return snapshot, fault.Unauthenticated
+	}
+	if snapshot.OrgID != org {
+		return snapshot, fault.NotFound
+	}
+	return snapshot, nil
+}
+
+func (s *Service) authorizeWorkforceEndpoints(ctx context.Context, reader Reader, request Request, root authz.Snapshot, command WorkforceChangeCommand) error {
+	type requirement struct {
+		write    bool
+		writePII bool
+		readOnly bool
+	}
+	requirements := make(map[string]requirement, len(command.Changes))
+	for _, item := range command.Changes {
+		required := requirements[item.EmployeeID]
+		required.write = true
+		required.writePII = required.writePII || item.Kind == "identifier" || item.Kind == "education" || item.Kind == "job_assignment" && item.Position != nil
+		requirements[item.EmployeeID] = required
+		if item.ManagerEmployeeID != nil {
+			manager := requirements[*item.ManagerEmployeeID]
+			if *item.ManagerEmployeeID != item.EmployeeID {
+				manager.readOnly = true
+			}
+			requirements[*item.ManagerEmployeeID] = manager
+		}
+	}
+	employees := make([]string, 0, len(requirements))
+	for employee := range requirements {
+		employees = append(employees, employee)
+	}
+	sort.Strings(employees)
+	for _, employee := range employees {
+		snapshot, err := reader.Security(ctx, request.TokenHash, "", employee)
+		if err != nil {
+			return err
+		}
+		if snapshot.SubjectID != root.SubjectID || snapshot.AuthEpoch != root.AuthEpoch {
+			return fault.Forbidden
+		}
+		required := requirements[employee]
+		if required.readOnly && !snapshot.Allows("organization.read", "metadata", employee, request.Purpose, s.clock()) {
+			return fault.Forbidden
+		}
+		if required.write {
+			if !snapshot.Allows("organization.write", "metadata", employee, request.Purpose, s.clock()) {
+				return fault.Forbidden
+			}
+			if required.writePII && (!snapshot.Allows("pii.read", "pii", employee, request.Purpose, s.clock()) || !snapshot.Allows("pii.write", "pii", employee, request.Purpose, s.clock())) {
+				return fault.Forbidden
+			}
+		}
+	}
+	return nil
 }
 
 func workforceChangesNeedPII(command WorkforceChangeCommand) bool {

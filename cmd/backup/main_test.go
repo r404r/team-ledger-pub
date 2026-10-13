@@ -17,7 +17,7 @@ import (
 
 func TestSQLiteBackupRestoreChecksIndependentKeysAndRevokesSessions(t *testing.T) {
 	f := testsupport.NewHarness(t, "sqlite")
-	if _, err := f.Service.Create(context.Background(), f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{DisplayName: "BACKUP_KEY_PROBE"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}}); err != nil {
+	if _, err := f.Service.Create(context.Background(), f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{LocalName: "BACKUP_KEY_PROBE"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}}); err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()

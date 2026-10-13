@@ -38,7 +38,7 @@ func createCorrespondenceEmployee(t *testing.T, f *testsupport.Fixture, otherOrg
 	if otherOrg {
 		owner, org = f.OtherOwner, f.OtherOrgID
 	}
-	made, err := f.Service.Create(context.Background(), f.Request(owner), org, organization.CreateCommand{Profile: organization.Profile{DisplayName: "SYNTHETIC_CORRESPONDENCE_EMPLOYEE"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
+	made, err := f.Service.Create(context.Background(), f.Request(owner), org, organization.CreateCommand{Profile: organization.Profile{LocalName: "SYNTHETIC_CORRESPONDENCE_EMPLOYEE"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
 	if err != nil {
 		t.Fatal(err)
 	}

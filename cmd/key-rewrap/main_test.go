@@ -47,7 +47,7 @@ func TestVerifyRequiresCanonicalTrustedBoundedApproval(t *testing.T) {
 func TestRunRewrapsRealEnvelopeThroughVaultEndpoints(t *testing.T) {
 	f := testsupport.NewHarness(t, "sqlite")
 	ctx := context.Background()
-	if _, err := f.Service.Create(ctx, f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{DisplayName: "CLI_REWRAP"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}}); err != nil {
+	if _, err := f.Service.Create(ctx, f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{LocalName: "CLI_REWRAP"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}}); err != nil {
 		t.Fatal(err)
 	}
 	public, private, err := ed25519.GenerateKey(rand.Reader)

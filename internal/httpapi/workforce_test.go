@@ -1,10 +1,12 @@
 package httpapi_test
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/r404r/team-ledger/internal/organization"
 	"github.com/r404r/team-ledger/internal/testsupport"
@@ -234,6 +236,42 @@ func TestAPIEmployeeLifecycleEndAppendsImmutableCorrection(t *testing.T) {
 			if result.GraphRevision != "2" || result.EmployeeRevisions[employee.ID] != "2" || result.Items[0].ID == lifecycleID || f.Count(t, "employee_lifecycle_history") != 2 {
 				t.Fatalf("lifecycle end result = %#v", result)
 			}
+		})
+	}
+}
+
+func TestAPIWorkforceChangeAuthorizesEveryEmployeeEndpoint(t *testing.T) {
+	for _, backend := range []string{"sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) {
+			f := testsupport.NewHarness(t, backend)
+			var allowed, denied organization.Result
+			createPath := "/api/v1/orgs/" + f.OrgID + "/employees"
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, createPath, createJSON, value.NewID()), http.StatusCreated, &allowed)
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, createPath, createJSON, value.NewID()), http.StatusCreated, &denied)
+			ctx := context.Background()
+			if err := f.Exec(ctx, "DELETE FROM capability_assignment WHERE subject_id=?", "DELETE FROM capability_assignment WHERE subject_id=$1", f.Owner.SubjectID); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Exec(ctx, "UPDATE access_grant SET revoked=1 WHERE subject_id=?", "UPDATE access_grant SET revoked=true WHERE subject_id=$1", f.Owner.SubjectID); err != nil {
+				t.Fatal(err)
+			}
+			for _, capability := range []string{"organization.read", "organization.write", "pii.read", "pii.write"} {
+				category := "pii"
+				if capability == "organization.read" || capability == "organization.write" {
+					category = "metadata"
+				}
+				if err := f.Exec(ctx, "INSERT INTO capability_assignment(org_id,subject_id,capability,scope_kind,scope_id,employee_id) VALUES(?,?,?,'employee',?,?)", "INSERT INTO capability_assignment(org_id,subject_id,capability,scope_kind,scope_id,employee_id) VALUES($1,$2,$3,'employee',$4,$5)", f.OrgID, f.Owner.SubjectID, capability, allowed.ID, allowed.ID); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.Exec(ctx, "INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,purpose,valid_from,expires_at,mfa_required) VALUES(?,?,?,?,?,'employee',?,?,'organization_management',?,?,1)", "INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,purpose,valid_from,expires_at,mfa_required) VALUES($1,$2,$3,$4,$5,'employee',$6,$7,'organization_management',$8,$9,true)", value.NewID(), f.OrgID, f.Owner.SubjectID, capability, category, allowed.ID, allowed.ID, f.Repo.BindTime(f.Now.Add(-time.Hour)), f.Repo.BindTime(f.Now.Add(time.Hour))); err != nil {
+					t.Fatal(err)
+				}
+			}
+			path := "/api/v1/orgs/" + f.OrgID + "/workforce-changes"
+			allowedBody := fmt.Sprintf(`{"expected_catalog_revision":"1","expected_graph_revision":"1","expected_employee_revisions":{%q:"1"},"changes":[{"action":"add","kind":"identifier","employee_id":%q,"staff_code":"SCOPE-1","valid_from":"2026-10-11"}]}`, allowed.ID, allowed.ID)
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, allowedBody, value.NewID()), http.StatusCreated, nil)
+			deniedBody := fmt.Sprintf(`{"expected_catalog_revision":"1","expected_graph_revision":"2","expected_employee_revisions":{%q:"1"},"changes":[{"action":"add","kind":"identifier","employee_id":%q,"staff_code":"SCOPE-2","valid_from":"2026-10-11"}]}`, denied.ID, denied.ID)
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, deniedBody, value.NewID()), http.StatusForbidden, nil)
 		})
 	}
 }
