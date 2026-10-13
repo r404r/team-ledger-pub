@@ -21,25 +21,31 @@ type legalEntityLabel struct {
 	DisplayName string `json:"display_name"`
 }
 
-func (s *Service) Catalogs(ctx context.Context, request Request, org string, includeLabels bool) (WorkforceCatalogs, error) {
-	if !value.ValidID(org) || request.Purpose != "organization_management" {
+func (s *Service) Catalogs(ctx context.Context, request Request, org string, query WorkforceCatalogQuery) (WorkforceCatalogs, error) {
+	if !value.ValidID(org) || request.Purpose != "organization_management" || !validCatalogQuery(query) {
 		return WorkforceCatalogs{}, fault.Invalid
 	}
 	snapshot, err := s.authorize(ctx, s.Store, request, org, "", "OP-ORG-09")
 	if err != nil {
 		return WorkforceCatalogs{}, s.denied(ctx, request, snapshot, "OP-ORG-09", err)
 	}
-	if includeLabels && !snapshot.Allows("pii.read", "pii", "", request.Purpose, s.clock()) {
-		return WorkforceCatalogs{}, s.denied(ctx, request, snapshot, "OP-ORG-09", fault.Forbidden)
-	}
 	day, err := s.authorizationDay(snapshot)
 	if err != nil {
 		return WorkforceCatalogs{}, err
 	}
-	catalogs, err := s.Store.WorkforceCatalogs(ctx, org, day)
+	if query.AsOf == "" {
+		query.AsOf = day
+	}
+	catalogs, err := s.Store.WorkforceCatalogs(ctx, org, query.AsOf)
 	if err != nil {
 		return WorkforceCatalogs{}, err
 	}
+	catalogs.AsOf = query.AsOf
+	if query.Limit == 0 {
+		query.Limit = 50
+	}
+	filterCatalogs(&catalogs, query.Kind, query.Limit)
+	includeLabels := snapshot.Allows("pii.read", "pii", "", request.Purpose, s.clock())
 	if !includeLabels {
 		for i := range catalogs.LegalEntities {
 			catalogs.LegalEntities[i].LabelPayloadID = ""
@@ -97,6 +103,60 @@ func (s *Service) openWorkforcePayload(ctx context.Context, org, employee, recor
 		return fault.Unavailable
 	}
 	return nil
+}
+
+func validCatalogQuery(query WorkforceCatalogQuery) bool {
+	if query.AsOf != "" && !value.ValidDate(query.AsOf) || query.History || query.Cursor != "" || query.Limit < 0 || query.Limit > 100 {
+		return false
+	}
+	return oneOf(query.Kind, "", "legal_entity", "location", "business_group", "division", "department", "education_level", "job_family", "career_level")
+}
+
+func filterCatalogs(catalogs *WorkforceCatalogs, kind string, limit int) {
+	if kind != "" && kind != "legal_entity" {
+		catalogs.LegalEntities = []LegalEntityView{}
+	}
+	if kind != "" && kind != "location" {
+		catalogs.Locations = []string{}
+	}
+	if kind == "business_group" || kind == "division" || kind == "department" {
+		filtered := make([]OrgUnitView, 0, len(catalogs.OrgUnits))
+		for _, item := range catalogs.OrgUnits {
+			if item.Kind == kind {
+				filtered = append(filtered, item)
+			}
+		}
+		catalogs.OrgUnits = filtered
+	} else if kind != "" {
+		catalogs.OrgUnits = []OrgUnitView{}
+	}
+	if kind != "" && kind != "education_level" {
+		catalogs.EducationLevels = []EducationLevelView{}
+	}
+	if kind != "" && kind != "job_family" {
+		catalogs.JobFamilies = []JobFamilyView{}
+	}
+	if kind != "" && kind != "career_level" {
+		catalogs.CareerLevels = []CareerLevelView{}
+	}
+	if len(catalogs.LegalEntities) > limit {
+		catalogs.LegalEntities = catalogs.LegalEntities[:limit]
+	}
+	if len(catalogs.Locations) > limit {
+		catalogs.Locations = catalogs.Locations[:limit]
+	}
+	if len(catalogs.OrgUnits) > limit {
+		catalogs.OrgUnits = catalogs.OrgUnits[:limit]
+	}
+	if len(catalogs.EducationLevels) > limit {
+		catalogs.EducationLevels = catalogs.EducationLevels[:limit]
+	}
+	if len(catalogs.JobFamilies) > limit {
+		catalogs.JobFamilies = catalogs.JobFamilies[:limit]
+	}
+	if len(catalogs.CareerLevels) > limit {
+		catalogs.CareerLevels = catalogs.CareerLevels[:limit]
+	}
 }
 
 func validCatalogLabel(label string) bool {

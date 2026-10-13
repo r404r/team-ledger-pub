@@ -64,9 +64,18 @@ type EducationLevelView struct {
 	Rank int    `json:"rank"`
 }
 
+type WorkforceCatalogQuery struct {
+	Kind    string
+	AsOf    string
+	History bool
+	Cursor  string
+	Limit   int
+}
+
 type WorkforceCatalogs struct {
 	CatalogRevision string               `json:"catalog_revision"`
 	GraphRevision   string               `json:"graph_revision"`
+	AsOf            string               `json:"as_of"`
 	LegalEntities   []LegalEntityView    `json:"legal_entities"`
 	Locations       []string             `json:"locations"`
 	OrgUnits        []OrgUnitView        `json:"org_units"`

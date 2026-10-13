@@ -76,11 +76,18 @@ func (h *handler) structureRoute(w http.ResponseWriter, r *http.Request, req org
 	}
 	if catalogs {
 		q, err := url.ParseQuery(r.URL.RawQuery)
-		if err != nil || !singleQuery(q, []string{"include_labels"}) || (q.Has("include_labels") && q.Get("include_labels") != "true" && q.Get("include_labels") != "false") {
+		if err != nil || !singleQuery(q, []string{"kind", "as_of", "history", "cursor", "limit"}) {
 			h.fail(w, fault.Invalid, req.RequestID)
 			return true
 		}
-		result, err := h.service.Catalogs(r.Context(), req, parts[1], q.Get("include_labels") == "true")
+		limit, err := queryBound(q, "limit", 50, 1, 100)
+		historyValue := q.Get("history")
+		if err != nil || historyValue != "" && historyValue != "true" && historyValue != "false" {
+			h.fail(w, fault.Invalid, req.RequestID)
+			return true
+		}
+		query := organization.WorkforceCatalogQuery{Kind: q.Get("kind"), AsOf: q.Get("as_of"), History: historyValue == "true", Cursor: q.Get("cursor"), Limit: limit}
+		result, err := h.service.Catalogs(r.Context(), req, parts[1], query)
 		if err != nil {
 			h.fail(w, err, req.RequestID)
 		} else {
