@@ -116,7 +116,72 @@ docker volume inspect team-ledger-production-keys
 docker volume inspect team-ledger-production-audit
 ```
 
-`docker compose down -v`会删除业务数据、在线keyd材料和audit身份，存在持久化需求时**不得执行**。丢失audit signer不会自动生成替代key：receiver启动失败；DB中已提交ledger/receipt仍在，但forwarder缺少相应公钥时拒绝ack。keyd和audit材料均须与数据库备份分离保管；root/keyring离线介质由DEV-021另行固定。
+`docker compose down -v`会删除业务数据、在线keyd材料和audit身份，存在持久化需求时**不得执行**。丢失audit signer不会自动生成替代key：receiver启动失败；DB中已提交ledger/receipt仍在，但forwarder缺少相应公钥时拒绝ack。keyd和audit材料均须与数据库备份分离保管。
+
+### 3.1 root/keyring双份离线介质
+
+该流程完全本地运行，不调用KMS、Vault、网络或数据库。每次export必须使用两个不同RAW32介质密钥；密钥文件不得放在对应介质上。A/B archive共享同一export UUID和canonical inventory，但分别使用随机nonce认证加密。inventory含root/keyring hash、material generation、全部历史/active/staged key entry及状态、每domain active pointer、源文件metadata、实际离线进程UID/host摘要和每个domain/version的known-answer probe；不含明文key。archive本身不含DB、audit/OIDC私钥或业务备份，因此不能单独恢复服务。
+
+先把A/B挂载为两个独立、由keyd UID拥有且`0700`的可移动文件系统；应用会比较输出父目录的filesystem device ID，相同设备必定拒绝。软件不能证明地理分离，运维仍须确认两个实际介质并分开地点保管。`.env.docker`中的相对路径只是占位，位于同一磁盘时不能export。受保护配置目录及隔离restore父目录同样使用keyd UID。以下命令假设A/B已经分别挂载；生产介质密钥应由独立保管流程生成/解锁：
+
+```bash
+set -eu
+set -a; . ./.env.docker; set +a
+sudo install -d -o "$TEAMLEDGER_KEYD_UID" -g "$TEAMLEDGER_GID" -m 0700 \
+  docker/key-offline "$TEAMLEDGER_OFFLINE_RESTORE_DIR"
+sudo chown "$TEAMLEDGER_KEYD_UID:$TEAMLEDGER_GID" \
+  "$TEAMLEDGER_OFFLINE_MEDIA_A" "$TEAMLEDGER_OFFLINE_MEDIA_B"
+sudo chmod 0700 "$TEAMLEDGER_OFFLINE_MEDIA_A" "$TEAMLEDGER_OFFLINE_MEDIA_B"
+test "$(stat -c %d "$TEAMLEDGER_OFFLINE_MEDIA_A")" != \
+  "$(stat -c %d "$TEAMLEDGER_OFFLINE_MEDIA_B")"
+tmp_key_dir="$(mktemp -d "${XDG_RUNTIME_DIR:-$HOME}/teamledger-offline-keys.XXXXXX")"
+trap 'rm -rf -- "$tmp_key_dir"' EXIT HUP INT TERM
+chmod 0700 "$tmp_key_dir"
+(umask 077; openssl rand 32 > "$tmp_key_dir/media-a.key")
+(umask 077; openssl rand 32 > "$tmp_key_dir/media-b.key")
+sudo install -o "$TEAMLEDGER_KEYD_UID" -g "$TEAMLEDGER_GID" -m 0600 \
+  "$tmp_key_dir/media-a.key" docker/key-offline/media-a.key
+sudo install -o "$TEAMLEDGER_KEYD_UID" -g "$TEAMLEDGER_GID" -m 0600 \
+  "$tmp_key_dir/media-b.key" docker/key-offline/media-b.key
+rm -rf -- "$tmp_key_dir"
+trap - EXIT HUP INT TERM
+```
+export前停止整个部署并确认没有key writer；在线keyd仍持有`.lock`时命令必定拒绝。命令从固定descriptor在exclusive OFD lock下取得一个generation snapshot，分别以同目录temp写入、文件/目录`fsync`、`RENAME_NOREPLACE`、父目录`fsync`发布，绝不覆盖同名archive。rename后的提交`fsync`失败会尝试rename回temp并持久化回滚；完整回滚时CLI在stderr返回`status=failed_rolled_back`，回滚rename或持久化失败时返回`status=failed_indeterminate`和`keep_keyd_stopped_and_inspect_requested_paths`动作，不输出路径或密钥。任何失败都必须保持keyd停止，检查并移除本次指定的两个archive路径/restore目标后才可重试，不能把它们登记为有效副本或启动恢复keyd。
+
+```bash
+docker compose --env-file .env.docker down
+docker compose --env-file .env.docker --profile offline-keys run --rm --no-deps \
+  key-offline-export /app/teamledger-keyctl-local offline-export \
+  -key-dir /var/lib/teamledger-keys/material \
+  -archive-a /media/a/teamledger-keys-2026-10-14.tlk \
+  -archive-b /media/b/teamledger-keys-2026-10-14.tlk \
+  -media-key-a-file /run/teamledger-key-offline/media-a.key \
+  -media-key-b-file /run/teamledger-key-offline/media-b.key \
+  -host-identity-file /run/teamledger-host-identity
+```
+
+`status=exported_unverified`只表示两份密文已发布，不表示本次副本有效。卸载介质，在隔离主机把A/B分别只读挂载后执行pair verify；verify容器没有在线key volume，且两个介质均为只读挂载。只有返回`status=verified_pair`且export UUID/generation/inventory一致时，才登记该次export并把A/B断电、分开地点保管。任一失败或仅一份成功，整次export作废并销毁孤立archive：
+
+```bash
+docker compose --env-file .env.docker --profile offline-keys run --rm --no-deps \
+  key-offline-verify /app/teamledger-keyctl-local offline-verify-pair \
+  -archive-a /media/a/teamledger-keys-2026-10-14.tlk \
+  -archive-b /media/b/teamledger-keys-2026-10-14.tlk \
+  -media-key-a-file /run/teamledger-key-offline/media-a.key \
+  -media-key-b-file /run/teamledger-key-offline/media-b.key
+```
+
+隔离恢复只选一份已验证介质，并只允许不存在的目标目录。命令在同父目录构造完整`root.key`/`keyring.bin`/`.lock`，逐文件及目录`fsync`后以`RENAME_NOREPLACE`原子安装；现存目标、错密钥、AEAD/sidecar/hash/state/pointer/probe不符均拒绝。随后以恢复目录启动真实keyd做ready probe，但不得直接替换线上volume：
+
+```bash
+docker compose --env-file .env.docker --profile offline-keys run --rm --no-deps \
+  key-offline-verify /app/teamledger-keyctl-local offline-restore \
+  -archive /media/a/teamledger-keys-2026-10-14.tlk \
+  -media-key-file /run/teamledger-key-offline/media-a.key \
+  -target-key-dir /restore/teamledger-keys
+```
+
+如同时恢复数据库，另用既有隔离restore核对`crypto_control` generation、keyring digest、active pointers、A1/A2 ack及全部wrapper/MAC历史依赖；任何不匹配都不得ready或猜测新key。介质采购、远程保管、自动解锁、切流、RPO/RTO/PITR不在当前范围。
 
 ### 4. Audit材料轮换与PostgreSQL角色
 

@@ -297,6 +297,44 @@ services:
       - no-new-privileges:true
     restart: "no"
 
+  key-offline-export:
+    <<: *team-ledger-image
+    profiles: ["offline-keys"]
+    user: "${TEAMLEDGER_KEYD_UID:?set TEAMLEDGER_KEYD_UID}:${TEAMLEDGER_GID:?set TEAMLEDGER_GID}"
+    command: ["/bin/true"]
+    volumes:
+      - team-ledger-keys:/var/lib/teamledger-keys
+      - ./docker/key-offline:/run/teamledger-key-offline:ro
+      - ${TEAMLEDGER_OFFLINE_MEDIA_A:-./offline-media-a}:/media/a
+      - ${TEAMLEDGER_OFFLINE_MEDIA_B:-./offline-media-b}:/media/b
+      - ${TEAMLEDGER_OFFLINE_RESTORE_DIR:-./offline-restore}:/restore
+      - /etc/machine-id:/run/teamledger-host-identity:ro
+    read_only: true
+    tmpfs:
+      - /tmp:mode=0700,uid=${TEAMLEDGER_KEYD_UID:?set TEAMLEDGER_KEYD_UID},gid=${TEAMLEDGER_GID:?set TEAMLEDGER_GID}
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  key-offline-verify:
+    <<: *team-ledger-image
+    profiles: ["offline-keys"]
+    user: "${TEAMLEDGER_KEYD_UID:?set TEAMLEDGER_KEYD_UID}:${TEAMLEDGER_GID:?set TEAMLEDGER_GID}"
+    command: ["/bin/true"]
+    volumes:
+      - ./docker/key-offline:/run/teamledger-key-offline:ro
+      - ${TEAMLEDGER_OFFLINE_MEDIA_A:-./offline-media-a}:/media/a:ro
+      - ${TEAMLEDGER_OFFLINE_MEDIA_B:-./offline-media-b}:/media/b:ro
+      - ${TEAMLEDGER_OFFLINE_RESTORE_DIR:-./offline-restore}:/restore
+    read_only: true
+    tmpfs:
+      - /tmp:mode=0700,uid=${TEAMLEDGER_KEYD_UID:?set TEAMLEDGER_KEYD_UID},gid=${TEAMLEDGER_GID:?set TEAMLEDGER_GID}
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
 volumes:
   team-ledger-data:
     name: ${TEAMLEDGER_DATA_VOLUME:-team-ledger-data}

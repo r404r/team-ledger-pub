@@ -83,9 +83,117 @@ func status(args []string) error {
 	return json.NewEncoder(os.Stdout).Encode(state)
 }
 
+func readOfflineInputs(keyAFile, keyBFile, hostFile string) ([]byte, []byte, []byte, error) {
+	keyA, err := configfile.Read(keyAFile, 32, true)
+	if err != nil || len(keyA) != 32 {
+		clear(keyA)
+		return nil, nil, nil, errors.New("invalid media key A")
+	}
+	keyB, err := configfile.Read(keyBFile, 32, true)
+	if err != nil || len(keyB) != 32 {
+		clear(keyA)
+		clear(keyB)
+		return nil, nil, nil, errors.New("invalid media key B")
+	}
+	host, err := configfile.Read(hostFile, 4096, false)
+	if err != nil {
+		clear(keyA)
+		clear(keyB)
+		clear(host)
+		return nil, nil, nil, errors.New("invalid host identity")
+	}
+	return keyA, keyB, host, nil
+}
+
+func offlineExport(args []string) error {
+	set := flag.NewFlagSet("offline-export", flag.ContinueOnError)
+	set.SetOutput(os.Stderr)
+	keyDir := set.String("key-dir", "", "offline source key directory")
+	archiveA := set.String("archive-a", "", "absolute archive path on media A")
+	archiveB := set.String("archive-b", "", "absolute archive path on media B")
+	keyAFile := set.String("media-key-a-file", "", "protected RAW32 media A key")
+	keyBFile := set.String("media-key-b-file", "", "protected RAW32 media B key")
+	hostFile := set.String("host-identity-file", "/etc/machine-id", "stable public host identity file")
+	if err := set.Parse(args); err != nil || set.NArg() != 0 || *keyDir == "" || *archiveA == "" || *archiveB == "" || *keyAFile == "" || *keyBFile == "" {
+		return errors.New("invalid offline export arguments")
+	}
+	keyA, keyB, host, err := readOfflineInputs(*keyAFile, *keyBFile, *hostFile)
+	if err != nil {
+		return err
+	}
+	defer clear(keyA)
+	defer clear(keyB)
+	defer clear(host)
+	inventory, err := sensitive.ExportOfflinePair(*keyDir, *archiveA, *archiveB, keyA, keyB, host, time.Now().UTC().Truncate(time.Microsecond))
+	if err != nil {
+		return fmt.Errorf("offline export failed: %w", err)
+	}
+	return json.NewEncoder(os.Stdout).Encode(struct {
+		Status    string                     `json:"status"`
+		Inventory sensitive.OfflineInventory `json:"inventory"`
+	}{"exported_unverified", inventory})
+}
+
+func offlineVerifyPair(args []string) error {
+	set := flag.NewFlagSet("offline-verify-pair", flag.ContinueOnError)
+	set.SetOutput(os.Stderr)
+	archiveA := set.String("archive-a", "", "absolute read-only archive path on media A")
+	archiveB := set.String("archive-b", "", "absolute read-only archive path on media B")
+	keyAFile := set.String("media-key-a-file", "", "protected RAW32 media A key")
+	keyBFile := set.String("media-key-b-file", "", "protected RAW32 media B key")
+	if err := set.Parse(args); err != nil || set.NArg() != 0 || *archiveA == "" || *archiveB == "" || *keyAFile == "" || *keyBFile == "" {
+		return errors.New("invalid offline verification arguments")
+	}
+	keyA, err := configfile.Read(*keyAFile, 32, true)
+	if err != nil || len(keyA) != 32 {
+		clear(keyA)
+		return errors.New("invalid media key A")
+	}
+	defer clear(keyA)
+	keyB, err := configfile.Read(*keyBFile, 32, true)
+	if err != nil || len(keyB) != 32 {
+		clear(keyB)
+		return errors.New("invalid media key B")
+	}
+	defer clear(keyB)
+	inventory, err := sensitive.VerifyOfflinePair(*archiveA, *archiveB, keyA, keyB)
+	if err != nil {
+		return errors.New("offline pair verification failed")
+	}
+	return json.NewEncoder(os.Stdout).Encode(struct {
+		Status    string                     `json:"status"`
+		Inventory sensitive.OfflineInventory `json:"inventory"`
+	}{"verified_pair", inventory})
+}
+
+func offlineRestore(args []string) error {
+	set := flag.NewFlagSet("offline-restore", flag.ContinueOnError)
+	set.SetOutput(os.Stderr)
+	archive := set.String("archive", "", "absolute verified archive path")
+	mediaKeyFile := set.String("media-key-file", "", "protected RAW32 media key")
+	targetDir := set.String("target-key-dir", "", "nonexistent isolated target key directory")
+	if err := set.Parse(args); err != nil || set.NArg() != 0 || *archive == "" || *mediaKeyFile == "" || *targetDir == "" {
+		return errors.New("invalid offline restore arguments")
+	}
+	key, err := configfile.Read(*mediaKeyFile, 32, true)
+	if err != nil || len(key) != 32 {
+		clear(key)
+		return errors.New("invalid media key")
+	}
+	defer clear(key)
+	inventory, err := sensitive.RestoreOfflineArchive(*archive, *targetDir, key)
+	if err != nil {
+		return fmt.Errorf("offline restore failed: %w", err)
+	}
+	return json.NewEncoder(os.Stdout).Encode(struct {
+		Status    string                     `json:"status"`
+		Inventory sensitive.OfflineInventory `json:"inventory"`
+	}{"restored_isolated", inventory})
+}
+
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: keyctl-local init|status|stage|activate")
+		return errors.New("usage: keyctl-local init|status|stage|activate|offline-export|offline-verify-pair|offline-restore")
 	}
 	switch args[0] {
 	case "init":
@@ -100,14 +208,33 @@ func run(args []string) error {
 		return status(args[1:])
 	case "stage", "activate":
 		return lifecycle(args[0], args[1:])
+	case "offline-export":
+		return offlineExport(args[1:])
+	case "offline-verify-pair":
+		return offlineVerifyPair(args[1:])
+	case "offline-restore":
+		return offlineRestore(args[1:])
 	default:
-		return errors.New("usage: keyctl-local init|status|stage|activate")
+		return errors.New("usage: keyctl-local init|status|stage|activate|offline-export|offline-verify-pair|offline-restore")
 	}
 }
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "key control failed")
+		switch {
+		case errors.Is(err, sensitive.ErrOfflinePublishIndeterminate):
+			_ = json.NewEncoder(os.Stderr).Encode(struct {
+				Status string `json:"status"`
+				Action string `json:"action"`
+			}{"failed_indeterminate", "keep_keyd_stopped_and_inspect_requested_paths"})
+		case errors.Is(err, sensitive.ErrOfflinePublishRolledBack):
+			_ = json.NewEncoder(os.Stderr).Encode(struct {
+				Status string `json:"status"`
+				Action string `json:"action"`
+			}{"failed_rolled_back", "inspect_requested_paths_before_retry"})
+		default:
+			fmt.Fprintln(os.Stderr, "key control failed")
+		}
 		os.Exit(1)
 	}
 	if len(os.Args) > 1 && os.Args[1] == "init" {

@@ -4,6 +4,10 @@
 docker/secrets
 docker/maintenance
 docker/audit-maintenance
+docker/key-offline
+offline-media-a
+offline-media-b
+offline-restore
 backups
 private
 web/node_modules

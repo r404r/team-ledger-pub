@@ -6,6 +6,10 @@
 /docker/maintenance/
 /docker/audit-maintenance/
 /backups/
+/docker/key-offline/
+/offline-media-a/
+/offline-media-b/
+/offline-restore/
 /private/
 /web/node_modules/
 /web/dist/
