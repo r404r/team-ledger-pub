@@ -122,66 +122,40 @@ func (r reader) structureEmployees(ctx context.Context, predicate string, args [
 }
 
 func (r reader) structureRelations(ctx context.Context, org, employee, asOf string) ([]organization.Relation, error) {
+	predicate, args := "org_id=?", []any{org}
+	if employee != "" {
+		predicate += " AND employee_id=?"
+		args = append(args, employee)
+	}
+	if asOf != "" {
+		predicate += " AND superseded=false AND valid_from<=? AND (valid_to IS NULL OR valid_to>?) AND (effective_to IS NULL OR effective_to>?)"
+		args = append(args, asOf, asOf, asOf)
+	}
+	query := "SELECT org_id,id,employee_id,manager_employee_id,kind," + r.structureDate("valid_from") + "," + r.structureDate("valid_to") + "," + r.structureDate("effective_to") + ",superseded,change_id,end_change_id,supersedes_id FROM reporting_line WHERE " + predicate + " ORDER BY id"
+	rows, err := r.db.QueryContext(ctx, r.structureSQL(query), args...)
+	if err != nil {
+		return nil, safeError(err)
+	}
+	defer rows.Close()
 	result := make([]organization.Relation, 0)
-	for _, kind := range []string{"reporting_line"} {
-		table, employeeColumn, teamColumn, parentColumn, managerColumn, reportingColumn, primaryColumn, payloadColumn := structureRelationColumns(kind)
-		if employee != "" && kind == "team_parent" {
-			continue
-		}
-		predicate, args := "org_id=?", []any{org}
-		if employee != "" {
-			predicate += " AND employee_id=?"
-			args = append(args, employee)
-		}
-		if asOf != "" {
-			predicate += " AND superseded=false AND valid_from<=? AND (valid_to IS NULL OR valid_to>?) AND (effective_to IS NULL OR effective_to>?)"
-			args = append(args, asOf, asOf, asOf)
-		}
-		query := "SELECT org_id,id," + employeeColumn + "," + teamColumn + "," + parentColumn + "," + managerColumn + "," + reportingColumn + "," + primaryColumn + "," + r.structureDate("valid_from") + "," + r.structureDate("valid_to") + "," + r.structureDate("effective_to") + ",superseded,change_id,end_change_id,supersedes_id," + payloadColumn + " FROM " + table + " WHERE " + predicate + " ORDER BY id"
-		rows, err := r.db.QueryContext(ctx, r.structureSQL(query), args...)
+	for rows.Next() {
+		relation, err := scanStructureRelation(rows)
 		if err != nil {
-			return nil, safeError(err)
+			return nil, err
 		}
-		for rows.Next() {
-			relation, err := scanStructureRelation(rows, kind)
-			if err != nil {
-				rows.Close()
-				return nil, err
-			}
-			result = append(result, relation)
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return nil, safeError(err)
-		}
+		result = append(result, relation)
 	}
-	return result, nil
+	return result, safeError(rows.Err())
 }
-func structureRelationColumns(kind string) (table, employee, team, parent, manager, reporting, primary, payload string) {
-	employee, team, parent, manager, reporting, primary, payload = "NULL", "NULL", "NULL", "NULL", "NULL", "false", "NULL"
-	switch kind {
-	case "team_parent":
-		table, team, parent = "team_parent_history", "child_team_id", "parent_team_id"
-	case "membership":
-		table, employee, team, primary = "team_membership", "employee_id", "team_id", "is_primary"
-	case "position":
-		table, employee, team, primary, payload = "position_assignment", "employee_id", "team_id", "is_primary", "payload_id"
-	case "reporting_line":
-		table, employee, manager, reporting = "reporting_line", "employee_id", "manager_employee_id", "kind"
-	}
-	return
-}
-func scanStructureRelation(row interface{ Scan(...any) error }, kind string) (organization.Relation, error) {
-	relation := organization.Relation{Kind: kind}
-	var employee, team, parent, manager, reporting, to, effective, end, supersedes, payload sql.NullString
-	err := row.Scan(&relation.OrgID, &relation.ID, &employee, &team, &parent, &manager, &reporting, &relation.IsPrimary, &relation.Lifecycle.ValidFrom, &to, &effective, &relation.Superseded, &relation.ChangeID, &end, &supersedes, &payload)
+func scanStructureRelation(row interface{ Scan(...any) error }) (organization.Relation, error) {
+	relation := organization.Relation{Kind: "reporting_line"}
+	var to, effective, end, supersedes sql.NullString
+	err := row.Scan(&relation.OrgID, &relation.ID, &relation.EmployeeID, &relation.ManagerEmployeeID, &relation.ReportingKind, &relation.Lifecycle.ValidFrom, &to, &effective, &relation.Superseded, &relation.ChangeID, &end, &supersedes)
 	if err != nil {
 		return organization.Relation{}, safeError(err)
 	}
-	relation.EmployeeID, relation.TeamID, relation.ParentTeamID, relation.ManagerEmployeeID, relation.ReportingKind = employee.String, team.String, parent.String, manager.String, reporting.String
 	relation.Lifecycle.ValidTo, relation.EffectiveTo = stringPtr(to), stringPtr(effective)
-	relation.EndChangeID, relation.SupersedesID, relation.PayloadID = end.String, supersedes.String, payload.String
+	relation.EndChangeID, relation.SupersedesID = end.String, supersedes.String
 	return relation, nil
 }
 func (r reader) EmployeeRelations(ctx context.Context, org, employee, asOf string) ([]organization.Relation, error) {
@@ -199,13 +173,25 @@ func (r reader) DirectoryCandidates(ctx context.Context, org, after string, quer
 	}
 	predicate, args := "e.org_id=? AND e.id>?", []any{org, after}
 	if !scope.Org {
-		if len(scope.Employees) == 0 {
+		if len(scope.Employees) == 0 && len(scope.Departments) == 0 {
 			return []organization.Employee{}, nil
 		}
-		predicate += " AND e.id IN (" + structurePlaceholders(len(scope.Employees)) + ")"
-		for _, id := range scope.Employees {
-			args = append(args, id)
+		predicate += " AND ("
+		clauses := make([]string, 0, 2)
+		if len(scope.Employees) != 0 {
+			clauses = append(clauses, "e.id IN ("+structurePlaceholders(len(scope.Employees))+")")
+			for _, id := range scope.Employees {
+				args = append(args, id)
+			}
 		}
+		if len(scope.Departments) != 0 {
+			clauses = append(clauses, "EXISTS (SELECT 1 FROM job_assignment auth_assignment WHERE auth_assignment.org_id=e.org_id AND auth_assignment.employee_id=e.id AND auth_assignment.department_id IN ("+structurePlaceholders(len(scope.Departments))+") AND auth_assignment.valid_from<=? AND (auth_assignment.valid_to IS NULL OR auth_assignment.valid_to>?))")
+			for _, id := range scope.Departments {
+				args = append(args, id)
+			}
+			args = append(args, scope.AuthorizationDate, scope.AuthorizationDate)
+		}
+		predicate += strings.Join(clauses, " OR ") + ")"
 	}
 	if query.EmployeeID != "" {
 		predicate += " AND e.id=?"

@@ -101,7 +101,7 @@ func (s *Service) prepareView(ctx context.Context, req Request, snap authz.Snaps
 func positionValid(p PositionPayload) bool {
 	return utf8.ValidString(p.Title) && strings.TrimSpace(p.Title) != "" && len(p.Title) <= 256 && textValid(p.PositionCode, 64, true) && textValid(p.Description, 4096, false)
 }
-func (s *Service) releaseQuery(ctx context.Context, req Request, snap authz.Snapshot, g Graph, day, op string, employees []Employee, teams, piiTeams []string, piiEmployees []string, orgPII bool) error {
+func (s *Service) releaseQuery(ctx context.Context, req Request, snap authz.Snapshot, g Graph, day, op string, employees []Employee, piiEmployees []string, orgPII bool) error {
 	return s.Store.WithTx(ctx, snap.OrgID, func(tx Tx) error {
 		if err := tx.LockSubjects(ctx, snap.OrgID, []string{snap.SubjectID}); err != nil {
 			return err
@@ -134,18 +134,8 @@ func (s *Service) releaseQuery(ctx context.Context, req Request, snap authz.Snap
 			return fault.Conflict
 		}
 		now := s.clock()
-		if len(employees) == 0 && len(teams) == 0 && !current.Allows("organization.read", "metadata", "", req.Purpose, now) {
+		if len(employees) == 0 && !current.Allows("organization.read", "metadata", "", req.Purpose, now) {
 			return fault.NotFound
-		}
-		for _, team := range teams {
-			if !current.AllowsTeam("organization.read", "metadata", team, req.Purpose, now) {
-				return fault.NotFound
-			}
-		}
-		for _, team := range piiTeams {
-			if !current.AllowsTeam("pii.read", "pii", team, req.Purpose, now) {
-				return fault.Forbidden
-			}
 		}
 		if orgPII && !current.Allows("pii.read", "pii", "", req.Purpose, now) {
 			return fault.Forbidden
@@ -291,33 +281,50 @@ func (s *Service) Tree(ctx context.Context, req Request, org string, q TreeQuery
 	if len(out.Employees) > 500 {
 		return TreeView{}, fault.Invalid
 	}
-	if err = s.releaseQuery(ctx, req, snap, g, day, op, released, nil, nil, piiEmployees, q.IncludeLabels); err != nil {
+	if err = s.releaseQuery(ctx, req, snap, g, day, op, released, piiEmployees, q.IncludeLabels); err != nil {
 		return TreeView{}, s.denied(ctx, req, snap, op, err)
 	}
 	return out, nil
 }
-func (s *Service) directoryScope(snap authz.Snapshot, req Request, q DirectoryQuery, day string) DirectoryScope {
+func (s *Service) directoryScope(ctx context.Context, snap authz.Snapshot, req Request, q DirectoryQuery, day string) (DirectoryScope, error) {
 	now := s.clock()
 	scope := DirectoryScope{AuthorizationDate: day}
 	scope.Org = snap.Allows("organization.read", "metadata", "", req.Purpose, now) && (q.Q == "" || snap.Allows("pii.read", "pii", "", req.Purpose, now))
-	employees := map[string]bool{}
+	employees, departments := map[string]bool{}, map[string]bool{}
 	for _, a := range snap.Assignments {
 		if a.ScopeKind == "employee" {
 			employees[a.ScopeID] = true
+		} else if a.ScopeKind == "department" {
+			departments[a.ScopeID] = true
 		}
 	}
 	for _, a := range snap.Grants {
 		if a.ScopeKind == "employee" {
 			employees[a.ScopeID] = true
+		} else if a.ScopeKind == "department" {
+			departments[a.ScopeID] = true
 		}
 	}
 	for id := range employees {
-		if snap.Allows("organization.read", "metadata", id, req.Purpose, now) && (q.Q == "" || snap.Allows("pii.read", "pii", id, req.Purpose, now)) {
+		employeeSnap, err := s.Store.Security(ctx, req.TokenHash, snap.OrgID, id)
+		if err != nil {
+			return DirectoryScope{}, err
+		}
+		if employeeSnap.AuthEpoch != snap.AuthEpoch {
+			return DirectoryScope{}, fault.Forbidden
+		}
+		if employeeSnap.Allows("organization.read", "metadata", id, req.Purpose, now) && (q.Q == "" || employeeSnap.Allows("pii.read", "pii", id, req.Purpose, now)) {
 			scope.Employees = append(scope.Employees, id)
 		}
 	}
+	for id := range departments {
+		if snap.AllowsDepartment("organization.read", "metadata", id, req.Purpose, now) && (q.Q == "" || snap.AllowsDepartment("pii.read", "pii", id, req.Purpose, now)) {
+			scope.Departments = append(scope.Departments, id)
+		}
+	}
 	sort.Strings(scope.Employees)
-	return scope
+	sort.Strings(scope.Departments)
+	return scope, nil
 }
 
 func directoryProfileMatch(view View, needle string) bool {
@@ -350,8 +357,11 @@ func (s *Service) Directory(ctx context.Context, req Request, org string, q Dire
 	if err != nil {
 		return DirectoryPage{}, err
 	}
-	scope := s.directoryScope(snap, req, q, day)
-	if !scope.Org && len(scope.Employees) == 0 {
+	scope, err := s.directoryScope(ctx, snap, req, q, day)
+	if err != nil {
+		return DirectoryPage{}, err
+	}
+	if !scope.Org && len(scope.Employees) == 0 && len(scope.Departments) == 0 {
 		return DirectoryPage{}, s.denied(ctx, req, snap, op, fault.Forbidden)
 	}
 	g, err := s.Store.GraphState(ctx, org)
@@ -443,7 +453,7 @@ func (s *Service) Directory(ctx context.Context, req Request, org string, q Dire
 			}
 		}
 	}
-	if err = s.releaseQuery(ctx, req, snap, g, day, op, released, nil, nil, piiIDs, orgPII); err != nil {
+	if err = s.releaseQuery(ctx, req, snap, g, day, op, released, piiIDs, orgPII); err != nil {
 		return DirectoryPage{}, s.denied(ctx, req, snap, op, err)
 	}
 	return page, nil
@@ -567,7 +577,7 @@ func (s *Service) History(ctx context.Context, req Request, employee string, q H
 	if positionReleased {
 		piiIDs = append(piiIDs, employee)
 	}
-	if err = s.releaseQuery(ctx, req, snap, g, day, op, []Employee{e}, nil, nil, piiIDs, reasonReleased); err != nil {
+	if err = s.releaseQuery(ctx, req, snap, g, day, op, []Employee{e}, piiIDs, reasonReleased); err != nil {
 		return HistoryPage{}, s.denied(ctx, req, snap, op, err)
 	}
 	return page, nil

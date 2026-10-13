@@ -19,7 +19,7 @@ func grantPIIExport(t *testing.T, f *testsupport.Fixture, employee string) strin
 	var exportID string
 	for _, capability := range []string{"pii.read", "sensitive.export"} {
 		id := value.NewID()
-		if err := f.Exec(context.Background(), "INSERT INTO capability_assignment(org_id,subject_id,capability,scope_kind,scope_id,employee_id,team_id) VALUES(?,?,?,?,?,?,NULL)", "INSERT INTO capability_assignment(org_id,subject_id,capability,scope_kind,scope_id,employee_id,team_id) VALUES($1,$2,$3,$4,$5,$6,NULL) ON CONFLICT DO NOTHING", f.OrgID, f.Reader.SubjectID, capability, "employee", employee, employee); err != nil {
+		if err := f.Exec(context.Background(), "INSERT INTO capability_assignment(org_id,subject_id,capability,scope_kind,scope_id,employee_id,department_id) VALUES(?,?,?,?,?,?,NULL)", "INSERT INTO capability_assignment(org_id,subject_id,capability,scope_kind,scope_id,employee_id,department_id) VALUES($1,$2,$3,$4,$5,$6,NULL) ON CONFLICT DO NOTHING", f.OrgID, f.Reader.SubjectID, capability, "employee", employee, employee); err != nil {
 			t.Fatal(err)
 		}
 		if err := f.Exec(context.Background(), "INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,purpose,valid_from,expires_at,mfa_required) VALUES(?,?,?,?,?,?,?,?,?,?,?,1)", "INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,purpose,valid_from,expires_at,mfa_required) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,true)", id, f.OrgID, f.Reader.SubjectID, capability, "pii", "employee", employee, employee, "organization_management", f.Repo.BindTime(f.Now.Add(-time.Minute)), f.Repo.BindTime(f.Now.Add(time.Hour))); err != nil {

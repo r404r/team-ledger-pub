@@ -33,8 +33,8 @@ func (s *Service) cursorBinding(a authz.Snapshot, employee string, q ChangesQuer
 		Scope                       Scope
 		Assignments                 []authz.Assignment
 		Grants                      []authz.Grant
-		Memberships, Relations      []authz.Tenure
-	}{a.OrgID, a.SubjectID, employee, purpose, head, sessionHash, a.AuthEpoch, a.SubjectEpoch, a.SessionEpoch, b, q, scope, a.Assignments, a.Grants, a.Memberships, a.Relations})
+		JobAssignments, Relations   []authz.Tenure
+	}{a.OrgID, a.SubjectID, employee, purpose, head, sessionHash, a.AuthEpoch, a.SubjectEpoch, a.SessionEpoch, b, q, scope, a.Assignments, a.Grants, a.JobAssignments, a.Relations})
 	if e != nil || len(s.CursorKey) < 32 {
 		return "", fault.Unavailable
 	}

@@ -44,12 +44,12 @@ func (h *handler) compensationSession(r *http.Request, req organization.Request,
 	return snapshot, nil
 }
 
-func currentCompensationPermissions(snapshot authz.Snapshot, employee, team string, now time.Time) []compensation.Permission {
+func currentCompensationPermissions(snapshot authz.Snapshot, employee, department string, now time.Time) []compensation.Permission {
 	permissions := make([]compensation.Permission, 0, 4)
 	for _, capability := range [...]string{"compensation.read", "compensation.propose", "compensation.approve", "sensitive.export"} {
 		allowed := snapshot.Allows(capability, "financial", employee, "compensation_management", now)
-		if team != "" {
-			allowed = snapshot.AllowsTeam(capability, "financial", team, "compensation_management", now)
+		if department != "" {
+			allowed = snapshot.AllowsDepartment(capability, "financial", department, "compensation_management", now)
 		}
 		if allowed {
 			permissions = append(permissions, compensation.Permission{Capability: capability, Category: "financial"})

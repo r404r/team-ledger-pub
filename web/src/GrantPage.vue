@@ -4,8 +4,8 @@ import { grantCapabilities as capabilities, grantObjectKinds, validGrantPair, va
 
 const emit = defineEmits<{ 'session-expired': []; 'grant-result': [kind: 'issue' | 'revoke'] }>()
 
-type Scope = { kind: 'org' | 'team' | 'employee'; id: string }
-type RelationReference = { kind: 'reporting_line' | 'team_membership'; id: string }
+type Scope = { kind: 'org' | 'department' | 'employee'; id: string }
+type RelationReference = { kind: 'reporting_line' | 'job_assignment'; id: string }
 type Authority = {
   id: string; capability: string; category: string; scope: Scope; purpose: string
   valid_from: string; expires_at: string; mfa_required: boolean
@@ -74,16 +74,18 @@ function timestamp(value: unknown): string | null {
   return `${match[1]}.${(match[2] ?? '').padEnd(6, '0')}Z`
 }
 function validScope(value: Scope): boolean {
-  return Boolean(value && ['org', 'team', 'employee'].includes(value.kind) && typeof value.id === 'string' && uuid.test(value.id))
+  return Boolean(value && ['org', 'department', 'employee'].includes(value.kind) && typeof value.id === 'string' && uuid.test(value.id))
 }
 function scopeCovers(allowed: Scope, kind: string, id: string): boolean {
-  return allowed.kind === 'org' ? (kind === 'employee' || kind === 'team' || kind === 'org' && id === allowed.id)
-    : allowed.kind === kind && id === allowed.id
+  return allowed.kind === 'org' ? (kind === 'employee' || kind === 'department' || kind === 'org' && id === allowed.id)
+    : allowed.kind === 'department' && kind === 'employee'
+      ? true // Tentative UX coverage only; the server verifies the current canonical assignment.
+      : allowed.kind === kind && id === allowed.id
 }
 function validRelation(bound: boolean, ref: RelationReference | null, scope: Scope): boolean {
   if (!bound) return ref === null
   return Boolean(ref && uuid.test(ref.id) &&
-    (ref.kind === 'reporting_line' && scope.kind === 'employee' || ref.kind === 'team_membership' && scope.kind === 'team'))
+    (ref.kind === 'reporting_line' && scope.kind === 'employee' || ref.kind === 'job_assignment' && scope.kind === 'department'))
 }
 function validAuthority(value: Authority): boolean {
   return Boolean(value && uuid.test(value.id) && capabilities.includes(value.capability) &&
@@ -93,7 +95,7 @@ function validAuthority(value: Authority): boolean {
     uuid.test(value.approved_by) && timestamp(value.approved_at) && typeof value.policy_version === 'string' && value.policy_version.length > 0 &&
     Array.isArray(value.delegable_scopes) && value.delegable_scopes.length > 0 && value.delegable_scopes.length <= 1000 &&
     value.delegable_scopes.every((scope) => validScope(scope) &&
-      (scopeCovers(value.scope, scope.kind, scope.id) || value.scope.kind === 'team' && scope.kind === 'employee')))
+      (scopeCovers(value.scope, scope.kind, scope.id) || value.scope.kind === 'department' && scope.kind === 'employee')))
 }
 function sameContext(left: Session, right: Session): boolean {
   return left.subject_id === right.subject_id && left.org_id === right.org_id && left.auth_epoch === right.auth_epoch &&
@@ -216,7 +218,7 @@ async function applyFilters() {
   if (busy.value || uncertain.value) return
   if ((filters.subject && !uuid.test(filters.subject)) || (filters.grantID && !uuid.test(filters.grantID)) ||
       Boolean(filters.scopeKind) !== Boolean(filters.scopeID) || (filters.scopeID && !uuid.test(filters.scopeID)) ||
-      filters.scopeKind && !['org', 'team', 'employee'].includes(filters.scopeKind) ||
+      filters.scopeKind && !['org', 'department', 'employee'].includes(filters.scopeKind) ||
       filters.category && !['metadata', 'pii', 'audit', 'shared', 'manager_private', 'hr_confidential', 'financial'].includes(filters.category) ||
       filters.purpose && !['organization_management', 'security_administration', 'interview_followup', 'compensation_management'].includes(filters.purpose) ||
       filters.capability && !capabilities.includes(filters.capability) ||
@@ -270,10 +272,10 @@ function previewGrant() {
     ? { kind: form.relationKind, id: form.relationID } as RelationReference : null
   if ((!form.relationKind && form.relationID) ||
       !validRelation(Boolean(form.relationKind), relation, { kind: form.scopeKind as Scope['kind'], id: form.scopeID })) {
-    preview.value = null; error.value = '关系绑定须明确填写原任职 ID：reporting_line 仅 employee 范围，team_membership 仅 team 范围。'; return
+    preview.value = null; error.value = '关系绑定须明确填写原任职 ID：reporting_line 仅 employee 范围，job_assignment 仅 department 范围。'; return
   }
   if (!authority || !uuid.test(form.subject) || form.subject === session.value.subject_id || !uuid.test(form.scopeID) ||
-      !['org', 'team', 'employee'].includes(form.scopeKind) || (form.scopeKind === 'org' && form.scopeID !== session.value.org_id) ||
+      !['org', 'department', 'employee'].includes(form.scopeKind) || (form.scopeKind === 'org' && form.scopeID !== session.value.org_id) ||
       !authority.delegable_scopes.some((scope) => scopeCovers(scope, form.scopeKind, form.scopeID)) ||
       !start || !end || start >= end || start < timestamp(authority.valid_from)! || end > timestamp(authority.expires_at)! ||
       (authority.mfa_required && !form.mfa)) {
@@ -369,7 +371,7 @@ onBeforeUnmount(() => {
 <template>
   <main :aria-busy="busy">
     <h1>明确授权管理</h1>
-    <p>仅管理明确批准的 org / team / employee 授权。团队、经理或身份映射不自动授予权限；关系绑定须填写原任职引用。管理权不授予员工 PII、业务正文或全库审计读取权。</p>
+    <p>仅管理明确批准的 org / department / employee 授权。Department、经理或身份映射不自动授予权限；关系绑定须填写原任职引用。管理权不授予员工 PII、业务正文或全库审计读取权。</p>
     <button type="button" @click="refresh">刷新授权</button>
     <p v-if="error" role="alert">{{ error }}</p>
     <p v-if="busy" role="status">{{ phase === 'submitting' ? '正在提交命令……' : phase === 'verifying' ? '正在重新验证并读取当前授权……' : '正在验证会话并读取授权……' }}</p>
@@ -391,7 +393,7 @@ onBeforeUnmount(() => {
         <h2>筛选当前可管理授权</h2>
         <fieldset :disabled="busy || uncertain">
           <label for="grant-filter-subject">筛选主体 ID</label><input id="grant-filter-subject" v-model="filters.subject" />
-          <label for="grant-filter-scope-kind">筛选 scope 类型</label><select id="grant-filter-scope-kind" v-model="filters.scopeKind"><option value="">全部</option><option value="org">org</option><option value="team">team</option><option value="employee">employee</option></select>
+          <label for="grant-filter-scope-kind">筛选 scope 类型</label><select id="grant-filter-scope-kind" v-model="filters.scopeKind"><option value="">全部</option><option value="org">org</option><option value="department">department</option><option value="employee">employee</option></select>
           <label for="grant-filter-scope-id">筛选 scope ID</label><input id="grant-filter-scope-id" v-model="filters.scopeID" />
           <label for="grant-filter-category">筛选类别</label><select id="grant-filter-category" v-model="filters.category"><option value="">全部</option><option v-for="category in ['metadata', 'pii', 'shared', 'manager_private', 'hr_confidential', 'financial']" :key="category" :value="category">{{ category }}</option></select>
           <label for="grant-filter-purpose">筛选目的</label><select id="grant-filter-purpose" v-model="filters.purpose"><option value="">全部</option><option value="organization_management">organization_management</option><option value="interview_followup">interview_followup</option><option value="compensation_management">compensation_management</option></select>
@@ -441,13 +443,13 @@ onBeforeUnmount(() => {
         <label for="grant-authority">批准依据（authority）</label><select id="grant-authority" v-model="form.authorityID" @change="chooseAuthority"><option v-for="authority in currentList?.authorities" :key="authority.id" :value="authority.id">{{ authority.id }} · {{ authority.capability }} · 原批准 {{ authority.scope.kind }} {{ authority.scope.id }}</option></select>
         <p v-if="selectedAuthority">能力 {{ selectedAuthority.capability }} · 类别 {{ selectedAuthority.category }} · 目的 {{ selectedAuthority.purpose }} · policy {{ selectedAuthority.policy_version }}</p>
         <label for="grant-subject">受授权主体 ID（已有资格，非自身）</label><input id="grant-subject" v-model="form.subject" required autocomplete="off" />
-        <label for="grant-scope-kind">授权 scope 类型</label><select id="grant-scope-kind" v-model="form.scopeKind"><option value="org" :disabled="!canUseOrg">org</option><option value="team">team</option><option value="employee">employee</option></select>
+        <label for="grant-scope-kind">授权 scope 类型</label><select id="grant-scope-kind" v-model="form.scopeKind"><option value="org" :disabled="!canUseOrg">org</option><option value="department">department</option><option value="employee">employee</option></select>
         <label for="grant-scope-id">授权 scope ID</label><input id="grant-scope-id" v-model="form.scopeID" required autocomplete="off" />
         <label for="grant-start">生效时间（RFC3339 UTC，最多六位小数）</label><input id="grant-start" v-model="form.validFrom" placeholder="YYYY-MM-DDTHH:mm:ss.ffffffZ" required autocomplete="off" />
         <label for="grant-end">到期时间（RFC3339 UTC，最多六位小数）</label><input id="grant-end" v-model="form.expiresAt" placeholder="YYYY-MM-DDTHH:mm:ss.ffffffZ" required autocomplete="off" />
         <label for="grant-mfa"><input id="grant-mfa" v-model="form.mfa" type="checkbox" :disabled="selectedAuthority?.mfa_required || selectedAuthority?.category === 'financial' || ['note.publish', 'sensitive.export'].includes(selectedAuthority?.capability ?? '')" />被授予人使用此授权须 MFA（发布、导出与财务不可降低）</label>
         <label for="grant-relation-kind">关系绑定类型（可留空）</label>
-        <select id="grant-relation-kind" v-model="form.relationKind" @change="form.relationID = ''"><option value="">独立授权</option><option value="reporting_line">reporting_line（经理任职）</option><option value="team_membership">team_membership（团队任职）</option></select>
+        <select id="grant-relation-kind" v-model="form.relationKind" @change="form.relationID = ''"><option value="">独立授权</option><option value="reporting_line">reporting_line（经理任职）</option><option value="job_assignment">job_assignment（部门任职）</option></select>
         <label v-if="form.relationKind" for="grant-relation-id">原任职关系 ID（不可猜测或自动填入）</label>
         <input v-if="form.relationKind" id="grant-relation-id" v-model="form.relationID" required autocomplete="off" />
         <label for="grant-object-kind">对象类型（可留空；具体历史版本只批准该版本）</label><select id="grant-object-kind" v-model="form.objectKind" @change="form.objectID = ''"><option value="">无对象限制</option><option v-for="kind in grantObjectKinds" :key="kind" :value="kind">{{ kind }}</option></select>
@@ -455,7 +457,7 @@ onBeforeUnmount(() => {
         <label for="grant-source-ids">独立批准的最小来源版本 ID（note_version，空白分隔，最多十个；不填源正文）</label><textarea id="grant-source-ids" v-model="form.sourceIDs" autocomplete="off" />
         <p>源批准者仍须当前源读取权与目标委派权。这里只独立授予权限，不发布笔记；授予成功后发布失败是不同结果，不自动复制私有文字。</p>
         <p>financial / compensation_management 与提出、审批、导出能力独立；明确 compensation_event 或 compensation_term 只授该不可变对象，不授整名员工的现状或其他历史。金融授权不得降低 MFA。</p>
-        <p>服务器核对目标主体的已批准员工映射、当前原任职与范围。换任职、结束或更正不使旧引用复活；不自动授经理或团队权限。</p>
+        <p>服务器核对目标主体的已批准员工映射、当前原任职与范围。换任职、结束或更正不使旧引用复活；不自动授经理或部门权限。</p>
         <button type="submit">预览授权</button>
         <button type="button" @click="editing = false; form.subject = ''; form.validFrom = ''; form.expiresAt = ''">取消新建</button>
       </fieldset>

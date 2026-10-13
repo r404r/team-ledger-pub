@@ -149,7 +149,7 @@ type Reader interface {
 	Qualified(context.Context, string, string, string, Scope, time.Time) (bool, error)
 	ScopeCovered(context.Context, string, Scope, Scope, time.Time) (bool, error)
 	RelationQualified(context.Context, string, string, Scope, RelationReference, time.Time) (bool, error)
-	OwnsScope(context.Context, string, Scope) (bool, error)
+	OwnsScope(context.Context, string, Scope, time.Time) (bool, error)
 	GrantReceipt(context.Context, string, string, string, string) (Receipt, bool, error)
 }
 

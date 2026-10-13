@@ -17,12 +17,12 @@ type Grant struct {
 // Tenure retains the approved interval separately from its effective projection.
 // A replacement never qualifies the old immutable reference again.
 type Tenure struct {
-	ID, Kind, EmployeeID, TeamID, ManagerEmployeeID string
-	ValidFrom                                       string
-	ValidTo, EffectiveTo                            *string
-	Superseded                                      bool
-	EmployeeFrom, TeamFrom, ManagerFrom             string
-	EmployeeTo, TeamTo, ManagerTo                   *string
+	ID, Kind, EmployeeID, DepartmentID, ManagerEmployeeID string
+	ValidFrom                                             string
+	ValidTo, EffectiveTo                                  *string
+	Superseded                                            bool
+	EmployeeFrom, DepartmentFrom, ManagerFrom             string
+	EmployeeTo, DepartmentTo, ManagerTo                   *string
 }
 
 func within(day, from string, to *string) bool {
@@ -34,8 +34,8 @@ func (t Tenure) Current(day string) bool {
 		return false
 	}
 	switch t.Kind {
-	case "team_membership":
-		return within(day, t.TeamFrom, t.TeamTo)
+	case "job_assignment":
+		return within(day, t.DepartmentFrom, t.DepartmentTo)
 	case "reporting_line":
 		return within(day, t.ManagerFrom, t.ManagerTo)
 	}
@@ -52,7 +52,7 @@ type Snapshot struct {
 	Assignments                           []Assignment
 	Grants                                []Grant
 	SubjectEmployeeID                     string
-	Memberships                           []Tenure
+	JobAssignments                        []Tenure
 	Relations                             []Tenure
 }
 
@@ -68,26 +68,26 @@ func (s Snapshot) day(now time.Time) (string, bool) {
 	return now.In(zone).Format("2006-01-02"), true
 }
 
-func (s Snapshot) scopeMatches(kind, id, employee, team string, now time.Time) bool {
+func (s Snapshot) scopeMatches(kind, id, employee, department string, now time.Time) bool {
 	if kind == "org" {
 		return id == s.OrgID
 	}
-	if team != "" {
+	if department != "" {
 		_, validZone := s.day(now)
-		return validZone && kind == "team" && id == team
+		return validZone && kind == "department" && id == department
 	}
 	if kind == "employee" {
 		return employee != "" && id == employee
 	}
-	if kind != "team" || employee == "" {
+	if kind != "department" || employee == "" {
 		return false
 	}
 	day, ok := s.day(now)
 	if !ok {
 		return false
 	}
-	for _, m := range s.Memberships {
-		if m.EmployeeID == employee && m.TeamID == id && m.Current(day) {
+	for _, assignment := range s.JobAssignments {
+		if assignment.EmployeeID == employee && assignment.DepartmentID == id && assignment.Current(day) {
 			return true
 		}
 	}
@@ -115,8 +115,8 @@ func (s Snapshot) relationQualified(g Grant, now time.Time) bool {
 		switch t.Kind {
 		case "reporting_line":
 			return g.ScopeKind == "employee" && g.ScopeID == t.EmployeeID && s.SubjectEmployeeID == t.ManagerEmployeeID
-		case "team_membership":
-			return g.ScopeKind == "team" && g.ScopeID == t.TeamID && s.SubjectEmployeeID == t.EmployeeID
+		case "job_assignment":
+			return g.ScopeKind == "department" && g.ScopeID == t.DepartmentID && s.SubjectEmployeeID == t.EmployeeID
 		}
 	}
 	return false
@@ -126,23 +126,23 @@ func (s Snapshot) Allows(capability, category, employee, purpose string, now tim
 	return s.allows(capability, category, employee, "", purpose, now, nil, nil)
 }
 
-func (s Snapshot) AllowsTeam(capability, category, team, purpose string, now time.Time) bool {
-	if team == "" {
+func (s Snapshot) AllowsDepartment(capability, category, department, purpose string, now time.Time) bool {
+	if department == "" {
 		return false
 	}
 	if _, ok := s.day(now); !ok {
 		return false
 	}
-	return s.allows(capability, category, "", team, purpose, now, nil, nil)
+	return s.allows(capability, category, "", department, purpose, now, nil, nil)
 }
 
-func (s Snapshot) allows(capability, category, employee, team, purpose string, now time.Time, lineage []ObjectReference, source *ObjectReference) bool {
+func (s Snapshot) allows(capability, category, employee, department, purpose string, now time.Time, lineage []ObjectReference, source *ObjectReference) bool {
 	if !s.Valid(now) || !SupportedPair(capability, category, purpose) || requiresMFA(capability) && !now.Before(s.MFAUntil) {
 		return false
 	}
 	assigned := false
 	for _, a := range s.Assignments {
-		if a.Capability == capability && s.scopeMatches(a.ScopeKind, a.ScopeID, employee, team, now) {
+		if a.Capability == capability && s.scopeMatches(a.ScopeKind, a.ScopeID, employee, department, now) {
 			assigned = true
 			break
 		}
@@ -151,7 +151,7 @@ func (s Snapshot) allows(capability, category, employee, team, purpose string, n
 		return false
 	}
 	for _, g := range s.Grants {
-		if g.Capability == capability && g.Category == category && g.Purpose == purpose && !g.Revoked && !now.Before(g.ValidFrom) && now.Before(g.ExpiresAt) && (!g.MFARequired || now.Before(s.MFAUntil)) && s.scopeMatches(g.ScopeKind, g.ScopeID, employee, team, now) && s.relationQualified(g, now) && objectMatches(g.ObjectRef, capability, category, lineage) && sourceMatches(g, employee, source) {
+		if g.Capability == capability && g.Category == category && g.Purpose == purpose && !g.Revoked && !now.Before(g.ValidFrom) && now.Before(g.ExpiresAt) && (!g.MFARequired || now.Before(s.MFAUntil)) && s.scopeMatches(g.ScopeKind, g.ScopeID, employee, department, now) && s.relationQualified(g, now) && objectMatches(g.ObjectRef, capability, category, lineage) && sourceMatches(g, employee, source) {
 			return true
 		}
 	}
@@ -183,8 +183,8 @@ func SupportedPair(capability, category, purpose string) bool {
 }
 
 func Covers(outer Scope, inner Scope, org string) bool {
-	return outer.Kind == "org" && outer.ID == org && (inner.Kind == "org" && inner.ID == org || inner.Kind == "employee" || inner.Kind == "team") ||
-		(outer.Kind == "employee" || outer.Kind == "team") && outer.Kind == inner.Kind && outer.ID == inner.ID
+	return outer.Kind == "org" && outer.ID == org && (inner.Kind == "org" && inner.ID == org || inner.Kind == "employee" || inner.Kind == "department") ||
+		(outer.Kind == "employee" || outer.Kind == "department") && outer.Kind == inner.Kind && outer.ID == inner.ID
 }
 
 func (s Snapshot) ManagedScopes(now time.Time) []Scope {
@@ -202,12 +202,12 @@ func (s Snapshot) ManagedScopes(now time.Time) []Scope {
 				continue
 			}
 			scope, other := Scope{a.ScopeKind, a.ScopeID}, Scope{g.ScopeKind, g.ScopeID}
-			if Covers(scope, other, s.OrgID) || scope.Kind == "team" && other.Kind == "employee" && s.scopeMatches("team", scope.ID, other.ID, "", now) {
+			if Covers(scope, other, s.OrgID) || scope.Kind == "department" && other.Kind == "employee" && s.scopeMatches("department", scope.ID, other.ID, "", now) {
 				scope = other
-			} else if !Covers(other, scope, s.OrgID) && !(other.Kind == "team" && scope.Kind == "employee" && s.scopeMatches("team", other.ID, scope.ID, "", now)) {
+			} else if !Covers(other, scope, s.OrgID) && !(other.Kind == "department" && scope.Kind == "employee" && s.scopeMatches("department", other.ID, scope.ID, "", now)) {
 				continue
 			}
-			if scope.Kind == "team" {
+			if scope.Kind == "department" {
 				if _, ok := s.day(now); !ok {
 					continue
 				}

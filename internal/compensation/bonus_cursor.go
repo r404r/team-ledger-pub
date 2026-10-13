@@ -20,8 +20,8 @@ func (s *Service) bonusCursorBinding(a authz.Snapshot, employee string, query Bo
 		Query                            BonusQuery
 		Assignments                      []authz.Assignment
 		Grants                           []authz.Grant
-		Memberships, Relations           []authz.Tenure
-	}{a.OrgID, a.SubjectID, employee, revision, sessionHash, a.AuthEpoch, a.SubjectEpoch, a.SessionEpoch, query, a.Assignments, a.Grants, a.Memberships, a.Relations})
+		JobAssignments, Relations        []authz.Tenure
+	}{a.OrgID, a.SubjectID, employee, revision, sessionHash, a.AuthEpoch, a.SubjectEpoch, a.SessionEpoch, query, a.Assignments, a.Grants, a.JobAssignments, a.Relations})
 	if err != nil || len(s.CursorKey) < 32 {
 		return "", fault.Unavailable
 	}

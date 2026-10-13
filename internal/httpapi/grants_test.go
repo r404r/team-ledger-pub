@@ -169,8 +169,9 @@ func TestAPIGrantStrictInputsAndAuthorization(t *testing.T) {
 			for _, query := range []string{"limit=1&limit=2", "unknown=x", "scope_kind=org", "limit=0", "limit=101", "limit=01", "subject_id=bad", "state=unknown"} {
 				apiSend(t, f, grantRequest(t, f, f.Manager, "GET", "/api/v1/access-grants?"+query, "", ""), 422, nil)
 			}
+			apiSend(t, f, apiRequest(t, f, f.Manager, "GET", "/api/v1/session?team_id="+f.OrgID, "", ""), 422, nil)
 			body := issueBody(t, f, "organization.read", "1")
-			invalid := []string{strings.Replace(body, `"relation_ref":null`, `"relation_ref":true`, 1), strings.Replace(body, `"object_ref":null`, `"object_ref":{}`, 1), strings.Replace(body, `"mfa_required":true,`, "", 1), strings.Replace(body, `"relation_bound":false`, `"relation_bound":null`, 1), strings.Replace(body, `"subject_id":`, `"unknown":1,"subject_id":`, 1), strings.Replace(body, `"subject_id":`, `"subject_id":null,"subject_id":`, 1), strings.Replace(body, `"valid_from":"`, `"valid_from":null,"discard":"`, 1)}
+			invalid := []string{strings.Replace(body, `"kind":"org"`, `"kind":"team"`, 1), strings.Replace(body, `"relation_ref":null`, `"relation_ref":true`, 1), strings.Replace(body, `"object_ref":null`, `"object_ref":{}`, 1), strings.Replace(body, `"mfa_required":true,`, "", 1), strings.Replace(body, `"relation_bound":false`, `"relation_bound":null`, 1), strings.Replace(body, `"subject_id":`, `"unknown":1,"subject_id":`, 1), strings.Replace(body, `"subject_id":`, `"subject_id":null,"subject_id":`, 1), strings.Replace(body, `"valid_from":"`, `"valid_from":null,"discard":"`, 1)}
 			for _, b := range invalid {
 				apiSend(t, f, grantRequest(t, f, f.Manager, "POST", "/api/v1/access-grants", b, value.NewID()), 422, nil)
 			}

@@ -72,10 +72,10 @@ func TestCanonicalObjectLineageAndFiniteFamilies(t *testing.T) {
 	if management.Allows("access_grant.manage", "audit", objectEmployee, authz.ManagementPurpose, at) || len(management.ManagedScopes(at)) != 0 {
 		t.Fatal("object restriction became whole-scope management authority")
 	}
-	management.Grants[0].ScopeKind, management.Grants[0].ScopeID = "team", lineage[0].ID
-	management.Assignments[0].ScopeKind, management.Assignments[0].ScopeID = "team", lineage[0].ID
-	if management.AllowsTeam("access_grant.manage", "audit", lineage[0].ID, authz.ManagementPurpose, at) {
-		t.Fatal("team checks lost object restriction")
+	management.Grants[0].ScopeKind, management.Grants[0].ScopeID = "department", lineage[0].ID
+	management.Assignments[0].ScopeKind, management.Assignments[0].ScopeID = "department", lineage[0].ID
+	if management.AllowsDepartment("access_grant.manage", "audit", lineage[0].ID, authz.ManagementPurpose, at) {
+		t.Fatal("department checks lost object restriction")
 	}
 }
 

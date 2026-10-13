@@ -11,12 +11,12 @@ type PositionPayload struct {
 	Description  *string `json:"description,omitempty"`
 }
 type Relation struct {
-	ID, OrgID, Kind, EmployeeID, TeamID, ParentTeamID, ManagerEmployeeID, ReportingKind string
-	IsPrimary                                                                           bool
-	Lifecycle                                                                           Lifecycle
-	EffectiveTo                                                                         *string
-	Superseded                                                                          bool
-	ChangeID, EndChangeID, SupersedesID, PayloadID                                      string
+	ID, OrgID, Kind, EmployeeID, ManagerEmployeeID, ReportingKind string
+	IsPrimary                                                     bool
+	Lifecycle                                                     Lifecycle
+	EffectiveTo                                                   *string
+	Superseded                                                    bool
+	ChangeID, EndChangeID, SupersedesID, PayloadID                string
 }
 type Graph struct {
 	OrgID               string
@@ -64,23 +64,6 @@ type TreeView struct {
 	Edges             []TreeEdge     `json:"edges"`
 	Employees         []TreeEmployee `json:"employees"`
 }
-type MembershipView struct {
-	ID         string  `json:"id"`
-	EmployeeID string  `json:"employee_id"`
-	TeamID     string  `json:"team_id"`
-	IsPrimary  bool    `json:"is_primary"`
-	ValidFrom  string  `json:"valid_from"`
-	ValidTo    *string `json:"valid_to"`
-}
-type PositionView struct {
-	ID         string           `json:"id"`
-	EmployeeID string           `json:"employee_id"`
-	TeamID     string           `json:"team_id,omitempty"`
-	IsPrimary  bool             `json:"is_primary"`
-	ValidFrom  string           `json:"valid_from"`
-	ValidTo    *string          `json:"valid_to"`
-	Position   *PositionPayload `json:"position,omitempty"`
-}
 type ReportingView struct {
 	ID                string  `json:"id"`
 	EmployeeID        string  `json:"employee_id"`
@@ -112,6 +95,7 @@ type DirectoryPage struct {
 type DirectoryScope struct {
 	Org               bool
 	Employees         []string
+	Departments       []string
 	AuthorizationDate string
 }
 type HistoryQuery struct {
@@ -123,8 +107,6 @@ type HistoryRelation struct {
 	Kind              string           `json:"kind"`
 	ID                string           `json:"id"`
 	EmployeeID        string           `json:"employee_id,omitempty"`
-	TeamID            string           `json:"team_id,omitempty"`
-	ParentTeamID      string           `json:"parent_team_id,omitempty"`
 	ManagerEmployeeID string           `json:"manager_employee_id,omitempty"`
 	ReportingKind     string           `json:"reporting_kind,omitempty"`
 	IsPrimary         *bool            `json:"is_primary,omitempty"`

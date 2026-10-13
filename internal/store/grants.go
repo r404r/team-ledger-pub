@@ -36,8 +36,8 @@ func (r *Repository) ScopeCovered(ctx context.Context, org string, outer, inner 
 func (r *Repository) RelationQualified(ctx context.Context, org, subject string, scope authz.Scope, ref authz.RelationReference, now time.Time) (bool, error) {
 	return r.read().RelationQualified(ctx, org, subject, scope, ref, now)
 }
-func (r *Repository) OwnsScope(ctx context.Context, org string, scope authz.Scope) (bool, error) {
-	return r.read().OwnsScope(ctx, org, scope)
+func (r *Repository) OwnsScope(ctx context.Context, org string, scope authz.Scope, now time.Time) (bool, error) {
+	return r.read().OwnsScope(ctx, org, scope, now)
 }
 func (r *Repository) GrantReceipt(ctx context.Context, org, subject, operation, key string) (authz.Receipt, bool, error) {
 	return r.read().GrantReceipt(ctx, org, subject, operation, key)
@@ -105,7 +105,7 @@ func (r reader) Authorities(ctx context.Context, org, subject string, now time.T
 	return items, safeError(rows.Err())
 }
 
-const grantColumns = "g.id,g.org_id,g.subject_id,g.capability,g.category,g.scope_kind,g.scope_id,g.purpose,g.valid_from,g.expires_at,g.mfa_required,g.relation_bound,g.revision,g.revoked,g.authority_id,a.policy_version,a.approved_by,a.approved_at,g.issued_by,g.issued_at,g.revoked_by,g.revoked_at,g.revoke_reason,g.relation_kind,g.reporting_line_id,g.membership_id,g.relation_actor_employee_id,g.object_kind,g.object_ref"
+const grantColumns = "g.id,g.org_id,g.subject_id,g.capability,g.category,g.scope_kind,g.scope_id,g.purpose,g.valid_from,g.expires_at,g.mfa_required,g.relation_bound,g.revision,g.revoked,g.authority_id,a.policy_version,a.approved_by,a.approved_at,g.issued_by,g.issued_at,g.revoked_by,g.revoked_at,g.revoke_reason,g.relation_kind,g.reporting_line_id,g.job_assignment_id,g.relation_actor_employee_id,g.object_kind,g.object_ref"
 const grantJoin = " FROM access_grant g LEFT JOIN delegation_authority a ON a.org_id=g.org_id AND a.id=g.authority_id"
 
 type grantScanner interface{ Scan(...any) error }
@@ -144,9 +144,9 @@ func scanGrant(row grantScanner, now time.Time) (authz.GrantDTO, error) {
 	var revoked bool
 	var from, to dbTime
 	var authority, policy, approver, issuer, revoker, reason sql.NullString
-	var relationKind, reportingID, membershipID, actorID, objectKind, objectID sql.NullString
+	var relationKind, reportingID, assignmentID, actorID, objectKind, objectID sql.NullString
 	var approved, issued, revokedAt nullDBTime
-	err := row.Scan(&g.ID, &g.OrgID, &g.SubjectID, &g.Capability, &g.Category, &g.Scope.Kind, &g.Scope.ID, &g.Purpose, &from, &to, &g.MFARequired, &g.RelationBound, &revision, &revoked, &authority, &policy, &approver, &approved, &issuer, &issued, &revoker, &revokedAt, &reason, &relationKind, &reportingID, &membershipID, &actorID, &objectKind, &objectID)
+	err := row.Scan(&g.ID, &g.OrgID, &g.SubjectID, &g.Capability, &g.Category, &g.Scope.Kind, &g.Scope.ID, &g.Purpose, &from, &to, &g.MFARequired, &g.RelationBound, &revision, &revoked, &authority, &policy, &approver, &approved, &issuer, &issued, &revoker, &revokedAt, &reason, &relationKind, &reportingID, &assignmentID, &actorID, &objectKind, &objectID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return authz.GrantDTO{}, fault.NotFound
 	}
@@ -162,7 +162,7 @@ func scanGrant(row grantScanner, now time.Time) (authz.GrantDTO, error) {
 	g.RevokedBy, g.RevokedAt, g.RevokeReason = stringPtr(revoker), timePtr(revokedAt), stringPtr(reason)
 	g.RelationActorEmployeeID = actorID.String
 	if relationKind.Valid {
-		id := membershipID.String
+		id := assignmentID.String
 		if relationKind.String == "reporting_line" {
 			id = reportingID.String
 		}
@@ -190,21 +190,31 @@ func (r reader) Grant(ctx context.Context, org, id string) (authz.GrantDTO, erro
 	return r.grantApprovals(ctx, g, err)
 }
 
-func (r reader) OwnsScope(ctx context.Context, org string, scope authz.Scope) (bool, error) {
+func (r reader) OwnsScope(ctx context.Context, org string, scope authz.Scope, now time.Time) (bool, error) {
 	if scope.Kind == "org" {
 		return scope.ID == org, nil
+	}
+	day, err := r.organizationDate(ctx, org, now)
+	if err != nil {
+		return false, err
 	}
 	var q string
 	switch scope.Kind {
 	case "employee":
-		q = r.sql("SELECT EXISTS(SELECT 1 FROM employee WHERE org_id=? AND id=?)", "SELECT EXISTS(SELECT 1 FROM employee WHERE org_id=$1 AND id=$2)")
-	case "team":
-		q = r.sql("SELECT EXISTS(SELECT 1 FROM team WHERE org_id=? AND id=?)", "SELECT EXISTS(SELECT 1 FROM team WHERE org_id=$1 AND id=$2)")
+		q = r.sql(
+			"SELECT EXISTS(SELECT 1 FROM employee e JOIN employee_lifecycle_history l ON l.org_id=e.org_id AND l.employee_id=e.id WHERE e.org_id=? AND e.id=? AND l.valid_from<=? AND (l.valid_to IS NULL OR l.valid_to>?))",
+			"SELECT EXISTS(SELECT 1 FROM employee e JOIN employee_lifecycle_history l ON l.org_id=e.org_id AND l.employee_id=e.id WHERE e.org_id=$1 AND e.id=$2 AND l.valid_from<=$3::date AND (l.valid_to IS NULL OR l.valid_to>$4::date))",
+		)
+	case "department":
+		q = r.sql(
+			"SELECT EXISTS(SELECT 1 FROM org_unit u JOIN org_unit_version v ON v.org_id=u.org_id AND v.org_unit_id=u.id WHERE u.org_id=? AND u.id=? AND u.kind='department' AND v.valid_from<=? AND (v.valid_to IS NULL OR v.valid_to>?))",
+			"SELECT EXISTS(SELECT 1 FROM org_unit u JOIN org_unit_version v ON v.org_id=u.org_id AND v.org_unit_id=u.id WHERE u.org_id=$1 AND u.id=$2 AND u.kind='department' AND v.valid_from<=$3::date AND (v.valid_to IS NULL OR v.valid_to>$4::date))",
+		)
 	default:
 		return false, nil
 	}
 	var found bool
-	err := r.db.QueryRowContext(ctx, q, org, scope.ID).Scan(&found)
+	err = r.db.QueryRowContext(ctx, q, org, scope.ID, day, day).Scan(&found)
 	return found, safeError(err)
 }
 
@@ -225,7 +235,7 @@ func (r reader) ScopeCovered(ctx context.Context, org string, outer, inner authz
 	if authz.Covers(outer, inner, org) {
 		return true, nil
 	}
-	if outer.Kind != "team" || inner.Kind != "employee" {
+	if outer.Kind != "department" || inner.Kind != "employee" {
 		return false, nil
 	}
 	day, err := r.organizationDate(ctx, org, now)
@@ -234,9 +244,9 @@ func (r reader) ScopeCovered(ctx context.Context, org string, outer, inner authz
 	}
 	var found bool
 	q := r.sql(
-		"WITH current_day(day) AS (SELECT ?) SELECT EXISTS(SELECT 1 FROM team_membership m JOIN employee e ON e.org_id=m.org_id AND e.id=m.employee_id JOIN team t ON t.org_id=m.org_id AND t.id=m.team_id CROSS JOIN current_day d WHERE m.org_id=? AND m.team_id=? AND m.employee_id=? AND m.superseded=0 AND m.valid_from<=d.day AND (m.valid_to IS NULL OR m.valid_to>d.day) AND (m.effective_to IS NULL OR m.effective_to>d.day) AND e.valid_from<=d.day AND (e.valid_to IS NULL OR e.valid_to>d.day) AND t.valid_from<=d.day AND (t.valid_to IS NULL OR t.valid_to>d.day))",
-		"WITH current_day(day) AS (SELECT $1::date) SELECT EXISTS(SELECT 1 FROM team_membership m JOIN employee e ON e.org_id=m.org_id AND e.id=m.employee_id JOIN team t ON t.org_id=m.org_id AND t.id=m.team_id CROSS JOIN current_day d WHERE m.org_id=$2 AND m.team_id=$3 AND m.employee_id=$4 AND m.superseded=false AND m.valid_from<=d.day AND (m.valid_to IS NULL OR m.valid_to>d.day) AND (m.effective_to IS NULL OR m.effective_to>d.day) AND e.valid_from<=d.day AND (e.valid_to IS NULL OR e.valid_to>d.day) AND t.valid_from<=d.day AND (t.valid_to IS NULL OR t.valid_to>d.day))")
-	err = r.db.QueryRowContext(ctx, q, day, org, outer.ID, inner.ID).Scan(&found)
+		"SELECT EXISTS(SELECT 1 FROM job_assignment a JOIN org_unit d ON d.org_id=a.org_id AND d.id=a.department_id AND d.kind='department' JOIN org_unit_version dv ON dv.org_id=d.org_id AND dv.org_unit_id=d.id JOIN employee_lifecycle_history e ON e.org_id=a.org_id AND e.employee_id=a.employee_id WHERE a.org_id=? AND a.department_id=? AND a.employee_id=? AND a.valid_from<=? AND (a.valid_to IS NULL OR a.valid_to>?) AND dv.valid_from<=? AND (dv.valid_to IS NULL OR dv.valid_to>?) AND e.valid_from<=? AND (e.valid_to IS NULL OR e.valid_to>?))",
+		"SELECT EXISTS(SELECT 1 FROM job_assignment a JOIN org_unit d ON d.org_id=a.org_id AND d.id=a.department_id AND d.kind='department' JOIN org_unit_version dv ON dv.org_id=d.org_id AND dv.org_unit_id=d.id JOIN employee_lifecycle_history e ON e.org_id=a.org_id AND e.employee_id=a.employee_id WHERE a.org_id=$1 AND a.department_id=$2 AND a.employee_id=$3 AND a.valid_from<=$4::date AND (a.valid_to IS NULL OR a.valid_to>$5::date) AND dv.valid_from<=$6::date AND (dv.valid_to IS NULL OR dv.valid_to>$7::date) AND e.valid_from<=$8::date AND (e.valid_to IS NULL OR e.valid_to>$9::date))")
+	err = r.db.QueryRowContext(ctx, q, org, outer.ID, inner.ID, day, day, day, day, day, day).Scan(&found)
 	return found, safeError(err)
 }
 
@@ -274,7 +284,7 @@ func (r reader) Qualified(ctx context.Context, org, subject, capability string, 
 }
 
 func (r reader) RelationQualified(ctx context.Context, org, subject string, scope authz.Scope, ref authz.RelationReference, now time.Time) (bool, error) {
-	if ref.Kind != "reporting_line" && ref.Kind != "team_membership" || !value.ValidID(ref.ID) {
+	if ref.Kind != "reporting_line" && ref.Kind != "job_assignment" || !value.ValidID(ref.ID) {
 		return false, nil
 	}
 	var actor string
@@ -299,7 +309,7 @@ func (r reader) RelationQualified(ctx context.Context, org, subject string, scop
 		return false, nil
 	}
 	return ref.Kind == "reporting_line" && scope.Kind == "employee" && scope.ID == tenure.EmployeeID && actor == tenure.ManagerEmployeeID ||
-		ref.Kind == "team_membership" && scope.Kind == "team" && scope.ID == tenure.TeamID && actor == tenure.EmployeeID, nil
+		ref.Kind == "job_assignment" && scope.Kind == "department" && scope.ID == tenure.DepartmentID && actor == tenure.EmployeeID, nil
 }
 
 // SQL coverage is applied before the limit, so hidden rows do not consume a page
@@ -327,7 +337,7 @@ func (r reader) VisibleGrants(ctx context.Context, org string, authorities []aut
 		switch a.Scope.Kind {
 		case "employee":
 			q.WriteString(" AND g.scope_kind='employee' AND g.scope_id=" + bind(a.Scope.ID))
-		case "team":
+		case "department":
 			if day == "" {
 				var err error
 				day, err = r.organizationDate(ctx, org, now)
@@ -335,13 +345,13 @@ func (r reader) VisibleGrants(ctx context.Context, org string, authorities []aut
 					return nil, err
 				}
 			}
-			teamID := bind(a.Scope.ID)
-			q.WriteString(" AND ((g.scope_kind='team' AND g.scope_id=" + teamID + ") OR (g.scope_kind='employee' AND EXISTS(SELECT 1 FROM team_membership m JOIN employee e ON e.org_id=m.org_id AND e.id=m.employee_id JOIN team t ON t.org_id=m.org_id AND t.id=m.team_id WHERE m.org_id=g.org_id AND m.employee_id=g.employee_id AND m.team_id=" + bind(a.Scope.ID) + r.sql(" AND m.superseded=0", " AND m.superseded=false") + " AND m.valid_from<=" + bind(day) + " AND (m.valid_to IS NULL OR m.valid_to>" + bind(day) + ") AND (m.effective_to IS NULL OR m.effective_to>" + bind(day) + ") AND e.valid_from<=" + bind(day) + " AND (e.valid_to IS NULL OR e.valid_to>" + bind(day) + ") AND t.valid_from<=" + bind(day) + " AND (t.valid_to IS NULL OR t.valid_to>" + bind(day) + "))))")
+			departmentID := bind(a.Scope.ID)
+			q.WriteString(" AND ((g.scope_kind='department' AND g.scope_id=" + departmentID + ") OR (g.scope_kind='employee' AND EXISTS(SELECT 1 FROM job_assignment ja JOIN org_unit d ON d.org_id=ja.org_id AND d.id=ja.department_id AND d.kind='department' JOIN org_unit_version dv ON dv.org_id=d.org_id AND dv.org_unit_id=d.id JOIN employee_lifecycle_history e ON e.org_id=ja.org_id AND e.employee_id=ja.employee_id WHERE ja.org_id=g.org_id AND ja.employee_id=g.employee_id AND ja.department_id=" + bind(a.Scope.ID) + " AND ja.valid_from<=" + bind(day) + " AND (ja.valid_to IS NULL OR ja.valid_to>" + bind(day) + ") AND dv.valid_from<=" + bind(day) + " AND (dv.valid_to IS NULL OR dv.valid_to>" + bind(day) + ") AND e.valid_from<=" + bind(day) + " AND (e.valid_to IS NULL OR e.valid_to>" + bind(day) + "))))")
 		case "org":
 			if a.Scope.ID != org {
 				q.WriteString(" AND 1=0")
 			} else {
-				q.WriteString(" AND (g.scope_kind IN ('employee','team') OR (g.scope_kind='org' AND g.scope_id=" + bind(org) + "))")
+				q.WriteString(" AND (g.scope_kind IN ('employee','department') OR (g.scope_kind='org' AND g.scope_id=" + bind(org) + "))")
 			}
 		default:
 			q.WriteString(" AND 1=0")
@@ -413,11 +423,11 @@ func (t *transaction) InsertGrant(ctx context.Context, g authz.GrantDTO) error {
 	if g.Category == "financial" && (g.RelationBound || g.RelationRef != nil) {
 		return fault.Invalid
 	}
-	var employee, team, relationKind, reportingID, membershipID, actor any
+	var employee, department, relationKind, reportingID, assignmentID, actor any
 	if g.Scope.Kind == "employee" {
 		employee = g.Scope.ID
-	} else if g.Scope.Kind == "team" {
-		team = g.Scope.ID
+	} else if g.Scope.Kind == "department" {
+		department = g.Scope.ID
 	}
 	if g.RelationBound {
 		if g.RelationRef == nil {
@@ -435,8 +445,8 @@ func (t *transaction) InsertGrant(ctx context.Context, g authz.GrantDTO) error {
 		switch g.RelationRef.Kind {
 		case "reporting_line":
 			reportingID = g.RelationRef.ID
-		case "team_membership":
-			membershipID = g.RelationRef.ID
+		case "job_assignment":
+			assignmentID = g.RelationRef.ID
 		default:
 			return fault.Invalid
 		}
@@ -467,8 +477,8 @@ func (t *transaction) InsertGrant(ctx context.Context, g authz.GrantDTO) error {
 		}
 	}
 	_, err := t.tx.ExecContext(ctx, t.sql(
-		"INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,purpose,valid_from,expires_at,mfa_required,authority_id,issued_by,issued_at,team_id,relation_bound,relation_kind,reporting_line_id,membership_id,relation_actor_employee_id,object_kind,object_ref,object_employee_id,interview_id,note_head_id,note_version_id,action_item_id,compensation_proposal_id,compensation_event_id,compensation_term_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-		"INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,purpose,valid_from,expires_at,mfa_required,authority_id,issued_by,issued_at,team_id,relation_bound,relation_kind,reporting_line_id,membership_id,relation_actor_employee_id,object_kind,object_ref,object_employee_id,interview_id,note_head_id,note_version_id,action_item_id,compensation_proposal_id,compensation_event_id,compensation_term_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)"), g.ID, g.OrgID, g.SubjectID, g.Capability, g.Category, g.Scope.Kind, g.Scope.ID, employee, g.Purpose, t.bindTime(g.ValidFrom), t.bindTime(g.ExpiresAt), g.MFARequired, *g.AuthorityID, *g.IssuedBy, t.bindTime(*g.IssuedAt), team, g.RelationBound, relationKind, reportingID, membershipID, actor, objectKind, objectID, objectEmployee, interviewID, headID, versionID, actionID, proposalID, eventID, termID)
+		"INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,purpose,valid_from,expires_at,mfa_required,authority_id,issued_by,issued_at,department_id,relation_bound,relation_kind,reporting_line_id,job_assignment_id,relation_actor_employee_id,object_kind,object_ref,object_employee_id,interview_id,note_head_id,note_version_id,action_item_id,compensation_proposal_id,compensation_event_id,compensation_term_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,purpose,valid_from,expires_at,mfa_required,authority_id,issued_by,issued_at,department_id,relation_bound,relation_kind,reporting_line_id,job_assignment_id,relation_actor_employee_id,object_kind,object_ref,object_employee_id,interview_id,note_head_id,note_version_id,action_item_id,compensation_proposal_id,compensation_event_id,compensation_term_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)"), g.ID, g.OrgID, g.SubjectID, g.Capability, g.Category, g.Scope.Kind, g.Scope.ID, employee, g.Purpose, t.bindTime(g.ValidFrom), t.bindTime(g.ExpiresAt), g.MFARequired, *g.AuthorityID, *g.IssuedBy, t.bindTime(*g.IssuedAt), department, g.RelationBound, relationKind, reportingID, assignmentID, actor, objectKind, objectID, objectEmployee, interviewID, headID, versionID, actionID, proposalID, eventID, termID)
 	if err != nil {
 		return safeError(err)
 	}
@@ -566,26 +576,36 @@ func (r *Repository) GrantAuditDenied(ctx context.Context, a authz.Audit) error 
 	return r.AuditDenied(ctx, grantAudit(a))
 }
 
-// Employee and grant row locks follow the already acquired organization and
-// canonical subject guards. SQLite's first guard UPDATE owns the writer lock.
+// Employee and department row locks follow the already acquired organization
+// and canonical subject guards. SQLite's first guard UPDATE owns the writer lock.
 func (t *transaction) LockScope(ctx context.Context, org string, scope authz.Scope) error {
 	if org != t.org {
 		return fault.NotFound
 	}
-	if (scope.Kind != "employee" && scope.Kind != "team") || t.backend == "sqlite" {
-		owned, err := t.reader.OwnsScope(ctx, org, scope)
-		if err != nil {
-			return err
+	if scope.Kind != "employee" && scope.Kind != "department" {
+		if scope.Kind == "org" && scope.ID == org {
+			return nil
 		}
-		if !owned {
+		return fault.Forbidden
+	}
+	if t.backend == "sqlite" {
+		var found bool
+		q := "SELECT EXISTS(SELECT 1 FROM employee WHERE org_id=? AND id=?)"
+		if scope.Kind == "department" {
+			q = "SELECT EXISTS(SELECT 1 FROM org_unit WHERE org_id=? AND id=? AND kind='department')"
+		}
+		if err := t.tx.QueryRowContext(ctx, q, org, scope.ID).Scan(&found); err != nil {
+			return safeError(err)
+		}
+		if !found {
 			return fault.Forbidden
 		}
 		return nil
 	}
 	var id string
 	q := "SELECT id FROM employee WHERE org_id=$1 AND id=$2 FOR UPDATE"
-	if scope.Kind == "team" {
-		q = "SELECT id FROM team WHERE org_id=$1 AND id=$2 FOR UPDATE"
+	if scope.Kind == "department" {
+		q = "SELECT id FROM org_unit WHERE org_id=$1 AND id=$2 AND kind='department' FOR UPDATE"
 	}
 	err := t.tx.QueryRowContext(ctx, q, org, scope.ID).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {

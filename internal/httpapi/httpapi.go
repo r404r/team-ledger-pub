@@ -98,15 +98,15 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	hash := sha256.Sum256(raw)
 	req.TokenHash = hash[:]
-	employeeScope, teamScope := "", ""
+	employeeScope, departmentScope := "", ""
 	invalidScope := false
 	if r.URL.Path == "/api/v1/session" && r.Method == http.MethodGet {
 		q, e := url.ParseQuery(r.URL.RawQuery)
-		if e != nil || len(q) > 1 || !singleQuery(q, []string{"employee_id", "team_id"}) {
+		if e != nil || len(q) > 1 || !singleQuery(q, []string{"employee_id", "department_id"}) {
 			invalidScope = true
 		} else if len(q) == 1 {
-			employeeScope, teamScope = q.Get("employee_id"), q.Get("team_id")
-			if !value.ValidID(employeeScope) && !value.ValidID(teamScope) {
+			employeeScope, departmentScope = q.Get("employee_id"), q.Get("department_id")
+			if !value.ValidID(employeeScope) && !value.ValidID(departmentScope) {
 				invalidScope = true
 			}
 		}
@@ -195,8 +195,8 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				category = "pii"
 			}
 			allowed := snap.Allows(cap, category, employeeScope, "organization_management", now)
-			if teamScope != "" {
-				allowed = snap.AllowsTeam(cap, category, teamScope, "organization_management", now)
+			if departmentScope != "" {
+				allowed = snap.AllowsDepartment(cap, category, departmentScope, "organization_management", now)
 			}
 			if allowed {
 				caps = append(caps, cap)
@@ -213,10 +213,10 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.fail(w, e, requestID)
 			return
 		}
-		interviewPermissions := currentInterviewPermissions(snap, employeeScope, teamScope, now)
+		interviewPermissions := currentInterviewPermissions(snap, employeeScope, departmentScope, now)
 		compensationPermissions := []compensation.Permission{}
 		if financeSession && h.compensation.Policy.Enabled {
-			compensationPermissions = currentCompensationPermissions(snap, employeeScope, teamScope, now)
+			compensationPermissions = currentCompensationPermissions(snap, employeeScope, departmentScope, now)
 		}
 		for _, permission := range compensationPermissions {
 			present := false
@@ -246,8 +246,8 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if employeeScope != "" {
 			scopeKind, scopeID = "employee", employeeScope
 		}
-		if teamScope != "" {
-			scopeKind, scopeID = "team", teamScope
+		if departmentScope != "" {
+			scopeKind, scopeID = "department", departmentScope
 		}
 		h.reply(w, 200, struct {
 			Subject                 string                    `json:"subject_id"`
@@ -520,7 +520,7 @@ func walkJSON(d *json.Decoder, depth int, object string) error {
 		return nil
 	}
 	switch object {
-	case "subject_id", "capability", "category", "kind", "id", "purpose", "expires_at", "authority_id", "expected_revision", "expected_auth_epoch", "reason", "code", "label", "expected_graph_revision", "action", "ref", "employee_id", "team_id", "department_id", "parent_team_id", "manager_employee_id", "reporting_kind", "end_date", "title", "position_code", "description", "as_of", "q", "cursor", "scheduled_at", "expected_head_revision", "text", "edit_reason", "expected_version", "minimal_shared_text", "safe_blocker_text", "format", "return_to":
+	case "subject_id", "capability", "category", "kind", "id", "purpose", "expires_at", "authority_id", "expected_revision", "expected_auth_epoch", "reason", "code", "label", "expected_graph_revision", "action", "ref", "employee_id", "department_id", "manager_employee_id", "reporting_kind", "end_date", "title", "position_code", "description", "as_of", "q", "cursor", "scheduled_at", "expected_head_revision", "text", "edit_reason", "expected_version", "minimal_shared_text", "safe_blocker_text", "format", "return_to":
 		if _, ok := t.(string); !ok {
 			return fault.Invalid
 		}
@@ -650,7 +650,7 @@ func allowedField(object, key string) bool {
 		return key == "expected_graph_revision" || key == "changes" || key == "reason"
 	case "change_item":
 		switch key {
-		case "action", "kind", "ref", "employee_id", "team_id", "parent_team_id", "manager_employee_id", "reporting_kind", "is_primary", "lifecycle", "end_date", "position":
+		case "action", "kind", "ref", "employee_id", "department_id", "manager_employee_id", "reporting_kind", "is_primary", "lifecycle", "end_date", "position":
 			return true
 		}
 		return false

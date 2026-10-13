@@ -144,7 +144,7 @@ func (s *Service) Read(ctx context.Context, request Request, id, asOf string, in
 	if view.Profile != nil {
 		pii = append(pii, id)
 	}
-	if err = s.releaseQuery(ctx, request, snapshot, graph, view.AuthorizationDate, "OP-ORG-06", []Employee{employee}, nil, nil, pii, false); err != nil {
+	if err = s.releaseQuery(ctx, request, snapshot, graph, view.AuthorizationDate, "OP-ORG-06", []Employee{employee}, pii, false); err != nil {
 		return View{}, s.denied(ctx, request, snapshot, "OP-ORG-06", err)
 	}
 	return view, nil

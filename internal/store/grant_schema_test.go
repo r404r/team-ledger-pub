@@ -97,6 +97,39 @@ func TestGrantSchemaAuthorityOwnersFiniteValuesAndImmutability(t *testing.T) {
 	}
 }
 
+func TestDepartmentAuthorizationScopesRejectNonDepartmentUnits(t *testing.T) {
+	for _, backend := range []string{"sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) {
+			f := testsupport.NewHarness(t, backend)
+			ctx := context.Background()
+			unit, approver, target := value.NewID(), grantSchemaSubject(t, f, f.OrgID), grantSchemaSubject(t, f, f.OrgID)
+			if err := f.Exec(ctx,
+				"INSERT INTO org_unit(org_id,id,code,kind) VALUES(?,?,?,'division')",
+				"INSERT INTO org_unit(org_id,id,code,kind) VALUES($1,$2,$3,'division')",
+				f.OrgID, unit, "SYNTHETIC-NON-DEPARTMENT"); err != nil {
+				t.Fatal(err)
+			}
+			authority := grantSchemaAuthority(f, f.OrgID, f.Owner.SubjectID, approver)
+			authority["scope_kind"], authority["scope_id"], authority["employee_id"], authority["department_id"] = "department", unit, nil, unit
+			migrationConstraint(t, backend, grantSchemaInsert(f.Repo, "delegation_authority", authority))
+
+			assignment := map[string]any{"org_id": f.OrgID, "subject_id": target, "capability": "pii.read", "scope_kind": "department", "scope_id": unit, "department_id": unit}
+			migrationConstraint(t, backend, grantSchemaInsert(f.Repo, "capability_assignment", assignment))
+
+			grant := grantSchemaGrant(f, target)
+			grant["scope_kind"], grant["scope_id"], grant["employee_id"], grant["department_id"] = "department", unit, nil, unit
+			migrationConstraint(t, backend, grantSchemaInsert(f.Repo, "access_grant", grant))
+			var err error
+			if backend == "sqlite" {
+				_, err = f.Repo.DB.ExecContext(ctx, "UPDATE capability_assignment SET scope_kind='department',scope_id=?,employee_id=NULL,department_id=? WHERE org_id=? AND subject_id=? AND capability='organization.read'", unit, unit, f.OrgID, f.Owner.SubjectID)
+			} else {
+				_, err = f.Repo.DB.ExecContext(ctx, "UPDATE capability_assignment SET scope_kind='department',scope_id=$1,employee_id=NULL,department_id=$2 WHERE org_id=$3 AND subject_id=$4 AND capability='organization.read'", unit, unit, f.OrgID, f.Owner.SubjectID)
+			}
+			migrationConstraint(t, backend, err)
+		})
+	}
+}
+
 func TestGrantSchemaSourceActorsRevisionRevocationAndManagement(t *testing.T) {
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {

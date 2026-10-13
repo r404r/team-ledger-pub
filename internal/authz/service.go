@@ -49,6 +49,48 @@ func (s *Service) session(ctx context.Context, r Reader, request Request) (Snaps
 
 // Current approval facts are distinct from their effective intersection with
 // management assignments/grants. Only the latter is used for SQL visibility.
+func (s *Service) managedScopes(ctx context.Context, r Reader, current Snapshot, now time.Time) ([]Scope, error) {
+	if !current.Valid(now) || !now.Before(current.MFAUntil) {
+		return nil, nil
+	}
+	scopes := make([]Scope, 0)
+	seen := map[Scope]bool{}
+	for _, assignment := range current.Assignments {
+		if assignment.Capability != "access_grant.manage" {
+			continue
+		}
+		for _, grant := range current.Grants {
+			if grant.ObjectRef != nil || grant.Capability != "access_grant.manage" || grant.Category != "audit" || grant.Purpose != ManagementPurpose || grant.Revoked || now.Before(grant.ValidFrom) || !now.Before(grant.ExpiresAt) || !current.relationQualified(grant, now) {
+				continue
+			}
+			left, right := Scope{Kind: assignment.ScopeKind, ID: assignment.ScopeID}, Scope{Kind: grant.ScopeKind, ID: grant.ScopeID}
+			forward, err := r.ScopeCovered(ctx, current.OrgID, left, right, now)
+			if err != nil {
+				return nil, err
+			}
+			scope := right
+			if !forward {
+				reverse, err := r.ScopeCovered(ctx, current.OrgID, right, left, now)
+				if err != nil {
+					return nil, err
+				}
+				if !reverse {
+					continue
+				}
+				scope = left
+			}
+			if !seen[scope] {
+				seen[scope] = true
+				scopes = append(scopes, scope)
+			}
+			if len(scopes) > 1000 {
+				return nil, fault.Unavailable
+			}
+		}
+	}
+	return scopes, nil
+}
+
 func (s *Service) authorization(ctx context.Context, r Reader, request Request) (Snapshot, []AuthorityHint, []Authority, error) {
 	current, err := s.session(ctx, r, request)
 	if err != nil {
@@ -57,7 +99,10 @@ func (s *Service) authorization(ctx context.Context, r Reader, request Request) 
 	if request.Purpose != ManagementPurpose {
 		return current, nil, nil, fault.Forbidden
 	}
-	scopes := current.ManagedScopes(s.clock())
+	scopes, err := s.managedScopes(ctx, r, current, s.clock())
+	if err != nil {
+		return current, nil, nil, err
+	}
 	if len(scopes) == 0 {
 		return current, nil, nil, fault.Forbidden
 	}
@@ -86,7 +131,7 @@ func (s *Service) authorization(ctx context.Context, r Reader, request Request) 
 					continue
 				}
 			}
-			owned, err := r.OwnsScope(ctx, current.OrgID, scope)
+			owned, err := r.OwnsScope(ctx, current.OrgID, scope, s.clock())
 			if err != nil {
 				return current, nil, nil, err
 			}
@@ -124,9 +169,9 @@ func (s *Service) SessionAuthorities(ctx context.Context, request Request) ([]Au
 	if err != nil {
 		return nil, err
 	}
-	if len(initial.ManagedScopes(s.clock())) == 0 {
-		return []AuthorityHint{}, nil
-	}
+	// The transaction path computes department/employee intersections against
+	// canonical assignments; an empty-target session snapshot is intentionally
+	// not expanded into a department roster here.
 	var facts []AuthorityHint
 	err = s.Store.WithGrantTx(ctx, initial.OrgID, func(tx Tx) error {
 		if err := tx.LockSubjects(ctx, initial.OrgID, []string{initial.SubjectID}); err != nil {
@@ -216,7 +261,7 @@ func validFilter(f Filter) bool {
 			return false
 		}
 	}
-	if (f.ScopeKind == "") != (f.ScopeID == "") || f.ScopeKind != "" && f.ScopeKind != "org" && f.ScopeKind != "employee" && f.ScopeKind != "team" {
+	if (f.ScopeKind == "") != (f.ScopeID == "") || f.ScopeKind != "" && f.ScopeKind != "org" && f.ScopeKind != "employee" && f.ScopeKind != "department" {
 		return false
 	}
 	if f.Category != "" && f.Category != "metadata" && f.Category != "pii" && f.Category != "audit" && f.Category != "financial" && !noteCategory(f.Category) {
@@ -251,7 +296,7 @@ func validRelation(bound bool, ref *RelationReference, scope Scope) bool {
 	if !bound {
 		return ref == nil
 	}
-	return ref != nil && value.ValidID(ref.ID) && (ref.Kind == "reporting_line" && scope.Kind == "employee" || ref.Kind == "team_membership" && scope.Kind == "team")
+	return ref != nil && value.ValidID(ref.ID) && (ref.Kind == "reporting_line" && scope.Kind == "employee" || ref.Kind == "job_assignment" && scope.Kind == "department")
 }
 
 func (s *Service) covered(ctx context.Context, r Reader, grant GrantDTO, authorities []Authority, org, authorityID string) (bool, error) {
@@ -275,7 +320,7 @@ func (s *Service) Issue(ctx context.Context, request Request, command IssueComma
 	expected, valid := value.Revision(command.ExpectedRevision)
 	from, validFrom := parseTimestamp(command.ValidFrom)
 	to, validTo := parseTimestamp(command.ExpiresAt)
-	if !valid || !validFrom || !validTo || !to.After(from) || !value.ValidID(request.Key) || !value.ValidID(command.SubjectID) || !value.ValidID(command.AuthorityID) || !value.ValidID(command.Scope.ID) || (command.Scope.Kind != "org" && command.Scope.Kind != "employee" && command.Scope.Kind != "team") || !validRelation(command.RelationBound, command.RelationRef, command.Scope) || !normalizeObjectCommand(&command) || !SupportedPair(command.Capability, command.Category, command.Purpose) || command.Capability == "access_grant.manage" {
+	if !valid || !validFrom || !validTo || !to.After(from) || !value.ValidID(request.Key) || !value.ValidID(command.SubjectID) || !value.ValidID(command.AuthorityID) || !value.ValidID(command.Scope.ID) || (command.Scope.Kind != "org" && command.Scope.Kind != "employee" && command.Scope.Kind != "department") || !validRelation(command.RelationBound, command.RelationRef, command.Scope) || !normalizeObjectCommand(&command) || !SupportedPair(command.Capability, command.Category, command.Purpose) || command.Capability == "access_grant.manage" {
 		return Result{}, fault.Invalid
 	}
 	command.ValidFrom, command.ExpiresAt = from.Format(time.RFC3339Nano), to.Format(time.RFC3339Nano)
@@ -309,7 +354,7 @@ func (s *Service) Issue(ctx context.Context, request Request, command IssueComma
 		if from.Before(authority.ValidFrom) || to.After(authority.ExpiresAt) || authority.MFARequired && !command.MFARequired {
 			return fault.Forbidden
 		}
-		owned, err := tx.OwnsScope(ctx, current.OrgID, command.Scope)
+		owned, err := tx.OwnsScope(ctx, current.OrgID, command.Scope, s.clock())
 		if err != nil {
 			return err
 		}

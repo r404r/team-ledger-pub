@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,6 +51,126 @@ func changeReporting(t *testing.T, f *testsupport.Fixture, org string, actor tes
 	return result
 }
 
+func createDepartment(t *testing.T, f *testsupport.Fixture) string {
+	t.Helper()
+	ctx := context.Background()
+	catalogs, err := f.Repo.WorkforceCatalogs(ctx, f.OrgID, f.Now.Format("2006-01-02"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, label, from := "SYNTHETIC-AUTH-DEPARTMENT", "Synthetic Authorization Department", f.Now.AddDate(0, 0, -10).Format("2006-01-02")
+	result, err := f.Service.ChangeCatalogs(ctx, f.Request(f.Owner), f.OrgID, organization.CatalogChangeCommand{
+		ExpectedCatalogRevision: catalogs.CatalogRevision,
+		ExpectedGraphRevision:   catalogs.GraphRevision,
+		Changes: []organization.CatalogChangeItem{{
+			Action: "create", Kind: "department", Code: &code, Label: &label, ValidFrom: &from,
+		}},
+	})
+	if err != nil || len(result.Items) != 1 {
+		t.Fatal("real department catalog change:", err)
+	}
+	return result.Items[0].ID
+}
+
+func changeAssignment(t *testing.T, f *testsupport.Fixture, employee, department, action string, ref *string, date string) organization.WorkforceChangeResult {
+	t.Helper()
+	ctx := context.Background()
+	catalogs, err := f.Repo.WorkforceCatalogs(ctx, f.OrgID, f.Now.Format("2006-01-02"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var revision int64
+	query := "SELECT workforce_revision FROM employee WHERE org_id=? AND id=?"
+	if f.Backend == "postgres" {
+		query = "SELECT workforce_revision FROM employee WHERE org_id=$1 AND id=$2"
+	}
+	if err = f.Repo.DB.QueryRowContext(ctx, query, f.OrgID, employee).Scan(&revision); err != nil {
+		t.Fatal(err)
+	}
+	item := organization.WorkforceChangeItem{Action: action, Kind: "job_assignment", Ref: ref, EmployeeID: employee}
+	if action == "end" {
+		item.EffectiveTo = &date
+	} else {
+		item.DepartmentID, item.ValidFrom = &department, &date
+		if action == "replace" {
+			item.EffectiveTo = &date
+		}
+	}
+	result, err := f.Service.ChangeWorkforce(ctx, f.Request(f.Owner), f.OrgID, organization.WorkforceChangeCommand{
+		ExpectedCatalogRevision:  catalogs.CatalogRevision,
+		ExpectedGraphRevision:    catalogs.GraphRevision,
+		ExpectedEmployeeRevision: map[string]string{employee: strconv.FormatInt(revision, 10)},
+		Changes:                  []organization.WorkforceChangeItem{item},
+	})
+	if err != nil {
+		t.Fatal("real atomic job-assignment change:", err)
+	}
+	return result
+}
+
+func replaceDepartmentLabel(t *testing.T, f *testsupport.Fixture, department string) {
+	t.Helper()
+	ctx := context.Background()
+	catalogs, err := f.Repo.WorkforceCatalogs(ctx, f.OrgID, f.Now.Format("2006-01-02"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	label, effective := "Synthetic Authorization Department Renamed", f.Now.AddDate(0, 0, -1).Format("2006-01-02")
+	result, err := f.Service.ChangeCatalogs(ctx, f.Request(f.Owner), f.OrgID, organization.CatalogChangeCommand{
+		ExpectedCatalogRevision: catalogs.CatalogRevision,
+		ExpectedGraphRevision:   catalogs.GraphRevision,
+		Changes: []organization.CatalogChangeItem{{
+			Action: "replace", Kind: "department", Ref: &department, Label: &label, EffectiveTo: &effective,
+		}},
+	})
+	if err != nil || len(result.Items) != 1 || result.Items[0].ID != department {
+		t.Fatal("real department version replacement:", err)
+	}
+}
+
+func cloneGrantWithoutRelationKind(t *testing.T, f *testsupport.Fixture, id string) error {
+	t.Helper()
+	query := "SELECT name FROM pragma_table_info('access_grant') ORDER BY cid"
+	if f.Backend == "postgres" {
+		query = "SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='access_grant' ORDER BY ordinal_position"
+	}
+	rows, err := f.Repo.DB.QueryContext(context.Background(), query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var columns, expressions []string
+	for rows.Next() {
+		var name string
+		if err = rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		quoted := `"` + name + `"`
+		columns = append(columns, quoted)
+		switch name {
+		case "id":
+			if f.Backend == "postgres" {
+				expressions = append(expressions, "$1")
+			} else {
+				expressions = append(expressions, "?")
+			}
+		case "relation_kind":
+			expressions = append(expressions, "NULL")
+		default:
+			expressions = append(expressions, quoted)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	where := "?"
+	if f.Backend == "postgres" {
+		where = "$2"
+	}
+	_, err = f.Repo.DB.ExecContext(context.Background(), "INSERT INTO access_grant("+strings.Join(columns, ",")+") SELECT "+strings.Join(expressions, ",")+" FROM access_grant WHERE id="+where, value.NewID(), id)
+	return err
+}
+
 func bindRelationActor(t *testing.T, f *testsupport.Fixture, actor string) {
 	t.Helper()
 	if err := f.Exec(context.Background(), "INSERT INTO subject_employee(org_id,subject_id,employee_id) VALUES(?,?,?)", "INSERT INTO subject_employee(org_id,subject_id,employee_id) VALUES($1,$2,$3)", f.OrgID, f.Reader.SubjectID, actor); err != nil {
@@ -83,6 +204,9 @@ func TestRelationGrantOriginalReceiptSurvivesEndAndReplacementWithoutRevival(t *
 				issued, err := f.Authz.Issue(ctx, request, command)
 				if err != nil {
 					t.Fatal("qualified explicit relation issue:", err)
+				}
+				if err = cloneGrantWithoutRelationKind(t, f, issued.ID); err == nil {
+					t.Fatal("database accepted reporting-line-bound grant without relation kind")
 				}
 				before, err := f.Repo.Security(ctx, f.Reader.Hash, f.OrgID, employee)
 				if err != nil {
@@ -242,4 +366,99 @@ func TestScheduledRelationEndUsesServiceClockWithoutSQLCurrentTimestamp(t *testi
 			}
 		}
 	})
+}
+
+func TestDepartmentGrantAndJobAssignmentReferenceEndOrReplaceNeverRevives(t *testing.T) {
+	for _, action := range []string{"end", "replace"} {
+		t.Run(action, func(t *testing.T) {
+			grantBackends(t, func(t *testing.T, f *testsupport.Fixture) {
+				ctx := context.Background()
+				actor, target := makeEmployee(t, f), makeEmployee(t, f)
+				department := createDepartment(t, f)
+				from := f.Now.AddDate(0, 0, -2).Format("2006-01-02")
+				actorAssignment := changeAssignment(t, f, actor, department, "add", nil, from).Items[0].ID
+				changeAssignment(t, f, target, department, "add", nil, from)
+				bindRelationActor(t, f, actor)
+				replaceDepartmentLabel(t, f, department)
+
+				command := grantCommand(f, "pii.read", currentEpoch(t, f))
+				command.Scope = authz.Scope{Kind: "department", ID: department}
+				command.RelationBound = true
+				command.RelationRef = &authz.RelationReference{Kind: "job_assignment", ID: actorAssignment}
+				issued, err := f.Authz.Issue(ctx, managementRequest(f), command)
+				if err != nil {
+					t.Fatal("qualified exact job assignment issue:", err)
+				}
+				if err = cloneGrantWithoutRelationKind(t, f, issued.ID); err == nil {
+					t.Fatal("database accepted job-assignment-bound grant without relation kind")
+				}
+				before, err := f.Repo.Security(ctx, f.Reader.Hash, f.OrgID, target)
+				if err != nil || !before.Allows("pii.read", "pii", target, "organization_management", f.Now) {
+					t.Fatal("current department assignment did not authorize exact employee", err)
+				}
+
+				day := f.Now.Format("2006-01-02")
+				changeAssignment(t, f, actor, department, action, &actorAssignment, day)
+				after, err := f.Repo.Security(ctx, f.Reader.Hash, f.OrgID, target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if after.Allows("pii.read", "pii", target, "organization_management", f.Now) {
+					t.Fatal("ended or replaced immutable job assignment revived bound grant")
+				}
+				stored, err := f.Repo.Grant(ctx, f.OrgID, issued.ID)
+				if err != nil || stored.RelationRef == nil || stored.RelationRef.Kind != "job_assignment" || stored.RelationRef.ID != actorAssignment || stored.Scope.Kind != "department" || stored.Scope.ID != department {
+					t.Fatal("typed job-assignment provenance was not preserved", err)
+				}
+				if _, err = f.Authz.Issue(ctx, managementRequest(f), command); !errors.Is(err, fault.Forbidden) {
+					t.Fatal("new issue accepted ended or replaced job assignment", err)
+				}
+			})
+		})
+	}
+}
+
+func TestDepartmentEmployeeManagementIntersectionUsesCanonicalAssignment(t *testing.T) {
+	for _, orientation := range []string{"assignment_department", "grant_department"} {
+		t.Run(orientation, func(t *testing.T) {
+			grantBackends(t, func(t *testing.T, f *testsupport.Fixture) {
+				ctx := context.Background()
+				employee := makeEmployee(t, f)
+				department := createDepartment(t, f)
+				from := f.Now.AddDate(0, 0, -2).Format("2006-01-02")
+				changeAssignment(t, f, employee, department, "add", nil, from)
+
+				assignmentKind, assignmentID, assignmentEmployee, assignmentDepartment := "employee", employee, any(employee), any(nil)
+				grantKind, grantID, grantEmployee, grantDepartment := "department", department, any(nil), any(department)
+				if orientation == "assignment_department" {
+					assignmentKind, assignmentID, assignmentEmployee, assignmentDepartment = "department", department, nil, department
+					grantKind, grantID, grantEmployee, grantDepartment = "employee", employee, employee, nil
+				}
+				if err := f.Exec(ctx,
+					"UPDATE capability_assignment SET scope_kind=?,scope_id=?,employee_id=?,department_id=? WHERE org_id=? AND subject_id=? AND capability='access_grant.manage'",
+					"UPDATE capability_assignment SET scope_kind=$1,scope_id=$2,employee_id=$3,department_id=$4 WHERE org_id=$5 AND subject_id=$6 AND capability='access_grant.manage'",
+					assignmentKind, assignmentID, assignmentEmployee, assignmentDepartment, f.OrgID, f.Manager.SubjectID); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.Exec(ctx,
+					"UPDATE access_grant SET revoked=1 WHERE org_id=? AND subject_id=? AND capability='access_grant.manage'",
+					"UPDATE access_grant SET revoked=true WHERE org_id=$1 AND subject_id=$2 AND capability='access_grant.manage'",
+					f.OrgID, f.Manager.SubjectID); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.Exec(ctx,
+					"INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,department_id,purpose,valid_from,expires_at,mfa_required) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1)",
+					"INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,employee_id,department_id,purpose,valid_from,expires_at,mfa_required) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,true)",
+					value.NewID(), f.OrgID, f.Manager.SubjectID, "access_grant.manage", "audit", grantKind, grantID, grantEmployee, grantDepartment, authz.ManagementPurpose, f.Repo.BindTime(f.Now.Add(-time.Hour)), f.Repo.BindTime(f.Now.Add(time.Hour))); err != nil {
+					t.Fatal(err)
+				}
+
+				command := grantCommand(f, "pii.read", currentEpoch(t, f))
+				command.Scope = authz.Scope{Kind: "employee", ID: employee}
+				if _, err := f.Authz.Issue(ctx, managementRequest(f), command); err != nil {
+					t.Fatal("canonical department/employee management intersection unavailable:", err)
+				}
+			})
+		})
+	}
 }

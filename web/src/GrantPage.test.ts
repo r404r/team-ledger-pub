@@ -446,26 +446,46 @@ describe('P-SEC-01 current independent grant management', () => {
     expect(page.find('[aria-label="授权预览"]').exists()).toBe(false)
     expect(page.text()).not.toContain('授予成功')
   })
-  it('uses exact approved team scope and typed membership binding without inventing descendant entitlement', async () => {
-    const teamAuthority = { ...authority, scope: { kind: 'team', id: OTHER }, delegable_scopes: [{ kind: 'team', id: OTHER }] }
-    api.session = { ...session, grant_authorities: [teamAuthority] }
+  it('uses exact approved department scope and typed job-assignment binding without inventing inherited entitlement', async () => {
+    const departmentAuthority = { ...authority, scope: { kind: 'department', id: OTHER }, delegable_scopes: [{ kind: 'department', id: OTHER }] }
+    api.session = { ...session, grant_authorities: [departmentAuthority] }
     api.replies = []
-    api.reply('GET', '/api/v1/access-grants', 200, list([], EPOCH, null, [teamAuthority]))
+    api.reply('GET', '/api/v1/access-grants', 200, list([], EPOCH, null, [departmentAuthority]))
     const page = await open()
     await action(page, /^新建授权$/).trigger('click')
     await field(page, /受授权主体/).setValue(READER)
+    await field(page, /^授权 scope 类型$/).setValue('department')
+    await field(page, /^授权 scope ID$/).setValue(OTHER)
     await field(page, /生效时间/).setValue(START)
     await field(page, /到期时间/).setValue(END)
-    await field(page, /关系绑定类型/).setValue('team_membership')
+    await field(page, /关系绑定类型/).setValue('job_assignment')
     await field(page, /原任职关系 ID/).setValue(EMPLOYEE)
     await action(page, /^预览授权$/).trigger('click')
     api.reply('POST', '/api/v1/access-grants', 422, { code: 'RELATION_UNQUALIFIED' })
     await action(page, /^确认授予$/).trigger('click'); await settle()
     const body = JSON.parse(api.commands()[0]!.body!)
-    expect(body.scope).toEqual({ kind: 'team', id: OTHER })
-    expect(body.relation_ref).toEqual({ kind: 'team_membership', id: EMPLOYEE })
+    expect(body.scope).toEqual({ kind: 'department', id: OTHER })
+    expect(body.relation_ref).toEqual({ kind: 'job_assignment', id: EMPLOYEE })
     expect(body.relation_bound).toBe(true)
     expect(page.text()).not.toContain('授予成功')
+  })
+  it('previews an employee grant under department delegation while leaving canonical coverage to the server', async () => {
+    const departmentAuthority = { ...authority, scope: { kind: 'department', id: OTHER }, delegable_scopes: [{ kind: 'department', id: OTHER }] }
+    api.session = { ...session, grant_authorities: [departmentAuthority] }
+    api.replies = []
+    api.reply('GET', '/api/v1/access-grants', 200, list([], EPOCH, null, [departmentAuthority]))
+    const page = await open()
+    await action(page, /^新建授权$/).trigger('click')
+    await field(page, /受授权主体/).setValue(READER)
+    await field(page, /^授权 scope 类型$/).setValue('employee')
+    await field(page, /^授权 scope ID$/).setValue(EMPLOYEE)
+    await field(page, /生效时间/).setValue(START)
+    await field(page, /到期时间/).setValue(END)
+    await action(page, /^预览授权$/).trigger('click')
+    await settle()
+    expect(page.find('[aria-label="授权预览"]').exists()).toBe(true)
+    expect(page.text()).toContain('请逐项确认真实批准范围')
+    expect(api.commands()).toHaveLength(0)
   })
   for (const boundary of ['self', 'outside', 'invalid-date'] as const) {
     it(`rejects ${boundary} preview without issuing a command`, async () => {
