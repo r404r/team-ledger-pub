@@ -26,6 +26,30 @@ func TestAPIStartupChildProcess(t *testing.T) {
 	}
 }
 
+func TestValidListenerScopes(t *testing.T) {
+	for _, test := range []struct {
+		name, address, scope string
+		want                 bool
+	}{
+		{"host_loopback_ipv4", "127.0.0.1:8443", "", true},
+		{"host_loopback_ipv6", "[::1]:8443", "", true},
+		{"host_wildcard_rejected", "0.0.0.0:8443", "", false},
+		{"container_wildcard_ipv4", "0.0.0.0:8443", "container", true},
+		{"container_wildcard_ipv6", "[::]:8443", "container", true},
+		{"container_interface_rejected", "192.0.2.10:8443", "container", false},
+		{"container_loopback_rejected", "127.0.0.1:8443", "container", false},
+		{"unknown_scope", "127.0.0.1:8443", "public", false},
+		{"hostname_rejected", "localhost:8443", "", false},
+		{"missing_port", "127.0.0.1", "", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := validListener(test.address, test.scope); got != test.want {
+				t.Fatalf("validListener(%q, %q) = %v, want %v", test.address, test.scope, got, test.want)
+			}
+		})
+	}
+}
+
 func TestAPIStartupRequiresProtectedCredentialFiles(t *testing.T) {
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {

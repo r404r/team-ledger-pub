@@ -1,0 +1,81 @@
+name: team-ledger
+
+x-image: &team-ledger-image
+  image: team-ledger:local
+
+services:
+  data-init:
+    <<: *team-ledger-image
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        chown ${TEAMLEDGER_UID:?set TEAMLEDGER_UID}:${TEAMLEDGER_GID:?set TEAMLEDGER_GID} /var/lib/teamledger
+        && chmod 0700 /var/lib/teamledger
+    volumes:
+      - team-ledger-data:/var/lib/teamledger
+    restart: "no"
+
+  migrate:
+    <<: *team-ledger-image
+    user: "${TEAMLEDGER_UID:?set TEAMLEDGER_UID}:${TEAMLEDGER_GID:?set TEAMLEDGER_GID}"
+    command: ["/app/teamledger-migrate"]
+    environment:
+      TEAMLEDGER_BACKEND: sqlite
+      TEAMLEDGER_DSN: /var/lib/teamledger/teamledger.db
+    depends_on:
+      data-init:
+        condition: service_completed_successfully
+    volumes:
+      - team-ledger-data:/var/lib/teamledger
+    restart: "no"
+
+  api:
+    <<: *team-ledger-image
+    build:
+      context: .
+      dockerfile: Dockerfile
+    user: "${TEAMLEDGER_UID:?set TEAMLEDGER_UID}:${TEAMLEDGER_GID:?set TEAMLEDGER_GID}"
+    env_file:
+      - path: .env.docker
+        required: true
+    environment:
+      TEAMLEDGER_BACKEND: sqlite
+      TEAMLEDGER_DSN: /var/lib/teamledger/teamledger.db
+      TEAMLEDGER_LISTEN: 0.0.0.0:8443
+      TEAMLEDGER_LISTEN_SCOPE: container
+      TEAMLEDGER_WEB_DIR: /app/web
+      TEAMLEDGER_TLS_CERT_FILE: /run/teamledger/tls-cert.pem
+      TEAMLEDGER_TLS_KEY_FILE: /run/teamledger/tls-key.pem
+      TEAMLEDGER_CSRF_KEY_FILE: /run/teamledger/csrf.key
+      TEAMLEDGER_DIGEST_KEY_FILE: /run/teamledger/digest.key
+      TEAMLEDGER_CURSOR_KEY_FILE: /run/teamledger/cursor.key
+      TEAMLEDGER_KMS_TOKEN_FILE: /run/teamledger/kms.token
+      TEAMLEDGER_KMS_CA_FILE: /run/teamledger/kms-ca.pem
+      TEAMLEDGER_INTERVIEW_KMS_TOKEN_FILE: /run/teamledger/interview-kms.token
+      TEAMLEDGER_INTERVIEW_KMS_CA_FILE: /run/teamledger/interview-kms-ca.pem
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "${TEAMLEDGER_BIND_ADDRESS:-127.0.0.1}:${TEAMLEDGER_DOCKER_PORT:-8443}:8443"
+    volumes:
+      - team-ledger-data:/var/lib/teamledger
+      - ./docker/secrets:/run/teamledger:ro
+    read_only: true
+    tmpfs:
+      - /tmp:mode=0700,uid=${TEAMLEDGER_UID:?set TEAMLEDGER_UID},gid=${TEAMLEDGER_GID:?set TEAMLEDGER_GID}
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "--insecure", "https://127.0.0.1:8443/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  team-ledger-data:
+    name: ${TEAMLEDGER_DATA_VOLUME:-team-ledger-data}

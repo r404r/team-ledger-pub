@@ -43,6 +43,22 @@ func required(name string) (string, error) {
 	}
 	return s, nil
 }
+func validListener(address, scope string) bool {
+	host, _, err := net.SplitHostPort(address)
+	ip := net.ParseIP(host)
+	if err != nil || ip == nil {
+		return false
+	}
+	switch scope {
+	case "":
+		return ip.IsLoopback()
+	case "container":
+		return ip.IsUnspecified()
+	default:
+		return false
+	}
+}
+
 func secret(name string, size int) ([]byte, error) {
 	path, e := required(name)
 	if e != nil {
@@ -69,9 +85,7 @@ func run() error {
 		}
 		cfg[name] = v
 	}
-	host, _, e := net.SplitHostPort(cfg["LISTEN"])
-	ip := net.ParseIP(host)
-	if e != nil || ip == nil || !ip.IsLoopback() {
+	if !validListener(cfg["LISTEN"], os.Getenv("TEAMLEDGER_LISTEN_SCOPE")) {
 		return errors.New("invalid listener")
 	}
 	csrf, e := secret("CSRF_KEY_FILE", 32)
