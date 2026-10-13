@@ -200,7 +200,7 @@ func (t *transaction) applyWorkforceItem(ctx context.Context, org, changeID stri
 		if command.Ref == nil || command.EffectiveTo == nil {
 			return fault.Invalid
 		}
-		revision, err = t.closeWorkforceItem(ctx, org, changeID, item)
+		revision, err = t.closeWorkforceItem(ctx, org, changeID, item, true)
 		if err != nil {
 			return err
 		}
@@ -382,11 +382,11 @@ func (t *transaction) endWorkforceItem(ctx context.Context, org, changeID string
 	if item.Command.Ref == nil || item.Command.EffectiveTo == nil {
 		return fault.Invalid
 	}
-	_, err := t.closeWorkforceItem(ctx, org, changeID, item)
+	_, err := t.closeWorkforceItem(ctx, org, changeID, item, false)
 	return err
 }
 
-func (t *transaction) closeWorkforceItem(ctx context.Context, org, changeID string, item organization.WorkforcePreparedItem) (int64, error) {
+func (t *transaction) closeWorkforceItem(ctx context.Context, org, changeID string, item organization.WorkforcePreparedItem, supersede bool) (int64, error) {
 	command := item.Command
 	table := map[string]string{"identifier": "employee_business_identifier", "employment": "employment_spell", "education": "education_record", "job_assignment": "job_assignment", "reporting": "reporting_line", "employee_lifecycle": "employee_lifecycle_history"}[command.Kind]
 	if table == "" || command.Ref == nil || command.EffectiveTo == nil {
@@ -409,7 +409,7 @@ func (t *transaction) closeWorkforceItem(ctx context.Context, org, changeID stri
 	}
 	query := "UPDATE " + table + " SET valid_to=? WHERE org_id=? AND id=? AND employee_id=? AND valid_to IS NULL"
 	if command.Kind == "reporting" {
-		result, err := t.tx.ExecContext(ctx, t.structureSQL("UPDATE reporting_line SET effective_to=?,superseded=true,end_change_id=? WHERE org_id=? AND id=? AND employee_id=? AND effective_to IS NULL"), *command.EffectiveTo, changeID, org, *command.Ref, command.EmployeeID)
+		result, err := t.tx.ExecContext(ctx, t.structureSQL("UPDATE reporting_line SET effective_to=?,superseded=?,end_change_id=? WHERE org_id=? AND id=? AND employee_id=? AND effective_to IS NULL"), *command.EffectiveTo, supersede, changeID, org, *command.Ref, command.EmployeeID)
 		return revision, structureAffected(result, err, fault.Conflict)
 	}
 	result, err := t.tx.ExecContext(ctx, t.structureSQL(query), *command.EffectiveTo, org, *command.Ref, command.EmployeeID)
