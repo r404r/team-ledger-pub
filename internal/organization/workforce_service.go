@@ -211,7 +211,7 @@ func (s *Service) ChangeWorkforce(ctx context.Context, request Request, org stri
 	}
 	for i, item := range command.Changes {
 		prepared := WorkforcePreparedItem{Command: item, ID: value.NewID()}
-		if item.Action == "end" {
+		if item.Action == "end" && item.Kind != "employee_lifecycle" {
 			prepared.ID = *item.Ref
 		}
 		switch item.Kind {
@@ -381,7 +381,7 @@ func validCatalogQuery(query WorkforceCatalogQuery) bool {
 	if query.AsOf != "" && !value.ValidDate(query.AsOf) || query.History || query.Cursor != "" || query.Limit < 0 || query.Limit > 100 {
 		return false
 	}
-	return oneOf(query.Kind, "", "legal_entity", "location", "business_group", "division", "department", "education_level", "job_family", "career_level")
+	return oneOf(query.Kind, "", "legal_entity", "location", "business_group", "division", "department", "org_unit_parent", "education_level", "job_family", "career_level")
 }
 
 func filterCatalogs(catalogs *WorkforceCatalogs, kind string, limit int) {
@@ -402,6 +402,9 @@ func filterCatalogs(catalogs *WorkforceCatalogs, kind string, limit int) {
 	} else if kind != "" {
 		catalogs.OrgUnits = []OrgUnitView{}
 	}
+	if kind != "" && kind != "org_unit_parent" {
+		catalogs.OrgUnitParents = []OrgUnitParentView{}
+	}
 	if kind != "" && kind != "education_level" {
 		catalogs.EducationLevels = []EducationLevelView{}
 	}
@@ -419,6 +422,9 @@ func filterCatalogs(catalogs *WorkforceCatalogs, kind string, limit int) {
 	}
 	if len(catalogs.OrgUnits) > limit {
 		catalogs.OrgUnits = catalogs.OrgUnits[:limit]
+	}
+	if len(catalogs.OrgUnitParents) > limit {
+		catalogs.OrgUnitParents = catalogs.OrgUnitParents[:limit]
 	}
 	if len(catalogs.EducationLevels) > limit {
 		catalogs.EducationLevels = catalogs.EducationLevels[:limit]

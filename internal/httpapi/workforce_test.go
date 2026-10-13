@@ -80,6 +80,35 @@ func TestAPIWorkforceCatalogCreateReplaceEndIsAtomicAndReplaySafe(t *testing.T) 
 	}
 }
 
+func TestAPIWorkforceHierarchyBuildsAcrossCatalogTransactions(t *testing.T) {
+	for _, backend := range []string{"sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) {
+			f := testsupport.NewHarness(t, backend)
+			path := "/api/v1/orgs/" + f.OrgID + "/workforce-catalog-changes"
+			create := `{"expected_catalog_revision":"1","expected_graph_revision":"1","changes":[{"action":"create","kind":"business_group","code":"BG","label":"Business Group","valid_from":"2026-01-01"},{"action":"create","kind":"division","code":"DIV","label":"Division","valid_from":"2026-01-01"},{"action":"create","kind":"department","code":"DEP","label":"Department","valid_from":"2026-01-01"}]}`
+			var units organization.CatalogChangeResult
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, create, value.NewID()), http.StatusCreated, &units)
+			if units.CatalogRevision != "2" || units.GraphRevision != "2" {
+				t.Fatalf("unit creation = %#v", units)
+			}
+			parentDivision := fmt.Sprintf(`{"expected_catalog_revision":"2","expected_graph_revision":"2","changes":[{"action":"create","kind":"org_unit_parent","ref":%q,"parent_ref":%q,"valid_from":"2026-01-01"}]}`, units.Items[1].ID, units.Items[0].ID)
+			var divisionEdge organization.CatalogChangeResult
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, parentDivision, value.NewID()), http.StatusCreated, &divisionEdge)
+			parentDepartment := fmt.Sprintf(`{"expected_catalog_revision":"3","expected_graph_revision":"3","changes":[{"action":"create","kind":"org_unit_parent","ref":%q,"parent_ref":%q,"valid_from":"2026-01-01"}]}`, units.Items[2].ID, units.Items[1].ID)
+			var departmentEdge organization.CatalogChangeResult
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, parentDepartment, value.NewID()), http.StatusCreated, &departmentEdge)
+			if departmentEdge.CatalogRevision != "4" || departmentEdge.GraphRevision != "4" {
+				t.Fatalf("department edge = %#v", departmentEdge)
+			}
+			var parents organization.WorkforceCatalogs
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodGet, "/api/v1/orgs/"+f.OrgID+"/workforce-catalogs?kind=org_unit_parent&as_of=2026-06-01", "", ""), http.StatusOK, &parents)
+			if parents.CatalogRevision != "4" || parents.GraphRevision != "4" || len(parents.OrgUnitParents) != 2 {
+				t.Fatalf("hierarchy projection = %#v", parents)
+			}
+		})
+	}
+}
+
 func TestAPIWorkforceFactsCommitAtomicallyAndReplay(t *testing.T) {
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
@@ -118,6 +147,30 @@ func TestAPIWorkforceFactsCommitAtomicallyAndReplay(t *testing.T) {
 				if got := f.Count(t, table); got != want {
 					t.Fatalf("%s rows=%d want %d", table, got, want)
 				}
+			}
+		})
+	}
+}
+
+func TestAPIEmployeeLifecycleEndAppendsImmutableCorrection(t *testing.T) {
+	for _, backend := range []string{"sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) {
+			f := testsupport.NewHarness(t, backend)
+			var employee organization.Result
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/employees", createJSON, value.NewID()), http.StatusCreated, &employee)
+			query := "SELECT id FROM employee_lifecycle_history WHERE org_id=? AND employee_id=? AND supersedes_id IS NULL"
+			if backend == "postgres" {
+				query = "SELECT id FROM employee_lifecycle_history WHERE org_id=$1 AND employee_id=$2 AND supersedes_id IS NULL"
+			}
+			var lifecycleID string
+			if err := f.Repo.DB.QueryRow(query, f.OrgID, employee.ID).Scan(&lifecycleID); err != nil {
+				t.Fatal(err)
+			}
+			body := fmt.Sprintf(`{"expected_catalog_revision":"1","expected_graph_revision":"1","expected_employee_revisions":{%q:"1"},"changes":[{"action":"end","kind":"employee_lifecycle","ref":%q,"employee_id":%q,"effective_to":"2027-01-01"}]}`, employee.ID, lifecycleID, employee.ID)
+			var result organization.WorkforceChangeResult
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/workforce-changes", body, value.NewID()), http.StatusCreated, &result)
+			if result.GraphRevision != "2" || result.EmployeeRevisions[employee.ID] != "2" || result.Items[0].ID == lifecycleID || f.Count(t, "employee_lifecycle_history") != 2 {
+				t.Fatalf("lifecycle end result = %#v", result)
 			}
 		})
 	}

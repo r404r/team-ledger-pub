@@ -20,7 +20,7 @@ func (r *Repository) WorkforcePayload(ctx context.Context, org, id string) (orga
 
 func (r reader) WorkforceCatalogs(ctx context.Context, org, asOf string) (organization.WorkforceCatalogs, error) {
 	out := organization.WorkforceCatalogs{
-		LegalEntities: []organization.LegalEntityView{}, Locations: []string{}, OrgUnits: []organization.OrgUnitView{},
+		LegalEntities: []organization.LegalEntityView{}, Locations: []string{}, OrgUnits: []organization.OrgUnitView{}, OrgUnitParents: []organization.OrgUnitParentView{},
 		EducationLevels: []organization.EducationLevelView{}, JobFamilies: []organization.JobFamilyView{}, CareerLevels: []organization.CareerLevelView{},
 	}
 	var catalogRevision, graphRevision int64
@@ -79,6 +79,24 @@ func (r reader) WorkforceCatalogs(ctx context.Context, org, asOf string) (organi
 			return out, safeError(err)
 		}
 		out.OrgUnits = append(out.OrgUnits, item)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return out, safeError(err)
+	}
+	rows.Close()
+
+	rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT id,child_unit_id,parent_unit_id,TRUE FROM org_unit_parent_history WHERE org_id=? AND valid_from<=? AND (valid_to IS NULL OR valid_to>?) ORDER BY child_unit_id,parent_unit_id,id"), org, asOf, asOf)
+	if err != nil {
+		return out, safeError(err)
+	}
+	for rows.Next() {
+		var item organization.OrgUnitParentView
+		if err = rows.Scan(&item.ID, &item.ChildUnitID, &item.ParentUnitID, &item.Active); err != nil {
+			rows.Close()
+			return out, safeError(err)
+		}
+		out.OrgUnitParents = append(out.OrgUnitParents, item)
 	}
 	if err = rows.Err(); err != nil {
 		rows.Close()

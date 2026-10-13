@@ -44,6 +44,13 @@ type OrgUnitView struct {
 	Active         bool   `json:"active"`
 }
 
+type OrgUnitParentView struct {
+	ID           string `json:"id"`
+	ChildUnitID  string `json:"child_unit_id"`
+	ParentUnitID string `json:"parent_unit_id"`
+	Active       bool   `json:"active"`
+}
+
 type JobFamilyView struct {
 	ID     string `json:"id"`
 	Code   string `json:"code"`
@@ -79,6 +86,7 @@ type WorkforceCatalogs struct {
 	LegalEntities   []LegalEntityView    `json:"legal_entities"`
 	Locations       []string             `json:"locations"`
 	OrgUnits        []OrgUnitView        `json:"org_units"`
+	OrgUnitParents  []OrgUnitParentView  `json:"org_unit_parents"`
 	EducationLevels []EducationLevelView `json:"education_levels"`
 	JobFamilies     []JobFamilyView      `json:"job_families"`
 	CareerLevels    []CareerLevelView    `json:"career_levels"`

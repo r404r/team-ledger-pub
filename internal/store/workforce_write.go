@@ -93,12 +93,6 @@ func (t *transaction) CommitCatalogChange(ctx context.Context, org string, expec
 	if err = structureAffected(result, err, fault.Conflict); err != nil {
 		return 0, 0, err
 	}
-	if advancesGraph {
-		result, err = t.tx.ExecContext(ctx, t.structureSQL("UPDATE authorization_guard SET auth_epoch=auth_epoch+1 WHERE org_id=? AND auth_epoch<?"), org, int64(math.MaxInt64))
-		if err = structureAffected(result, err, fault.Conflict); err != nil {
-			return 0, 0, err
-		}
-	}
 	return expectedCatalog + 1, nextGraph, nil
 }
 
@@ -135,7 +129,7 @@ func (t *transaction) CommitWorkforceChange(ctx context.Context, org string, exp
 		if _, ok := expectedEmployees[item.Command.EmployeeID]; !ok {
 			return 0, 0, nil, fault.Invalid
 		}
-		if item.Command.Kind == "reporting" || item.Command.Kind == "job_assignment" || item.Command.Kind == "employee_lifecycle" {
+		if item.Command.Kind == "reporting" || item.Command.Kind == "employee_lifecycle" {
 			advancesGraph = true
 		}
 	}
@@ -187,6 +181,9 @@ func (t *transaction) CommitWorkforceChange(ctx context.Context, org string, exp
 
 func (t *transaction) applyWorkforceItem(ctx context.Context, org, changeID string, recordedAt time.Time, item organization.WorkforcePreparedItem) error {
 	command := item.Command
+	if command.Kind == "employee_lifecycle" {
+		return t.applyEmployeeLifecycle(ctx, org, changeID, item)
+	}
 	if command.Action == "end" {
 		return t.endWorkforceItem(ctx, org, changeID, item)
 	}
@@ -228,13 +225,46 @@ func (t *transaction) applyWorkforceItem(ctx context.Context, org, changeID stri
 	case "reporting":
 		_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO reporting_line(org_id,id,employee_id,manager_employee_id,kind,valid_from,valid_to,effective_to,superseded,change_id,end_change_id,supersedes_id) VALUES(?,?,?,?,?,?,?,NULL,?,?,NULL,?)"), org, item.ID, command.EmployeeID, *command.ManagerEmployeeID, *command.ReportingKind, *command.ValidFrom, nullablePointer(command.ValidTo), false, changeID, supersedes)
 	case "employee_lifecycle":
-		_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO employee_lifecycle_history(org_id,id,employee_id,valid_from,valid_to,change_id,supersedes_id) VALUES(?,?,?,?,?,?,?)"), org, item.ID, command.EmployeeID, *command.ValidFrom, nullablePointer(command.ValidTo), changeID, supersedes)
-		if err == nil {
-			_, err = t.tx.ExecContext(ctx, t.structureSQL("UPDATE employee SET valid_from=?,valid_to=? WHERE org_id=? AND id=?"), *command.ValidFrom, nullablePointer(command.ValidTo), org, command.EmployeeID)
-		}
+		return fault.Invalid
 	default:
 		return fault.Invalid
 	}
+	return safeError(err)
+}
+
+func (t *transaction) applyEmployeeLifecycle(ctx context.Context, org, changeID string, item organization.WorkforcePreparedItem) error {
+	command := item.Command
+	var headID, headFrom string
+	var headTo sql.NullString
+	err := t.tx.QueryRowContext(ctx, t.structureSQL("SELECT h.id,h.valid_from,h.valid_to FROM employee_lifecycle_history h WHERE h.org_id=? AND h.employee_id=? AND NOT EXISTS(SELECT 1 FROM employee_lifecycle_history n WHERE n.org_id=h.org_id AND n.employee_id=h.employee_id AND n.supersedes_id=h.id)"), org, command.EmployeeID).Scan(&headID, &headFrom, &headTo)
+	if err != nil {
+		return safeError(err)
+	}
+	supersedes, validFrom, validTo := headID, "", any(nil)
+	switch command.Action {
+	case "add":
+		if !headTo.Valid || command.ValidFrom == nil || headTo.String > *command.ValidFrom {
+			return fault.Conflict
+		}
+		validFrom, validTo = *command.ValidFrom, nullablePointer(command.ValidTo)
+	case "replace":
+		if command.Ref == nil || *command.Ref != headID || command.ValidFrom == nil {
+			return fault.Conflict
+		}
+		validFrom, validTo = *command.ValidFrom, nullablePointer(command.ValidTo)
+	case "end":
+		if command.Ref == nil || *command.Ref != headID || command.EffectiveTo == nil || headFrom >= *command.EffectiveTo {
+			return fault.Conflict
+		}
+		validFrom, validTo = headFrom, *command.EffectiveTo
+	default:
+		return fault.Invalid
+	}
+	_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO employee_lifecycle_history(org_id,id,employee_id,valid_from,valid_to,change_id,supersedes_id) VALUES(?,?,?,?,?,?,?)"), org, item.ID, command.EmployeeID, validFrom, validTo, changeID, supersedes)
+	if err != nil {
+		return safeError(err)
+	}
+	_, err = t.tx.ExecContext(ctx, t.structureSQL("UPDATE employee SET valid_from=?,valid_to=? WHERE org_id=? AND id=?"), validFrom, validTo, org, command.EmployeeID)
 	return safeError(err)
 }
 
