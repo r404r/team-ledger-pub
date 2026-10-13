@@ -43,34 +43,57 @@ func (s *Service) prepareView(ctx context.Context, req Request, snap authz.Snaps
 		return View{}, err
 	}
 	v := View{ID: e.ID, OrgID: e.OrgID, Lifecycle: e.Lifecycle, AsOf: asOf, AuthorizationDate: day, GraphRevision: strconv.FormatInt(g.Revision, 10)}
-	relations, err := s.Store.EmployeeRelations(ctx, e.OrgID, e.ID, asOf)
+	facts, err := s.Store.EmployeeWorkforceFacts(ctx, e.OrgID, e.ID, asOf)
 	if err != nil {
 		return View{}, err
 	}
 	pii := includeProfile && snap.Allows("pii.read", "pii", e.ID, req.Purpose, s.clock())
-	for _, r := range relations {
-		if !relationActive(r, asOf) {
-			continue
-		}
-		l := effective(r)
-		switch r.Kind {
-		case "membership":
-			v.Memberships = append(v.Memberships, MembershipView{ID: r.ID, EmployeeID: r.EmployeeID, TeamID: r.TeamID, IsPrimary: r.IsPrimary, ValidFrom: l.ValidFrom, ValidTo: l.ValidTo})
-		case "position":
-			p := PositionView{ID: r.ID, EmployeeID: r.EmployeeID, TeamID: r.TeamID, IsPrimary: r.IsPrimary, ValidFrom: l.ValidFrom, ValidTo: l.ValidTo}
-			if pii {
-				var payload PositionPayload
-				if err = s.openOrganization(ctx, e.OrgID, e.ID, r.ID, r.PayloadID, "position_assignment", "org.position.v1", &payload); err != nil {
-					return View{}, err
-				}
-				if !positionValid(payload) {
-					return View{}, fault.Unavailable
-				}
-				p.Position = &payload
+	v.Employment, v.JobAssignments, v.ReportingLines = facts.Employment, facts.JobAssignments, facts.ReportingLines
+	if pii {
+		v.Identifiers, v.Education = facts.Identifiers, facts.Education
+		for i := range v.Identifiers {
+			var payload struct {
+				StaffCode string `json:"staff_code"`
 			}
-			v.Positions = append(v.Positions, p)
-		case "reporting_line":
-			v.ReportingLines = append(v.ReportingLines, ReportingView{ID: r.ID, EmployeeID: r.EmployeeID, ManagerEmployeeID: r.ManagerEmployeeID, Kind: r.ReportingKind, ValidFrom: l.ValidFrom, ValidTo: l.ValidTo})
+			if err = s.openWorkforcePayload(ctx, e.OrgID, e.ID, v.Identifiers[i].ID, v.Identifiers[i].PayloadID, "employee_identifier", "pii.employee_identifier.v1", &payload); err != nil {
+				return View{}, err
+			}
+			v.Identifiers[i].StaffCode = payload.StaffCode
+			v.Identifiers[i].PayloadID = ""
+		}
+		for i := range v.Education {
+			var payload struct {
+				Institution *string `json:"institution,omitempty"`
+				Field       *string `json:"field,omitempty"`
+				AwardDate   *string `json:"award_date,omitempty"`
+			}
+			if err = s.openWorkforcePayload(ctx, e.OrgID, e.ID, v.Education[i].ID, v.Education[i].PayloadID, "education_record", "pii.education.v1", &payload); err != nil {
+				return View{}, err
+			}
+			v.Education[i].Institution, v.Education[i].Field, v.Education[i].AwardDate = payload.Institution, payload.Field, payload.AwardDate
+			v.Education[i].PayloadID = ""
+		}
+		for i := range v.JobAssignments {
+			if v.JobAssignments[i].PayloadID == "" {
+				continue
+			}
+			var payload PositionPayload
+			if err = s.openWorkforcePayload(ctx, e.OrgID, e.ID, v.JobAssignments[i].ID, v.JobAssignments[i].PayloadID, "job_assignment", "pii.job_assignment_position.v1", &payload); err != nil || !positionValid(payload) {
+				return View{}, fault.Unavailable
+			}
+			v.JobAssignments[i].Position = &payload
+			v.JobAssignments[i].PayloadID = ""
+		}
+	} else {
+		v.Identifiers, v.Education = []IdentifierView{}, []EducationView{}
+		for i := range v.JobAssignments {
+			v.JobAssignments[i].PayloadID = ""
+		}
+	}
+	for i := range v.ReportingLines {
+		if v.ReportingLines[i].Kind == "administrative" {
+			v.DirectManager, v.HOD = &v.ReportingLines[i], &v.ReportingLines[i]
+			break
 		}
 	}
 	if pii {
@@ -178,11 +201,17 @@ func (s *Service) Tree(ctx context.Context, req Request, org string, q TreeQuery
 	if err != nil {
 		return TreeView{}, s.denied(ctx, req, snap, op, err)
 	}
-	if !value.ValidID(org) || !value.ValidDate(q.AsOf) || q.RootTeamID != "" && !value.ValidID(q.RootTeamID) || q.Depth < 0 || q.Depth > 10 || q.Limit < 0 || q.Limit > 100 {
+	if !value.ValidID(org) || !value.ValidDate(q.AsOf) || q.RootDepartmentID != "" && !value.ValidID(q.RootDepartmentID) || q.Depth < 0 || q.Depth > 3 || q.Limit < 0 || q.Limit > 100 {
 		return TreeView{}, fault.Invalid
 	}
+	if !snap.Allows("organization.read", "metadata", "", req.Purpose, s.clock()) {
+		return TreeView{}, s.denied(ctx, req, snap, op, fault.Forbidden)
+	}
+	if q.IncludeLabels && !snap.Allows("pii.read", "pii", "", req.Purpose, s.clock()) {
+		return TreeView{}, s.denied(ctx, req, snap, op, fault.Forbidden)
+	}
 	if q.Depth == 0 {
-		q.Depth = 10
+		q.Depth = 3
 	}
 	if q.Limit == 0 {
 		q.Limit = 100
@@ -191,157 +220,127 @@ func (s *Service) Tree(ctx context.Context, req Request, org string, q TreeQuery
 	if err != nil {
 		return TreeView{}, err
 	}
-	g, err := s.Store.Graph(ctx, org)
+	catalogs, err := s.Catalogs(ctx, req, org, WorkforceCatalogQuery{AsOf: q.AsOf, Limit: 100})
 	if err != nil {
 		return TreeView{}, err
 	}
-	now := s.clock()
-	permitted := map[string]Team{}
-	allowed := snap.Allows("organization.read", "metadata", "", req.Purpose, now)
-	rootAllowed := q.RootTeamID == ""
-	witnessTeam := ""
-	for _, t := range g.Teams {
-		if !snap.AllowsTeam("organization.read", "metadata", t.ID, req.Purpose, now) {
-			continue
-		}
-		allowed = true
-		if witnessTeam == "" {
-			witnessTeam = t.ID
-		}
-		if t.ID == q.RootTeamID {
-			rootAllowed = true
-			witnessTeam = t.ID
-		}
-		if active(t.Lifecycle, q.AsOf) {
-			permitted[t.ID] = t
-		}
+	g, err := s.Store.GraphState(ctx, org)
+	if err != nil {
+		return TreeView{}, err
 	}
-	if !allowed || !rootAllowed {
-		return TreeView{}, s.denied(ctx, req, snap, op, fault.NotFound)
+	employees, err := s.Store.DirectoryCandidates(ctx, org, "", DirectoryQuery{AsOf: q.AsOf, Lifecycle: "active"}, DirectoryScope{Org: true, AuthorizationDate: day}, 501)
+	if err != nil {
+		return TreeView{}, err
 	}
-	selected := map[string]bool{}
-	if q.RootTeamID == "" {
-		for id := range permitted {
-			selected[id] = true
+	selected, depths := map[string]bool{}, map[string]int{}
+	if q.RootDepartmentID != "" {
+		for _, unit := range catalogs.OrgUnits {
+			if unit.ID == q.RootDepartmentID && unit.Kind == "department" {
+				selected[unit.ID], depths[unit.ID] = true, 0
+			}
+		}
+		if !selected[q.RootDepartmentID] {
+			return TreeView{}, fault.NotFound
 		}
 	} else {
-		distance := map[string]int{q.RootTeamID: 0}
-		for depth := range q.Depth {
-			for _, r := range g.Relations {
-				if r.Kind != "team_parent" || !relationActive(r, q.AsOf) {
-					continue
-				}
-				if d, ok := distance[r.ParentTeamID]; ok && d == depth {
-					if _, seen := distance[r.TeamID]; !seen {
-						distance[r.TeamID] = depth + 1
-					}
+		for _, unit := range catalogs.OrgUnits {
+			if unit.Kind == "business_group" {
+				selected[unit.ID], depths[unit.ID] = true, 0
+			}
+		}
+		for depth := 1; depth < q.Depth; depth++ {
+			for _, edge := range catalogs.OrgUnitParents {
+				if parentDepth, ok := depths[edge.ParentUnitID]; ok && parentDepth == depth-1 {
+					selected[edge.ChildUnitID], depths[edge.ChildUnitID] = true, depth
 				}
 			}
 		}
-		for id := range distance {
-			if _, ok := permitted[id]; ok {
-				selected[id] = true
-			}
-		}
 	}
-	v := TreeView{OrgID: org, AsOf: q.AsOf, AuthorizationDate: day, GraphRevision: strconv.FormatInt(g.Revision, 10), AuthEpoch: strconv.FormatInt(snap.AuthEpoch, 10), Nodes: []TreeNode{}, Edges: []TreeEdge{}, Employees: []TreeEmployee{}}
-	teams := []string{}
-	piiTeams := []string{}
-	ids := make([]string, 0, len(selected))
-	for id := range selected {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	if len(ids) > q.Limit {
+	if len(selected) > q.Limit {
 		return TreeView{}, fault.Invalid
 	}
-	snapshotSize := len(ids)
-	released := []Employee{}
-	for _, r := range g.Relations {
-		if !relationActive(r, q.AsOf) {
+	out := TreeView{OrgID: org, AsOf: q.AsOf, AuthorizationDate: day, GraphRevision: catalogs.GraphRevision, AuthEpoch: strconv.FormatInt(snap.AuthEpoch, 10), Nodes: []TreeNode{}, Edges: []TreeEdge{}, Employees: []TreeEmployee{}}
+	for _, unit := range catalogs.OrgUnits {
+		if !selected[unit.ID] {
 			continue
 		}
-		l := effective(r)
-		if r.Kind == "team_parent" && selected[r.TeamID] && selected[r.ParentTeamID] {
-			if snapshotSize >= q.Limit {
-				return TreeView{}, fault.Invalid
-			}
-			v.Edges = append(v.Edges, TreeEdge{ID: r.ID, ChildTeamID: r.TeamID, ParentTeamID: r.ParentTeamID, ValidFrom: l.ValidFrom, ValidTo: l.ValidTo})
-			snapshotSize++
+		node := TreeNode{ID: unit.ID, Code: unit.Code, Kind: unit.Kind, Lifecycle: Lifecycle{ValidFrom: unit.ValidFrom, ValidTo: unit.ValidTo}}
+		if q.IncludeLabels {
+			node.Label = &unit.Label
 		}
-		if r.Kind == "membership" && selected[r.TeamID] && snap.Allows("organization.read", "metadata", r.EmployeeID, req.Purpose, now) {
-			if snapshotSize >= q.Limit {
-				return TreeView{}, fault.Invalid
-			}
-			v.Employees = append(v.Employees, TreeEmployee{ID: r.EmployeeID, TeamID: r.TeamID})
-			snapshotSize++
-			released = append(released, Employee{ID: r.EmployeeID, OrgID: org})
+		out.Nodes = append(out.Nodes, node)
+	}
+	for _, edge := range catalogs.OrgUnitParents {
+		if selected[edge.ChildUnitID] && selected[edge.ParentUnitID] {
+			out.Edges = append(out.Edges, TreeEdge{ID: edge.ID, ChildUnitID: edge.ChildUnitID, ParentUnitID: edge.ParentUnitID, ValidFrom: edge.ValidFrom, ValidTo: edge.ValidTo})
 		}
 	}
-	for _, id := range ids {
-		t := permitted[id]
-		n := TreeNode{ID: id, Code: t.Code, Lifecycle: t.Lifecycle}
-		teams = append(teams, id)
-		if q.IncludeLabels && t.LabelPayloadID != "" && snap.AllowsTeam("pii.read", "pii", id, req.Purpose, now) {
-			var payload struct {
-				Label string `json:"label"`
-			}
-			if err = s.openOrganization(ctx, org, "", id, t.LabelPayloadID, "team_label", "org.team.label.v1", &payload); err != nil {
-				return TreeView{}, err
-			}
-			if !utf8.ValidString(payload.Label) || len(payload.Label) > 256 {
-				return TreeView{}, fault.Unavailable
-			}
-			n.Label = &payload.Label
-			piiTeams = append(piiTeams, id)
+	released, piiEmployees := []Employee{}, []string{}
+	for _, employee := range employees {
+		facts, factErr := s.Store.EmployeeWorkforceFacts(ctx, org, employee.ID, q.AsOf)
+		if factErr != nil {
+			return TreeView{}, factErr
 		}
-		v.Nodes = append(v.Nodes, n)
+		for _, assignment := range facts.JobAssignments {
+			if !selected[assignment.DepartmentID] {
+				continue
+			}
+			item := TreeEmployee{ID: employee.ID, DepartmentID: assignment.DepartmentID}
+			if q.IncludeLabels {
+				view, viewErr := s.prepareView(ctx, req, snap, employee, q.AsOf, true, g)
+				if viewErr != nil {
+					return TreeView{}, viewErr
+				}
+				item.Profile = view.Profile
+				piiEmployees = append(piiEmployees, employee.ID)
+			}
+			out.Employees = append(out.Employees, item)
+			released = append(released, employee)
+			break
+		}
 	}
-	if len(teams) == 0 && witnessTeam != "" {
-		teams = append(teams, witnessTeam)
+	if len(out.Employees) > 500 {
+		return TreeView{}, fault.Invalid
 	}
-	if err = s.releaseQuery(ctx, req, snap, g, day, op, released, teams, piiTeams, nil, false); err != nil {
+	if err = s.releaseQuery(ctx, req, snap, g, day, op, released, nil, nil, piiEmployees, q.IncludeLabels); err != nil {
 		return TreeView{}, s.denied(ctx, req, snap, op, err)
 	}
-	return v, nil
+	return out, nil
 }
 func (s *Service) directoryScope(snap authz.Snapshot, req Request, q DirectoryQuery, day string) DirectoryScope {
 	now := s.clock()
 	scope := DirectoryScope{AuthorizationDate: day}
 	scope.Org = snap.Allows("organization.read", "metadata", "", req.Purpose, now) && (q.Q == "" || snap.Allows("pii.read", "pii", "", req.Purpose, now))
-	employees, teams := map[string]bool{}, map[string]bool{}
+	employees := map[string]bool{}
 	for _, a := range snap.Assignments {
 		if a.ScopeKind == "employee" {
 			employees[a.ScopeID] = true
-		}
-		if a.ScopeKind == "team" {
-			teams[a.ScopeID] = true
 		}
 	}
 	for _, a := range snap.Grants {
 		if a.ScopeKind == "employee" {
 			employees[a.ScopeID] = true
 		}
-		if a.ScopeKind == "team" {
-			teams[a.ScopeID] = true
-		}
-	}
-	for _, m := range snap.Memberships {
-		employees[m.EmployeeID] = true
 	}
 	for id := range employees {
 		if snap.Allows("organization.read", "metadata", id, req.Purpose, now) && (q.Q == "" || snap.Allows("pii.read", "pii", id, req.Purpose, now)) {
 			scope.Employees = append(scope.Employees, id)
 		}
 	}
-	for id := range teams {
-		if snap.AllowsTeam("organization.read", "metadata", id, req.Purpose, now) && (q.Q == "" || snap.AllowsTeam("pii.read", "pii", id, req.Purpose, now)) {
-			scope.Teams = append(scope.Teams, id)
+	sort.Strings(scope.Employees)
+	return scope
+}
+
+func directoryProfileMatch(view View, needle string) bool {
+	if view.Profile != nil && (strings.Contains(strings.ToLower(view.Profile.LocalName), needle) || strings.Contains(strings.ToLower(view.Profile.EnglishName), needle)) {
+		return true
+	}
+	for _, identifier := range view.Identifiers {
+		if strings.Contains(strings.ToLower(identifier.StaffCode), needle) {
+			return true
 		}
 	}
-	sort.Strings(scope.Employees)
-	sort.Strings(scope.Teams)
-	return scope
+	return false
 }
 func (s *Service) Directory(ctx context.Context, req Request, org string, q DirectoryQuery) (DirectoryPage, error) {
 	const op = "OP-ORG-04"
@@ -349,7 +348,7 @@ func (s *Service) Directory(ctx context.Context, req Request, org string, q Dire
 	if err != nil {
 		return DirectoryPage{}, s.denied(ctx, req, snap, op, err)
 	}
-	if !value.ValidID(org) || !value.ValidDate(q.AsOf) || q.TeamID != "" && !value.ValidID(q.TeamID) || q.EmployeeID != "" && !value.ValidID(q.EmployeeID) || !utf8.ValidString(q.Q) || len(q.Q) > 256 || q.Q != "" && !q.IncludeProfile || q.Limit < 0 || q.Limit > 100 || (q.Lifecycle != "" && q.Lifecycle != "active" && q.Lifecycle != "inactive" && q.Lifecycle != "all") {
+	if !value.ValidID(org) || !value.ValidDate(q.AsOf) || q.DepartmentID != "" && !value.ValidID(q.DepartmentID) || q.EmployeeID != "" && !value.ValidID(q.EmployeeID) || !utf8.ValidString(q.Q) || len(q.Q) > 256 || q.Q != "" && !q.IncludeProfile || q.Limit < 0 || q.Limit > 100 || (q.Lifecycle != "" && q.Lifecycle != "active" && q.Lifecycle != "inactive" && q.Lifecycle != "all") {
 		return DirectoryPage{}, fault.Invalid
 	}
 	if q.Limit == 0 {
@@ -363,7 +362,7 @@ func (s *Service) Directory(ctx context.Context, req Request, org string, q Dire
 		return DirectoryPage{}, err
 	}
 	scope := s.directoryScope(snap, req, q, day)
-	if !scope.Org && len(scope.Employees) == 0 && len(scope.Teams) == 0 {
+	if !scope.Org && len(scope.Employees) == 0 {
 		return DirectoryPage{}, s.denied(ctx, req, snap, op, fault.Forbidden)
 	}
 	g, err := s.Store.GraphState(ctx, org)
@@ -425,7 +424,7 @@ func (s *Service) Directory(ctx context.Context, req Request, org string, q Dire
 		if v.Profile != nil {
 			piiIDs = append(piiIDs, e.ID)
 		}
-		if q.Q == "" || v.Profile != nil && (strings.Contains(strings.ToLower(v.Profile.LocalName), needle) || strings.Contains(strings.ToLower(v.Profile.EnglishName), needle)) {
+		if q.Q == "" || directoryProfileMatch(v, needle) {
 			page.Items = append(page.Items, v)
 		}
 		if i+1 < len(candidates) {
@@ -442,17 +441,11 @@ func (s *Service) Directory(ctx context.Context, req Request, org string, q Dire
 		page.NextCursor = &token
 	}
 	page.SearchIncomplete = q.Q != "" && scanned == 500 && more
-	var witnessTeams, witnessPIITeams []string
 	orgPII := false
 	if len(released) == 0 {
 		switch {
 		case scope.Org:
 			orgPII = q.Q != ""
-		case len(scope.Teams) != 0:
-			witnessTeams = append(witnessTeams, scope.Teams[0])
-			if q.Q != "" {
-				witnessPIITeams = append(witnessPIITeams, scope.Teams[0])
-			}
 		case len(scope.Employees) != 0:
 			id := scope.Employees[0]
 			released = append(released, Employee{ID: id, OrgID: org})
@@ -461,7 +454,7 @@ func (s *Service) Directory(ctx context.Context, req Request, org string, q Dire
 			}
 		}
 	}
-	if err = s.releaseQuery(ctx, req, snap, g, day, op, released, witnessTeams, witnessPIITeams, piiIDs, orgPII); err != nil {
+	if err = s.releaseQuery(ctx, req, snap, g, day, op, released, nil, nil, piiIDs, orgPII); err != nil {
 		return DirectoryPage{}, s.denied(ctx, req, snap, op, err)
 	}
 	return page, nil

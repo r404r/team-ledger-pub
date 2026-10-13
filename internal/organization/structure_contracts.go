@@ -100,27 +100,28 @@ type StructureWrite struct {
 	Payloads   []OrganizationPayload
 }
 type TreeQuery struct {
-	AsOf, RootTeamID string
-	Depth, Limit     int
-	IncludeLabels    bool
+	AsOf, RootDepartmentID string
+	Depth, Limit           int
+	IncludeLabels          bool
 }
 type TreeNode struct {
 	ID        string    `json:"id"`
 	Code      string    `json:"code"`
+	Kind      string    `json:"kind"`
 	Lifecycle Lifecycle `json:"lifecycle"`
 	Label     *string   `json:"label,omitempty"`
 }
 type TreeEdge struct {
 	ID           string  `json:"id"`
-	ChildTeamID  string  `json:"child_team_id"`
-	ParentTeamID string  `json:"parent_team_id"`
+	ChildUnitID  string  `json:"child_unit_id"`
+	ParentUnitID string  `json:"parent_unit_id"`
 	ValidFrom    string  `json:"valid_from"`
 	ValidTo      *string `json:"valid_to"`
 }
 type TreeEmployee struct {
-	ID      string   `json:"id"`
-	TeamID  string   `json:"team_id"`
-	Profile *Profile `json:"profile,omitempty"`
+	ID           string   `json:"id"`
+	DepartmentID string   `json:"department_id"`
+	Profile      *Profile `json:"profile,omitempty"`
 }
 type TreeView struct {
 	OrgID             string         `json:"org_id"`
@@ -159,7 +160,7 @@ type ReportingView struct {
 }
 type DirectoryQuery struct {
 	AsOf           string `json:"as_of"`
-	TeamID         string `json:"team_id,omitempty"`
+	DepartmentID   string `json:"department_id,omitempty"`
 	EmployeeID     string `json:"employee_id,omitempty"`
 	Lifecycle      string `json:"lifecycle,omitempty"`
 	Q              string `json:"q,omitempty"`
@@ -179,7 +180,7 @@ type DirectoryPage struct {
 }
 type DirectoryScope struct {
 	Org               bool
-	Employees, Teams  []string
+	Employees         []string
 	AuthorizationDate string
 }
 type HistoryQuery struct {

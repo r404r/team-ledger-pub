@@ -50,17 +50,21 @@ type Result struct {
 	Revision string `json:"profile_revision"`
 }
 type View struct {
-	ID                string           `json:"id"`
-	OrgID             string           `json:"org_id"`
-	Revision          string           `json:"profile_revision,omitempty"`
-	Lifecycle         Lifecycle        `json:"lifecycle"`
-	AsOf              string           `json:"as_of"`
-	AuthorizationDate string           `json:"authorization_date"`
-	Profile           *Profile         `json:"profile,omitempty"`
-	GraphRevision     string           `json:"graph_revision,omitempty"`
-	Memberships       []MembershipView `json:"memberships,omitempty"`
-	Positions         []PositionView   `json:"positions,omitempty"`
-	ReportingLines    []ReportingView  `json:"reporting_lines,omitempty"`
+	ID                string              `json:"id"`
+	OrgID             string              `json:"org_id"`
+	Revision          string              `json:"profile_revision,omitempty"`
+	Lifecycle         Lifecycle           `json:"lifecycle"`
+	AsOf              string              `json:"as_of"`
+	AuthorizationDate string              `json:"authorization_date"`
+	Profile           *Profile            `json:"profile,omitempty"`
+	GraphRevision     string              `json:"graph_revision,omitempty"`
+	Identifiers       []IdentifierView    `json:"identifiers"`
+	Employment        []EmploymentView    `json:"employment"`
+	Education         []EducationView     `json:"education"`
+	JobAssignments    []JobAssignmentView `json:"job_assignments"`
+	ReportingLines    []ReportingView     `json:"reporting_lines"`
+	DirectManager     *ReportingView      `json:"direct_manager,omitempty"`
+	HOD               *ReportingView      `json:"hod,omitempty"`
 }
 type Receipt struct {
 	Digest []byte

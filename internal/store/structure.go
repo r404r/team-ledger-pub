@@ -228,34 +228,21 @@ func (r reader) DirectoryCandidates(ctx context.Context, org, after string, quer
 	}
 	predicate, args := "e.org_id=? AND e.id>?", []any{org, after}
 	if !scope.Org {
-		allowed := make([]string, 0, 2)
-		if len(scope.Employees) != 0 {
-			allowed = append(allowed, "e.id IN ("+structurePlaceholders(len(scope.Employees))+")")
-			for _, id := range scope.Employees {
-				args = append(args, id)
-			}
-		}
-		if len(scope.Teams) != 0 {
-			allowed = append(allowed, "EXISTS (SELECT 1 FROM team_membership m JOIN team t ON t.org_id=m.org_id AND t.id=m.team_id WHERE m.org_id=e.org_id AND m.employee_id=e.id AND m.team_id IN ("+structurePlaceholders(len(scope.Teams))+") AND m.superseded=false AND m.is_primary=true AND m.valid_from<=? AND (m.valid_to IS NULL OR m.valid_to>?) AND (m.effective_to IS NULL OR m.effective_to>?) AND t.valid_from<=? AND (t.valid_to IS NULL OR t.valid_to>?) AND e.valid_from<=? AND (e.valid_to IS NULL OR e.valid_to>?))")
-			for _, id := range scope.Teams {
-				args = append(args, id)
-			}
-			for range 7 {
-				args = append(args, scope.AuthorizationDate)
-			}
-		}
-		if len(allowed) == 0 {
+		if len(scope.Employees) == 0 {
 			return []organization.Employee{}, nil
 		}
-		predicate += " AND (" + strings.Join(allowed, " OR ") + ")"
+		predicate += " AND e.id IN (" + structurePlaceholders(len(scope.Employees)) + ")"
+		for _, id := range scope.Employees {
+			args = append(args, id)
+		}
 	}
 	if query.EmployeeID != "" {
 		predicate += " AND e.id=?"
 		args = append(args, query.EmployeeID)
 	}
-	if query.TeamID != "" {
-		predicate += " AND EXISTS (SELECT 1 FROM team_membership m WHERE m.org_id=e.org_id AND m.employee_id=e.id AND m.team_id=? AND m.superseded=false AND m.is_primary=true AND m.valid_from<=? AND (m.valid_to IS NULL OR m.valid_to>?) AND (m.effective_to IS NULL OR m.effective_to>?))"
-		args = append(args, query.TeamID, query.AsOf, query.AsOf, query.AsOf)
+	if query.DepartmentID != "" {
+		predicate += " AND EXISTS (SELECT 1 FROM job_assignment a WHERE a.org_id=e.org_id AND a.employee_id=e.id AND a.department_id=? AND a.valid_from<=? AND (a.valid_to IS NULL OR a.valid_to>?))"
+		args = append(args, query.DepartmentID, query.AsOf, query.AsOf)
 	}
 	switch query.Lifecycle {
 	case "", "active":
@@ -507,60 +494,24 @@ func (r reader) StructureHistory(ctx context.Context, org, employee string, quer
 	return changes, nil
 }
 func (r reader) structureHistoryItems(ctx context.Context, org, change string) ([]organization.HistoryRelation, error) {
-	rows, err := r.db.QueryContext(ctx, r.structureSQL("SELECT action,kind,relation_id,employee_id,team_id,manager_employee_id,parent_team_id,"+r.structureDate("valid_from")+","+r.structureDate("valid_to")+","+r.structureDate("end_date")+",supersedes_id FROM structure_change_item WHERE org_id=? AND change_id=? ORDER BY ordinal"), org, change)
+	rows, err := r.db.QueryContext(ctx, r.structureSQL("SELECT action,kind,fact_id,employee_id,"+r.structureDate("valid_from")+","+r.structureDate("valid_to")+","+r.structureDate("effective_to")+",supersedes_id FROM structure_change_item WHERE org_id=? AND change_id=? ORDER BY ordinal"), org, change)
 	if err != nil {
 		return nil, safeError(err)
 	}
+	defer rows.Close()
 	items := make([]organization.HistoryRelation, 0)
 	for rows.Next() {
 		var item organization.HistoryRelation
-		var employee, team, manager, parent, from, to, end, supersedes sql.NullString
-		if err = rows.Scan(&item.Action, &item.Kind, &item.ID, &employee, &team, &manager, &parent, &from, &to, &end, &supersedes); err != nil {
-			rows.Close()
+		var id, employee, from, to, effective, supersedes sql.NullString
+		if err = rows.Scan(&item.Action, &item.Kind, &id, &employee, &from, &to, &effective, &supersedes); err != nil {
 			return nil, safeError(err)
 		}
-		item.EmployeeID, item.TeamID, item.ManagerEmployeeID, item.ParentTeamID = employee.String, team.String, manager.String, parent.String
-		item.ValidFrom, item.ValidTo, item.EndDate, item.SupersedesID = from.String, stringPtr(to), stringPtr(end), supersedes.String
+		item.ID, item.EmployeeID, item.ValidFrom, item.ValidTo = id.String, employee.String, from.String, stringPtr(to)
+		item.EffectiveTo, item.SupersedesID = stringPtr(effective), supersedes.String
 		items = append(items, item)
 	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
+	if err = rows.Err(); err != nil {
 		return nil, safeError(err)
-	}
-	for i := range items {
-		item := &items[i]
-		table, employee, team, parent, manager, reporting, primary, payload := structureRelationColumns(item.Kind)
-		if table == "" {
-			var object string
-			switch item.Kind {
-			case "employee_lifecycle":
-				table, object = "employee_lifecycle_history", "employee_id"
-			case "team_lifecycle":
-				table, object = "team_lifecycle_history", "team_id"
-			default:
-				return nil, fault.Unavailable
-			}
-			var from string
-			var to, supersedes sql.NullString
-			err = r.db.QueryRowContext(ctx, r.structureSQL("SELECT "+r.structureDate("h.valid_from")+","+r.structureDate("h.valid_to")+",h.supersedes_id,EXISTS(SELECT 1 FROM "+table+" n WHERE n.org_id=h.org_id AND n."+object+"=h."+object+" AND n.supersedes_id=h.id) FROM "+table+" h WHERE h.org_id=? AND h.id=?"), org, item.ID).Scan(&from, &to, &supersedes, &item.Superseded)
-			if err != nil {
-				return nil, safeError(err)
-			}
-			item.ValidFrom, item.ValidTo, item.SupersedesID = from, stringPtr(to), supersedes.String
-			continue
-		}
-		query := "SELECT org_id,id," + employee + "," + team + "," + parent + "," + manager + "," + reporting + "," + primary + "," + r.structureDate("valid_from") + "," + r.structureDate("valid_to") + "," + r.structureDate("effective_to") + ",superseded,change_id,end_change_id,supersedes_id," + payload + " FROM " + table + " WHERE org_id=? AND id=?"
-		relation, err := scanStructureRelation(r.db.QueryRowContext(ctx, r.structureSQL(query), org, item.ID), item.Kind)
-		if err != nil {
-			return nil, err
-		}
-		item.EmployeeID, item.TeamID, item.ParentTeamID, item.ManagerEmployeeID, item.ReportingKind = relation.EmployeeID, relation.TeamID, relation.ParentTeamID, relation.ManagerEmployeeID, relation.ReportingKind
-		item.ValidFrom, item.ValidTo, item.EffectiveTo, item.Superseded, item.SupersedesID = relation.Lifecycle.ValidFrom, relation.Lifecycle.ValidTo, relation.EffectiveTo, relation.Superseded, relation.SupersedesID
-		item.PayloadID = relation.PayloadID
-		if item.Kind == "membership" || item.Kind == "position" {
-			item.IsPrimary = &relation.IsPrimary
-		}
 	}
 	return items, nil
 }

@@ -84,8 +84,10 @@ func TestAPIWorkforceHierarchyBuildsAcrossCatalogTransactions(t *testing.T) {
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			f := testsupport.NewHarness(t, backend)
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/teams", `{}`, value.NewID()), http.StatusNotFound, nil)
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/structure-changes", `{}`, value.NewID()), http.StatusNotFound, nil)
 			path := "/api/v1/orgs/" + f.OrgID + "/workforce-catalog-changes"
-			create := `{"expected_catalog_revision":"1","expected_graph_revision":"1","changes":[{"action":"create","kind":"business_group","code":"BG","label":"Business Group","valid_from":"2026-01-01"},{"action":"create","kind":"division","code":"DIV","label":"Division","valid_from":"2026-01-01"},{"action":"create","kind":"department","code":"DEP","label":"Department","valid_from":"2026-01-01"},{"action":"create","kind":"job_family","code":"ENG","label":"Engineering","valid_from":"2026-01-01"},{"action":"create","kind":"career_level","code":"L1","label":"Level 1","rank":1,"valid_from":"2026-01-01"}]}`
+			create := `{"expected_catalog_revision":"1","expected_graph_revision":"1","changes":[{"action":"create","kind":"business_group","code":"BG","label":"Business Group","valid_from":"2026-01-01"},{"action":"create","kind":"division","code":"DIV","label":"Division","valid_from":"2026-01-01"},{"action":"create","kind":"department","code":"DEP","label":"Department","valid_from":"2026-01-01"},{"action":"create","kind":"job_family","code":"ENG","label":"Engineering","valid_from":"2026-01-01"},{"action":"create","kind":"career_level","code":"L1","label":"Level 1","rank":1,"valid_from":"2026-01-01"},{"action":"create","kind":"legal_entity","code":"BR-SH","label":"Shanghai Branch","valid_from":"2026-01-01"}]}`
 			var units organization.CatalogChangeResult
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, create, value.NewID()), http.StatusCreated, &units)
 			if units.CatalogRevision != "2" || units.GraphRevision != "2" {
@@ -108,11 +110,37 @@ func TestAPIWorkforceHierarchyBuildsAcrossCatalogTransactions(t *testing.T) {
 			var employee, manager organization.Result
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/employees", createJSON, value.NewID()), http.StatusCreated, &employee)
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/employees", createJSON, value.NewID()), http.StatusCreated, &manager)
-			workforce := fmt.Sprintf(`{"expected_catalog_revision":"4","expected_graph_revision":"4","expected_employee_revisions":{%q:"1"},"changes":[{"action":"add","kind":"job_assignment","employee_id":%q,"department_id":%q,"job_family_id":%q,"career_level_id":%q,"position":{"title":"Engineer","position_code":"ENG-1"},"valid_from":"2026-10-11"},{"action":"add","kind":"reporting","employee_id":%q,"manager_employee_id":%q,"reporting_kind":"administrative","valid_from":"2026-10-11"}]}`, employee.ID, employee.ID, units.Items[2].ID, units.Items[3].ID, units.Items[4].ID, employee.ID, manager.ID)
+			workforce := fmt.Sprintf(`{"expected_catalog_revision":"4","expected_graph_revision":"4","expected_employee_revisions":{%q:"1"},"changes":[{"action":"add","kind":"identifier","employee_id":%q,"staff_code":"0007","valid_from":"2026-10-11"},{"action":"add","kind":"employment","employee_id":%q,"legal_entity_id":%q,"employment_kind":"hire","location_code":"Shanghai","valid_from":"2026-10-11"},{"action":"add","kind":"education","employee_id":%q,"education_level":"Master","institution":"Synthetic University","field":"Engineering","award_date":"2025-07-01","valid_from":"2026-10-11"},{"action":"add","kind":"job_assignment","employee_id":%q,"department_id":%q,"job_family_id":%q,"career_level_id":%q,"position":{"title":"Engineer","position_code":"ENG-1"},"valid_from":"2026-10-11"},{"action":"add","kind":"reporting","employee_id":%q,"manager_employee_id":%q,"reporting_kind":"administrative","valid_from":"2026-10-11"}]}`, employee.ID, employee.ID, employee.ID, units.Items[5].ID, employee.ID, employee.ID, units.Items[2].ID, units.Items[3].ID, units.Items[4].ID, employee.ID, manager.ID)
 			var assigned organization.WorkforceChangeResult
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/workforce-changes", workforce, value.NewID()), http.StatusCreated, &assigned)
 			if assigned.GraphRevision != "5" || assigned.EmployeeRevisions[employee.ID] != "2" || f.Count(t, "job_assignment") != 1 || f.Count(t, "reporting_line") != 1 {
 				t.Fatalf("assignment/reporting write = %#v", assigned)
+			}
+			var detail organization.View
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodGet, "/api/v1/employees/"+employee.ID+"?as_of=2026-10-11&include_profile=true", "", ""), http.StatusOK, &detail)
+			if len(detail.Identifiers) != 1 || detail.Identifiers[0].StaffCode != "0007" || len(detail.Employment) != 1 || detail.Employment[0].LocationCode != "Shanghai" || len(detail.Education) != 1 || detail.Education[0].Institution == nil || *detail.Education[0].Institution != "Synthetic University" || len(detail.JobAssignments) != 1 || detail.JobAssignments[0].Position == nil || detail.JobAssignments[0].Position.Title != "Engineer" || detail.DirectManager == nil || detail.HOD == nil || detail.DirectManager.ID != detail.HOD.ID {
+				t.Fatalf("workforce detail projection = %#v", detail)
+			}
+			var metadata organization.View
+			apiSend(t, f, apiRequest(t, f, f.Observer, http.MethodGet, "/api/v1/employees/"+employee.ID+"?as_of=2026-10-11&include_profile=true", "", ""), http.StatusOK, &metadata)
+			if len(metadata.Identifiers) != 0 || len(metadata.Education) != 0 || metadata.JobAssignments[0].Position != nil || len(metadata.Employment) != 1 || metadata.DirectManager == nil {
+				t.Fatalf("metadata detail leaked PII or hid workforce metadata = %#v", metadata)
+			}
+			var directory organization.DirectoryPage
+			query := fmt.Sprintf(`{"as_of":"2026-10-11","department_id":%q,"q":"0007","include_profile":true,"limit":10}`, units.Items[2].ID)
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/employees/query", query, ""), http.StatusOK, &directory)
+			if len(directory.Items) != 1 || directory.Items[0].ID != employee.ID || directory.Items[0].Identifiers[0].StaffCode != "0007" {
+				t.Fatalf("department/staff-code directory = %#v", directory)
+			}
+			var tree organization.TreeView
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodGet, "/api/v1/orgs/"+f.OrgID+"/tree?as_of=2026-10-11&depth=3&include_labels=true", "", ""), http.StatusOK, &tree)
+			if len(tree.Nodes) != 3 || len(tree.Edges) != 2 || len(tree.Employees) != 1 || tree.Employees[0].DepartmentID != units.Items[2].ID || tree.Employees[0].Profile == nil {
+				t.Fatalf("workforce organization tree = %#v", tree)
+			}
+			var history organization.HistoryPage
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodGet, "/api/v1/employees/"+employee.ID+"/organization-history?from=2026-10-01&to=2026-11-01&limit=10", "", ""), http.StatusOK, &history)
+			if len(history.Items) != 1 || len(history.Items[0].Items) != 5 || history.Items[0].Items[0].EmployeeID != employee.ID {
+				t.Fatalf("workforce history projection = %#v", history)
 			}
 		})
 	}

@@ -515,7 +515,7 @@ func walkJSON(d *json.Decoder, depth int, object string) error {
 		return nil
 	}
 	switch object {
-	case "subject_id", "capability", "category", "kind", "id", "purpose", "expires_at", "authority_id", "expected_revision", "expected_auth_epoch", "reason", "code", "label", "expected_graph_revision", "action", "ref", "employee_id", "team_id", "parent_team_id", "manager_employee_id", "reporting_kind", "end_date", "title", "position_code", "description", "as_of", "q", "cursor", "scheduled_at", "expected_head_revision", "text", "edit_reason", "expected_version", "minimal_shared_text", "safe_blocker_text", "format", "return_to":
+	case "subject_id", "capability", "category", "kind", "id", "purpose", "expires_at", "authority_id", "expected_revision", "expected_auth_epoch", "reason", "code", "label", "expected_graph_revision", "action", "ref", "employee_id", "team_id", "department_id", "parent_team_id", "manager_employee_id", "reporting_kind", "end_date", "title", "position_code", "description", "as_of", "q", "cursor", "scheduled_at", "expected_head_revision", "text", "edit_reason", "expected_version", "minimal_shared_text", "safe_blocker_text", "format", "return_to":
 		if _, ok := t.(string); !ok {
 			return fault.Invalid
 		}
@@ -653,7 +653,7 @@ func allowedField(object, key string) bool {
 		return key == "title" || key == "position_code" || key == "description"
 	case "directory_query":
 		switch key {
-		case "as_of", "team_id", "employee_id", "lifecycle", "q", "cursor", "limit", "include_profile":
+		case "as_of", "department_id", "employee_id", "lifecycle", "q", "cursor", "limit", "include_profile":
 			return true
 		}
 		return false

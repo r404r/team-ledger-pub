@@ -15,38 +15,22 @@ import (
 // operations remain independent commands in the existing dispatcher.
 func (h *handler) structureRoute(w http.ResponseWriter, r *http.Request, req organization.Request) bool {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/"), "/")
-	teamCreate := len(parts) == 3 && parts[0] == "orgs" && parts[2] == "teams" && r.Method == http.MethodPost
-	change := len(parts) == 3 && parts[0] == "orgs" && parts[2] == "structure-changes" && r.Method == http.MethodPost
 	tree := len(parts) == 3 && parts[0] == "orgs" && parts[2] == "tree" && r.Method == http.MethodGet
 	catalogs := len(parts) == 3 && parts[0] == "orgs" && parts[2] == "workforce-catalogs" && r.Method == http.MethodGet
 	catalogChange := len(parts) == 3 && parts[0] == "orgs" && parts[2] == "workforce-catalog-changes" && r.Method == http.MethodPost
 	workforceChange := len(parts) == 3 && parts[0] == "orgs" && parts[2] == "workforce-changes" && r.Method == http.MethodPost
 	directory := len(parts) == 4 && parts[0] == "orgs" && parts[2] == "employees" && parts[3] == "query" && r.Method == http.MethodPost
 	history := len(parts) == 3 && parts[0] == "employees" && parts[2] == "organization-history" && r.Method == http.MethodGet
-	if !strings.HasPrefix(r.URL.Path, "/api/v1/") || !(teamCreate || change || tree || catalogs || catalogChange || workforceChange || directory || history) {
+	if !strings.HasPrefix(r.URL.Path, "/api/v1/") || !(tree || catalogs || catalogChange || workforceChange || directory || history) {
 		return false
 	}
 	if !value.ValidID(parts[1]) || req.Purpose != "organization_management" {
 		h.fail(w, fault.Invalid, req.RequestID)
 		return true
 	}
-	if teamCreate || change || catalogChange || workforceChange {
+	if catalogChange || workforceChange {
 		if !validCommandKey(req.Key) {
 			h.fail(w, fault.Invalid, req.RequestID)
-			return true
-		}
-		if teamCreate {
-			var cmd organization.CreateTeamCommand
-			if err := strictBody(w, r, &cmd); err != nil {
-				h.fail(w, err, req.RequestID)
-				return true
-			}
-			result, err := h.service.CreateTeam(r.Context(), req, parts[1], cmd)
-			if err != nil {
-				h.fail(w, err, req.RequestID)
-			} else {
-				h.reply(w, http.StatusCreated, result)
-			}
 			return true
 		}
 		if catalogChange {
@@ -76,17 +60,6 @@ func (h *handler) structureRoute(w http.ResponseWriter, r *http.Request, req org
 				h.reply(w, http.StatusCreated, result)
 			}
 			return true
-		}
-		var cmd organization.StructureCommand
-		if err := strictBody(w, r, &cmd); err != nil {
-			h.fail(w, err, req.RequestID)
-			return true
-		}
-		result, err := h.service.ChangeStructure(r.Context(), req, parts[1], cmd)
-		if err != nil {
-			h.fail(w, err, req.RequestID)
-		} else {
-			h.reply(w, http.StatusCreated, result)
 		}
 		return true
 	}
@@ -126,7 +99,7 @@ func (h *handler) structureRoute(w http.ResponseWriter, r *http.Request, req org
 		return true
 	}
 	q, err := url.ParseQuery(r.URL.RawQuery)
-	allowed := []string{"as_of", "root_team_id", "depth", "limit", "include_labels"}
+	allowed := []string{"as_of", "root_department_id", "depth", "limit", "include_labels"}
 	if history {
 		allowed = []string{"from", "to", "cursor", "limit"}
 	}
@@ -143,12 +116,12 @@ func (h *handler) structureRoute(w http.ResponseWriter, r *http.Request, req org
 		return true
 	}
 	if tree {
-		depth, err := queryBound(q, "depth", 10, 1, 10)
-		if err != nil || !value.ValidDate(q.Get("as_of")) || (q.Has("root_team_id") && !value.ValidID(q.Get("root_team_id"))) || (q.Has("include_labels") && q.Get("include_labels") != "true" && q.Get("include_labels") != "false") {
+		depth, err := queryBound(q, "depth", 3, 1, 3)
+		if err != nil || !value.ValidDate(q.Get("as_of")) || (q.Has("root_department_id") && !value.ValidID(q.Get("root_department_id"))) || (q.Has("include_labels") && q.Get("include_labels") != "true" && q.Get("include_labels") != "false") {
 			h.fail(w, fault.Invalid, req.RequestID)
 			return true
 		}
-		result, err := h.service.Tree(r.Context(), req, parts[1], organization.TreeQuery{AsOf: q.Get("as_of"), RootTeamID: q.Get("root_team_id"), Depth: depth, Limit: limit, IncludeLabels: q.Get("include_labels") == "true"})
+		result, err := h.service.Tree(r.Context(), req, parts[1], organization.TreeQuery{AsOf: q.Get("as_of"), RootDepartmentID: q.Get("root_department_id"), Depth: depth, Limit: limit, IncludeLabels: q.Get("include_labels") == "true"})
 		if err != nil {
 			h.fail(w, err, req.RequestID)
 		} else {

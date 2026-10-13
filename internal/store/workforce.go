@@ -18,6 +18,10 @@ func (r *Repository) WorkforcePayload(ctx context.Context, org, id string) (orga
 	return r.read().WorkforcePayload(ctx, org, id)
 }
 
+func (r *Repository) EmployeeWorkforceFacts(ctx context.Context, org, employee, asOf string) (organization.WorkforceFacts, error) {
+	return r.read().EmployeeWorkforceFacts(ctx, org, employee, asOf)
+}
+
 func (r reader) WorkforceCatalogs(ctx context.Context, org, asOf string) (organization.WorkforceCatalogs, error) {
 	out := organization.WorkforceCatalogs{
 		LegalEntities: []organization.LegalEntityView{}, Locations: []string{}, OrgUnits: []organization.OrgUnitView{}, OrgUnitParents: []organization.OrgUnitParentView{},
@@ -68,16 +72,18 @@ func (r reader) WorkforceCatalogs(ctx context.Context, org, asOf string) (organi
 	}
 	rows.Close()
 
-	rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT u.id,u.code,v.label_payload_id,u.kind,TRUE FROM org_unit u JOIN org_unit_version v ON v.org_id=u.org_id AND v.org_unit_id=u.id WHERE u.org_id=? AND v.valid_from<=? AND (v.valid_to IS NULL OR v.valid_to>?) ORDER BY u.kind,u.code,u.id"), org, asOf, asOf)
+	rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT u.id,u.code,v.label_payload_id,u.kind,"+r.structureDate("v.valid_from")+","+r.structureDate("v.valid_to")+",TRUE FROM org_unit u JOIN org_unit_version v ON v.org_id=u.org_id AND v.org_unit_id=u.id WHERE u.org_id=? AND v.valid_from<=? AND (v.valid_to IS NULL OR v.valid_to>?) ORDER BY u.kind,u.code,u.id"), org, asOf, asOf)
 	if err != nil {
 		return out, safeError(err)
 	}
 	for rows.Next() {
 		var item organization.OrgUnitView
-		if err = rows.Scan(&item.ID, &item.Code, &item.LabelPayloadID, &item.Kind, &item.Active); err != nil {
+		var to sql.NullString
+		if err = rows.Scan(&item.ID, &item.Code, &item.LabelPayloadID, &item.Kind, &item.ValidFrom, &to, &item.Active); err != nil {
 			rows.Close()
 			return out, safeError(err)
 		}
+		item.ValidTo = stringPtr(to)
 		out.OrgUnits = append(out.OrgUnits, item)
 	}
 	if err = rows.Err(); err != nil {
@@ -86,16 +92,18 @@ func (r reader) WorkforceCatalogs(ctx context.Context, org, asOf string) (organi
 	}
 	rows.Close()
 
-	rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT id,child_unit_id,parent_unit_id,TRUE FROM org_unit_parent_history WHERE org_id=? AND valid_from<=? AND (valid_to IS NULL OR valid_to>?) ORDER BY child_unit_id,parent_unit_id,id"), org, asOf, asOf)
+	rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT id,child_unit_id,parent_unit_id,"+r.structureDate("valid_from")+","+r.structureDate("valid_to")+",TRUE FROM org_unit_parent_history WHERE org_id=? AND valid_from<=? AND (valid_to IS NULL OR valid_to>?) ORDER BY child_unit_id,parent_unit_id,id"), org, asOf, asOf)
 	if err != nil {
 		return out, safeError(err)
 	}
 	for rows.Next() {
 		var item organization.OrgUnitParentView
-		if err = rows.Scan(&item.ID, &item.ChildUnitID, &item.ParentUnitID, &item.Active); err != nil {
+		var to sql.NullString
+		if err = rows.Scan(&item.ID, &item.ChildUnitID, &item.ParentUnitID, &item.ValidFrom, &to, &item.Active); err != nil {
 			rows.Close()
 			return out, safeError(err)
 		}
+		item.ValidTo = stringPtr(to)
 		out.OrgUnitParents = append(out.OrgUnitParents, item)
 	}
 	if err = rows.Err(); err != nil {
@@ -176,4 +184,112 @@ func (r reader) WorkforcePayload(ctx context.Context, org, id string) (organizat
 	binding.EmployeeID = employee.String
 	payload.RecordedAt = recorded.Time
 	return payload, nil
+}
+
+func (r reader) EmployeeWorkforceFacts(ctx context.Context, org, employee, asOf string) (organization.WorkforceFacts, error) {
+	out := organization.WorkforceFacts{
+		Identifiers: []organization.IdentifierView{}, Employment: []organization.EmploymentView{}, Education: []organization.EducationView{},
+		JobAssignments: []organization.JobAssignmentView{}, ReportingLines: []organization.ReportingView{},
+	}
+	rows, err := r.db.QueryContext(ctx, r.structureSQL("SELECT id,kind,payload_id,"+r.structureDate("valid_from")+","+r.structureDate("valid_to")+" FROM employee_business_identifier WHERE org_id=? AND employee_id=? AND valid_from<=? AND (valid_to IS NULL OR valid_to>?) ORDER BY valid_from,id"), org, employee, asOf, asOf)
+	if err != nil {
+		return out, safeError(err)
+	}
+	for rows.Next() {
+		var item organization.IdentifierView
+		var to sql.NullString
+		if err = rows.Scan(&item.ID, &item.Kind, &item.PayloadID, &item.ValidFrom, &to); err != nil {
+			rows.Close()
+			return out, safeError(err)
+		}
+		item.ValidTo = stringPtr(to)
+		out.Identifiers = append(out.Identifiers, item)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return out, safeError(err)
+	}
+	rows.Close()
+
+	rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT id,legal_entity_id,location_code,kind,"+r.structureDate("valid_from")+","+r.structureDate("valid_to")+" FROM employment_spell WHERE org_id=? AND employee_id=? AND valid_from<=? AND (valid_to IS NULL OR valid_to>?) ORDER BY valid_from,id"), org, employee, asOf, asOf)
+	if err != nil {
+		return out, safeError(err)
+	}
+	for rows.Next() {
+		var item organization.EmploymentView
+		var to sql.NullString
+		if err = rows.Scan(&item.ID, &item.LegalEntityID, &item.LocationCode, &item.Kind, &item.ValidFrom, &to); err != nil {
+			rows.Close()
+			return out, safeError(err)
+		}
+		item.ValidTo = stringPtr(to)
+		out.Employment = append(out.Employment, item)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return out, safeError(err)
+	}
+	rows.Close()
+
+	rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT id,level_code,payload_id,"+r.structureDate("valid_from")+","+r.structureDate("valid_to")+" FROM education_record WHERE org_id=? AND employee_id=? AND valid_from<=? AND (valid_to IS NULL OR valid_to>?) ORDER BY valid_from,id"), org, employee, asOf, asOf)
+	if err != nil {
+		return out, safeError(err)
+	}
+	for rows.Next() {
+		var item organization.EducationView
+		var to sql.NullString
+		if err = rows.Scan(&item.ID, &item.Level, &item.PayloadID, &item.ValidFrom, &to); err != nil {
+			rows.Close()
+			return out, safeError(err)
+		}
+		item.ValidTo = stringPtr(to)
+		out.Education = append(out.Education, item)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return out, safeError(err)
+	}
+	rows.Close()
+
+	rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT id,department_id,job_family_id,career_level_id,position_payload_id,"+r.structureDate("valid_from")+","+r.structureDate("valid_to")+" FROM job_assignment WHERE org_id=? AND employee_id=? AND valid_from<=? AND (valid_to IS NULL OR valid_to>?) ORDER BY valid_from,id"), org, employee, asOf, asOf)
+	if err != nil {
+		return out, safeError(err)
+	}
+	for rows.Next() {
+		var item organization.JobAssignmentView
+		var family, level, payload, to sql.NullString
+		if err = rows.Scan(&item.ID, &item.DepartmentID, &family, &level, &payload, &item.ValidFrom, &to); err != nil {
+			rows.Close()
+			return out, safeError(err)
+		}
+		item.JobFamilyID, item.CareerLevelID, item.ValidTo = stringPtr(family), stringPtr(level), stringPtr(to)
+		item.PayloadID = payload.String
+		out.JobAssignments = append(out.JobAssignments, item)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return out, safeError(err)
+	}
+	rows.Close()
+
+	rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT id,employee_id,manager_employee_id,kind,"+r.structureDate("valid_from")+","+r.structureDate("valid_to")+" FROM reporting_line WHERE org_id=? AND employee_id=? AND superseded=false AND valid_from<=? AND (valid_to IS NULL OR valid_to>?) AND (effective_to IS NULL OR effective_to>?) ORDER BY valid_from,id"), org, employee, asOf, asOf, asOf)
+	if err != nil {
+		return out, safeError(err)
+	}
+	for rows.Next() {
+		var item organization.ReportingView
+		var to sql.NullString
+		if err = rows.Scan(&item.ID, &item.EmployeeID, &item.ManagerEmployeeID, &item.Kind, &item.ValidFrom, &to); err != nil {
+			rows.Close()
+			return out, safeError(err)
+		}
+		item.ValidTo = stringPtr(to)
+		out.ReportingLines = append(out.ReportingLines, item)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return out, safeError(err)
+	}
+	rows.Close()
+	return out, nil
 }

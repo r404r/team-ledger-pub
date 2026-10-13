@@ -36,19 +36,23 @@ type LegalEntityView struct {
 }
 
 type OrgUnitView struct {
-	ID             string `json:"id"`
-	Code           string `json:"code"`
-	Label          string `json:"label,omitempty"`
-	LabelPayloadID string `json:"-"`
-	Kind           string `json:"kind"`
-	Active         bool   `json:"active"`
+	ID             string  `json:"id"`
+	Code           string  `json:"code"`
+	Label          string  `json:"label,omitempty"`
+	LabelPayloadID string  `json:"-"`
+	Kind           string  `json:"kind"`
+	ValidFrom      string  `json:"valid_from"`
+	ValidTo        *string `json:"valid_to"`
+	Active         bool    `json:"active"`
 }
 
 type OrgUnitParentView struct {
-	ID           string `json:"id"`
-	ChildUnitID  string `json:"child_unit_id"`
-	ParentUnitID string `json:"parent_unit_id"`
-	Active       bool   `json:"active"`
+	ID           string  `json:"id"`
+	ChildUnitID  string  `json:"child_unit_id"`
+	ParentUnitID string  `json:"parent_unit_id"`
+	ValidFrom    string  `json:"valid_from"`
+	ValidTo      *string `json:"valid_to"`
+	Active       bool    `json:"active"`
 }
 
 type JobFamilyView struct {
@@ -69,6 +73,54 @@ type CareerLevelView struct {
 type EducationLevelView struct {
 	Code string `json:"code"`
 	Rank int    `json:"rank"`
+}
+
+type IdentifierView struct {
+	ID        string  `json:"id"`
+	Kind      string  `json:"kind"`
+	StaffCode string  `json:"staff_code,omitempty"`
+	ValidFrom string  `json:"valid_from"`
+	ValidTo   *string `json:"valid_to"`
+	PayloadID string  `json:"-"`
+}
+
+type EmploymentView struct {
+	ID            string  `json:"id"`
+	LegalEntityID string  `json:"legal_entity_id"`
+	LocationCode  string  `json:"location_code"`
+	Kind          string  `json:"kind"`
+	ValidFrom     string  `json:"valid_from"`
+	ValidTo       *string `json:"valid_to"`
+}
+
+type EducationView struct {
+	ID          string  `json:"id"`
+	Level       string  `json:"level"`
+	Institution *string `json:"institution,omitempty"`
+	Field       *string `json:"field,omitempty"`
+	AwardDate   *string `json:"award_date,omitempty"`
+	ValidFrom   string  `json:"valid_from"`
+	ValidTo     *string `json:"valid_to"`
+	PayloadID   string  `json:"-"`
+}
+
+type JobAssignmentView struct {
+	ID            string           `json:"id"`
+	DepartmentID  string           `json:"department_id"`
+	JobFamilyID   *string          `json:"job_family_id,omitempty"`
+	CareerLevelID *string          `json:"career_level_id,omitempty"`
+	Position      *PositionPayload `json:"position,omitempty"`
+	ValidFrom     string           `json:"valid_from"`
+	ValidTo       *string          `json:"valid_to"`
+	PayloadID     string           `json:"-"`
+}
+
+type WorkforceFacts struct {
+	Identifiers    []IdentifierView    `json:"identifiers"`
+	Employment     []EmploymentView    `json:"employment"`
+	Education      []EducationView     `json:"education"`
+	JobAssignments []JobAssignmentView `json:"job_assignments"`
+	ReportingLines []ReportingView     `json:"reporting_lines"`
 }
 
 type WorkforceCatalogQuery struct {
@@ -101,6 +153,7 @@ type WorkforcePayload struct {
 type WorkforceReader interface {
 	WorkforceCatalogs(context.Context, string, string) (WorkforceCatalogs, error)
 	WorkforcePayload(context.Context, string, string) (WorkforcePayload, error)
+	EmployeeWorkforceFacts(context.Context, string, string, string) (WorkforceFacts, error)
 }
 
 // NormalizeStaffCode preserves case, internal whitespace and leading zeroes.

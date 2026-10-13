@@ -56,6 +56,15 @@ func apiSend(t *testing.T, f *testsupport.Fixture, r *http.Request, status int, 
 
 const createJSON = `{"profile":{"local_name":"SYNTHETIC_API_PROFILE","english_name":"Synthetic API Profile"},"lifecycle":{"valid_from":"2026-01-01","valid_to":null}}`
 
+func structureJSON(t *testing.T, value any) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
+}
+
 func TestAPIProfileCreateReloadCorrectionAndSafeRejection(t *testing.T) {
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
