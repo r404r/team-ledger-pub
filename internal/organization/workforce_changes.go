@@ -90,10 +90,33 @@ func validCatalogChangeItem(item CatalogChangeItem) bool {
 	if item.Rank != nil && *item.Rank < 1 {
 		return false
 	}
-	if item.Action == "create" {
-		return item.Ref == nil && item.Code != nil && item.ValidFrom != nil && item.EffectiveTo == nil
+	switch item.Action {
+	case "create":
+		if item.ValidFrom == nil || item.EffectiveTo != nil {
+			return false
+		}
+		if item.Kind == "org_unit_parent" {
+			return validIDPointer(item.Ref) && validIDPointer(item.ParentRef) && item.Code == nil && item.Label == nil && item.Rank == nil
+		}
+		if item.Ref != nil || item.Code == nil || item.Label == nil || item.ParentRef != nil {
+			return false
+		}
+		return item.Kind != "career_level" && item.Rank == nil || item.Kind == "career_level" && item.Rank != nil
+	case "end":
+		return item.Ref != nil && item.EffectiveTo != nil && item.Code == nil && item.Label == nil && item.Rank == nil && item.ParentRef == nil && item.ValidFrom == nil
+	case "replace":
+		if item.Ref == nil || item.EffectiveTo == nil || item.Code != nil || item.ValidFrom != nil {
+			return false
+		}
+		if item.Kind == "org_unit_parent" {
+			return validIDPointer(item.ParentRef) && item.Label == nil && item.Rank == nil
+		}
+		if item.Label == nil || item.ParentRef != nil {
+			return false
+		}
+		return item.Kind != "career_level" && item.Rank == nil || item.Kind == "career_level" && item.Rank != nil
 	}
-	return item.Ref != nil && item.EffectiveTo != nil && item.Code == nil && item.ValidFrom == nil
+	return false
 }
 
 func validWorkforceChange(command WorkforceChangeCommand) bool {
