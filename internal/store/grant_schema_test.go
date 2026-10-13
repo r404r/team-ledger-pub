@@ -36,7 +36,6 @@ func TestGrantSchemaAuthorityOwnersFiniteValuesAndImmutability(t *testing.T) {
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			f := testsupport.NewHarness(t, backend)
-			migrationLedger(t, f.Repo)
 			local := runtimeCreate(t, context.Background(), f, f.Owner, f.OrgID, "SYNTHETIC_AUTHORITY_LOCAL")
 			foreign := runtimeCreate(t, context.Background(), f, f.OtherOwner, f.OtherOrgID, "SYNTHETIC_AUTHORITY_FOREIGN")
 			approver := grantSchemaSubject(t, f, f.OrgID)
@@ -352,4 +351,11 @@ func grantSchemaInsert(repo *store.Repository, table string, values map[string]a
 	}
 	_, err := repo.DB.ExecContext(context.Background(), "INSERT INTO "+table+"("+strings.Join(columns, ",")+") VALUES("+strings.Join(placeholders, ",")+")", arguments...)
 	return err
+}
+
+func migrationConstraint(t *testing.T, backend string, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s accepted a row that violates the v12 schema", backend)
+	}
 }

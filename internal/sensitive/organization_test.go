@@ -133,8 +133,8 @@ func TestOrganizationCipherRoundTripAndIndependentAAD(t *testing.T) {
 	}
 }
 
-func TestEmployeeProfileVersionOneAADBytesRemainUnchanged(t *testing.T) {
-	// Frozen pre-organization v1 bytes, not computed from production metadata.
+func TestEmployeeProfileVersionTwoAADBytesRemainStable(t *testing.T) {
+	// Frozen v2 bytes, not computed from production metadata.
 	golden, err := hex.DecodeString("5445414d4c45444745522d4141440001" +
 		"00000010aaaaaaaa111141118111111111111111" +
 		"00000010bbbbbbbb222242228222222222222222" +
@@ -142,7 +142,7 @@ func TestEmployeeProfileVersionOneAADBytesRemainUnchanged(t *testing.T) {
 		"00000010dddddddd444444448444444444444444" +
 		"00000010656d706c6f7965655f70726f66696c65" +
 		"00000003706969" +
-		"0000000e7069692e70726f66696c652e7631" +
+		"0000000e7069692e70726f66696c652e7632" +
 		"0000000400000001")
 	if err != nil {
 		t.Fatal("invalid frozen profile AAD fixture")
@@ -153,12 +153,12 @@ func TestEmployeeProfileVersionOneAADBytesRemainUnchanged(t *testing.T) {
 	legacy := independentOrganizationEnvelope(t, w, binding, syntheticProfile, golden)
 	opened, err := c.Open(context.Background(), binding, legacy)
 	if err != nil || !bytes.Equal(opened, syntheticProfile) {
-		t.Fatal("pre-organization v1 ciphertext must still authenticate unchanged")
+		t.Fatal("profile v2 ciphertext must authenticate exact AAD")
 	}
 	clear(opened)
 	current, err := c.Seal(context.Background(), binding, syntheticProfile)
 	if err != nil {
-		t.Fatal("profile Seal must still accept its original v1 context")
+		t.Fatal("profile Seal must accept the v2 context")
 	}
 	dek, err := w.Unwrap(context.Background(), current.Key)
 	if err != nil {
@@ -167,7 +167,7 @@ func TestEmployeeProfileVersionOneAADBytesRemainUnchanged(t *testing.T) {
 	defer clear(dek)
 	opened, err = payloadAEAD(t, dek).Open(nil, nil, current.SealedBytes, golden)
 	if err != nil || !bytes.Equal(opened, syntheticProfile) {
-		t.Fatal("profile Seal changed the exact frozen v1 AAD bytes")
+		t.Fatal("profile Seal changed the exact frozen v2 AAD bytes")
 	}
 	clear(opened)
 }

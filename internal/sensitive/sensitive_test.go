@@ -267,7 +267,7 @@ func contextChanges() []struct {
 		{"version", func(c *sensitive.Context) { c.VersionID = "12345678-4444-4444-8444-444444444444" }},
 		{"object_kind", func(c *sensitive.Context) { c.ObjectKind = "interview_note" }},
 		{"purpose", func(c *sensitive.Context) { c.Purpose = "compensation" }},
-		{"schema_type", func(c *sensitive.Context) { c.SchemaType = "pii.profile.v2" }},
+		{"schema_type", func(c *sensitive.Context) { c.SchemaType = "pii.profile.v1" }},
 		{"schema_version", func(c *sensitive.Context) { c.SchemaVersion = 2 }},
 	}
 }

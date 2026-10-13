@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/r404r/team-ledger/internal/fault"
@@ -480,6 +481,15 @@ func (t *transaction) changeCatalogVersion(ctx context.Context, org, changeID st
 	if validFrom >= *command.EffectiveTo || revision == math.MaxInt64 {
 		return fault.Conflict
 	}
+	if command.Action == "end" {
+		if err := t.ensureCatalogUnreferencedAfter(ctx, org, command.Kind, *command.Ref, *command.EffectiveTo); err != nil {
+			return err
+		}
+	} else if command.ValidTo != nil {
+		if err := t.ensureCatalogUnreferencedAfter(ctx, org, command.Kind, *command.Ref, *command.ValidTo); err != nil {
+			return err
+		}
+	}
 	result, err := t.tx.ExecContext(ctx, t.structureSQL("UPDATE "+table+" SET valid_to=? WHERE org_id=? AND id=? AND valid_to IS NULL"), *command.EffectiveTo, org, priorID)
 	if err = structureAffected(result, err, fault.Conflict); err != nil {
 		return err
@@ -513,6 +523,39 @@ func catalogVersionTarget(kind string) (string, string) {
 	default:
 		return "", ""
 	}
+}
+
+func (t *transaction) ensureCatalogUnreferencedAfter(ctx context.Context, org, kind, owner, boundary string) error {
+	var queries []string
+	switch kind {
+	case "legal_entity":
+		queries = []string{"SELECT count(*) FROM employment_spell WHERE org_id=? AND legal_entity_id=? AND COALESCE(valid_to,'9999-12-31')>?"}
+	case "department":
+		queries = []string{
+			"SELECT count(*) FROM job_assignment WHERE org_id=? AND department_id=? AND COALESCE(valid_to,'9999-12-31')>?",
+			"SELECT count(*) FROM org_unit_parent_history WHERE org_id=? AND (child_unit_id=? OR parent_unit_id=?) AND COALESCE(valid_to,'9999-12-31')>?",
+		}
+	case "business_group", "division":
+		queries = []string{"SELECT count(*) FROM org_unit_parent_history WHERE org_id=? AND (child_unit_id=? OR parent_unit_id=?) AND COALESCE(valid_to,'9999-12-31')>?"}
+	case "job_family":
+		queries = []string{"SELECT count(*) FROM job_assignment WHERE org_id=? AND job_family_id=? AND COALESCE(valid_to,'9999-12-31')>?"}
+	case "career_level":
+		queries = []string{"SELECT count(*) FROM job_assignment WHERE org_id=? AND career_level_id=? AND COALESCE(valid_to,'9999-12-31')>?"}
+	}
+	for _, query := range queries {
+		args := []any{org, owner, boundary}
+		if strings.Count(query, "?") == 4 {
+			args = []any{org, owner, owner, boundary}
+		}
+		var count int
+		if err := t.tx.QueryRowContext(ctx, t.structureSQL(query), args...).Scan(&count); err != nil {
+			return safeError(err)
+		}
+		if count != 0 {
+			return fault.Conflict
+		}
+	}
+	return nil
 }
 
 func (t *transaction) changeCatalogParent(ctx context.Context, org, changeID string, item organization.CatalogPreparedItem) error {

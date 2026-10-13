@@ -2,9 +2,11 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
+	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/organization"
 	"github.com/r404r/team-ledger/internal/testsupport"
 	"github.com/r404r/team-ledger/internal/value"
@@ -106,6 +108,57 @@ func TestCatalogCreateTransactionAdvancesOnlyCatalogRevision(t *testing.T) {
 			}
 			if catalogRevision != 2 || graphRevision != 1 || f.Count(t, "job_family") != 1 || f.Count(t, "job_family_version") != 1 {
 				t.Fatalf("catalog/graph revisions = %d/%d", catalogRevision, graphRevision)
+			}
+		})
+	}
+}
+
+func TestCatalogEndRejectsFactsOutsideRemainingCoverage(t *testing.T) {
+	for _, backend := range []string{"sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) {
+			f := testsupport.NewHarness(t, backend)
+			ctx := context.Background()
+			code, label, from := "SYNTHETIC-BRANCH", "Synthetic Branch", "2026-01-01"
+			catalog, err := f.Service.ChangeCatalogs(ctx, f.Request(f.Owner), f.OrgID, organization.CatalogChangeCommand{
+				ExpectedCatalogRevision: "1",
+				ExpectedGraphRevision:   "1",
+				Changes: []organization.CatalogChangeItem{{
+					Action: "create", Kind: "legal_entity", Code: &code, Label: &label, ValidFrom: &from,
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			employee, err := f.Service.Create(ctx, f.Request(f.Owner), f.OrgID, organization.CreateCommand{
+				Profile:   organization.Profile{LocalName: "SYNTHETIC_CATALOG_REFERENCE"},
+				Lifecycle: organization.Lifecycle{ValidFrom: from},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			location, employmentKind := "Shanghai", "hire"
+			assigned, err := f.Service.ChangeWorkforce(ctx, f.Request(f.Owner), f.OrgID, organization.WorkforceChangeCommand{
+				ExpectedCatalogRevision:  catalog.CatalogRevision,
+				ExpectedGraphRevision:    catalog.GraphRevision,
+				ExpectedEmployeeRevision: map[string]string{employee.ID: "1"},
+				Changes: []organization.WorkforceChangeItem{{
+					Action: "add", Kind: "employment", EmployeeID: employee.ID, LegalEntityID: &catalog.Items[0].ID,
+					LocationCode: &location, EmploymentKind: &employmentKind, ValidFrom: &from,
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			end := "2027-01-01"
+			_, err = f.Service.ChangeCatalogs(ctx, f.Request(f.Owner), f.OrgID, organization.CatalogChangeCommand{
+				ExpectedCatalogRevision: assigned.CatalogRevision,
+				ExpectedGraphRevision:   assigned.GraphRevision,
+				Changes: []organization.CatalogChangeItem{{
+					Action: "end", Kind: "legal_entity", Ref: &catalog.Items[0].ID, EffectiveTo: &end,
+				}},
+			})
+			if !errors.Is(err, fault.Conflict) {
+				t.Fatal("referenced legal entity ended before open employment spell:", err)
 			}
 		})
 	}
