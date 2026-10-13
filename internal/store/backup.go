@@ -113,6 +113,10 @@ func (r *Repository) backupManifest(ctx context.Context, q queryer, created time
 	if err != nil {
 		return backup.Manifest{}, err
 	}
+	manifest.AuditReceiverCheckpoint, err = r.jsonRows(ctx, q, "SELECT c.deployment_id,c.sequence,COALESCE(c.head_hash,''),(SELECT count(*) FROM audit_receiver_ledger l WHERE l.deployment_id=c.deployment_id) FROM audit_receiver_chain c ORDER BY c.deployment_id", 4)
+	if err != nil {
+		return backup.Manifest{}, err
+	}
 	manifest.RevocationCheckpoint, err = r.singleJSON(ctx, q, "SELECT COALESCE(sum(CASE WHEN revoked THEN 1 ELSE 0 END),0),(SELECT COALESCE(sum(CASE WHEN revoked THEN 1 ELSE 0 END),0) FROM session),COALESCE(max(revision),0) FROM access_grant", 3)
 	if err != nil {
 		return backup.Manifest{}, err

@@ -168,7 +168,7 @@ func TestAPIStartupRequiresProtectedTLSAndLocalKeyd(t *testing.T) {
 					ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 					defer cancel()
 					command := exec.CommandContext(ctx, executable, "-test.run=^TestAPIStartupChildProcess$")
-					env := map[string]string{"BACKEND": backend, "DSN": f.DSN, "LISTEN": address, "PUBLIC_ORIGIN": origin, "TLS_CERT_FILE": filepath.Join(dir, "cert.pem"), "TLS_KEY_FILE": filepath.Join(dir, "api.key"), "KEYD_SOCKET": socket, "WEB_DIR": dir, "TEST_API_CHILD": "1", "COMPENSATION_POLICY_FILE": "", "IDENTITY_MODE": "local"}
+					env := map[string]string{"BACKEND": backend, "DSN": f.DSN, "LISTEN": address, "PUBLIC_ORIGIN": origin, "TLS_CERT_FILE": filepath.Join(dir, "cert.pem"), "TLS_KEY_FILE": filepath.Join(dir, "api.key"), "KEYD_SOCKET": socket, "WEB_DIR": dir, "DEPLOYMENT_ID": "synthetic-deployment", "TEST_API_CHILD": "1", "COMPENSATION_POLICY_FILE": "", "IDENTITY_MODE": "local"}
 					command.Env = os.Environ()
 					for name, value := range env {
 						command.Env = append(command.Env, "TEAMLEDGER_"+name+"="+value)

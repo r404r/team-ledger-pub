@@ -23,19 +23,20 @@ type KeyDependency struct {
 	Version       uint32
 }
 type Manifest struct {
-	FormatVersion        int             `json:"format_version"`
-	Backend              string          `json:"backend"`
-	SchemaVersion        int             `json:"schema_version"`
-	CreatedAt            time.Time       `json:"created_at"`
-	DatabaseSize         int64           `json:"database_size"`
-	DatabaseSHA256       string          `json:"database_sha256"`
-	OrganizationIDs      []string        `json:"organization_ids"`
-	KeyDependencies      []KeyDependency `json:"key_dependencies"`
-	HMACState            json.RawMessage `json:"hmac_state"`
-	AuditCheckpoint      json.RawMessage `json:"audit_checkpoint"`
-	RevocationCheckpoint json.RawMessage `json:"revocation_checkpoint"`
-	JobFenceCheckpoint   json.RawMessage `json:"job_fence_checkpoint"`
-	GraphCompCheckpoint  json.RawMessage `json:"graph_comp_checkpoint"`
+	FormatVersion           int             `json:"format_version"`
+	Backend                 string          `json:"backend"`
+	SchemaVersion           int             `json:"schema_version"`
+	CreatedAt               time.Time       `json:"created_at"`
+	DatabaseSize            int64           `json:"database_size"`
+	DatabaseSHA256          string          `json:"database_sha256"`
+	OrganizationIDs         []string        `json:"organization_ids"`
+	KeyDependencies         []KeyDependency `json:"key_dependencies"`
+	HMACState               json.RawMessage `json:"hmac_state"`
+	AuditCheckpoint         json.RawMessage `json:"audit_checkpoint"`
+	AuditReceiverCheckpoint json.RawMessage `json:"audit_receiver_checkpoint"`
+	RevocationCheckpoint    json.RawMessage `json:"revocation_checkpoint"`
+	JobFenceCheckpoint      json.RawMessage `json:"job_fence_checkpoint"`
+	GraphCompCheckpoint     json.RawMessage `json:"graph_comp_checkpoint"`
 }
 
 func aeadFor(key []byte) (cipher.AEAD, error) {

@@ -30,10 +30,33 @@ func TestHealthSeparatesProcessLivenessFromSchemaKeysAndAuditReadiness(t *testin
 			if status := request("/health/live"); status != 200 {
 				t.Fatal("live", status)
 			}
-			if status := request("/health/ready"); status != 200 {
-				t.Fatal("ready", status)
+			if status := request("/health/ready"); status != 503 {
+				t.Fatal("missing receiver heartbeat did not close readiness", status)
 			}
 			now := time.Now().UTC().Truncate(time.Microsecond)
+			if err := fixture.Repo.RecordAuditReceiverStatus(context.Background(), "other-deployment", true, now); err != nil {
+				t.Fatal(err)
+			}
+			if status := request("/health/ready"); status != 503 {
+				t.Fatal("another deployment's receiver heartbeat opened readiness", status)
+			}
+			now = time.Now().UTC().Truncate(time.Microsecond)
+			if err := fixture.Repo.RecordAuditReceiverStatus(context.Background(), "synthetic-deployment", true, now); err != nil {
+				t.Fatal(err)
+			}
+			if status := request("/health/ready"); status != 200 {
+				t.Fatal("fresh receiver heartbeat did not open readiness", status)
+			}
+			if err := fixture.Repo.RecordAuditReceiverStatus(context.Background(), "synthetic-deployment", false, now); err != nil {
+				t.Fatal(err)
+			}
+			if status := request("/health/ready"); status != 503 {
+				t.Fatal("failed receiver heartbeat did not close readiness", status)
+			}
+			now = time.Now().UTC().Truncate(time.Microsecond)
+			if err := fixture.Repo.RecordAuditReceiverStatus(context.Background(), "synthetic-deployment", true, now); err != nil {
+				t.Fatal(err)
+			}
 			if err := fixture.Repo.AuditDenied(context.Background(), organization.Audit{ID: value.NewID(), OrgID: fixture.OrgID, SubjectID: fixture.Owner.SubjectID, Operation: "OP-SEC-04", Purpose: "security_administration", RequestID: value.NewID(), At: now.Add(-6 * time.Minute)}); err != nil {
 				t.Fatal(err)
 			}

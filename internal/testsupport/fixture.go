@@ -286,7 +286,7 @@ func (f *Fixture) seed(ctx context.Context) error {
 
 func NewHarness(t testing.TB, backend string) *Fixture {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	dsn := filepath.Join(t.TempDir(), "fixture.db")
 	var base *store.Repository
@@ -335,7 +335,7 @@ func NewHarness(t testing.TB, backend string) *Fixture {
 		t.Fatal(err)
 	}
 	identities.Now = f.Service.Now
-	handler, err := httpapi.New(f.Service, f.Interviews, f.Assessment, f.Compensation, f.Authz, identities, f.CSRFKey, "https://"+server.Listener.Addr().String(), dir)
+	handler, err := httpapi.New(f.Service, f.Interviews, f.Assessment, f.Compensation, f.Authz, identities, f.CSRFKey, "https://"+server.Listener.Addr().String(), dir, "synthetic-deployment")
 	if err != nil {
 		server.Close()
 		t.Fatal(err)

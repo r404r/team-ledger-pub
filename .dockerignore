@@ -2,6 +2,10 @@
 .gitignore
 .env.docker
 docker/secrets
+docker/maintenance
+docker/audit-maintenance
+backups
+private
 web/node_modules
 web/dist
 **/*_test.go

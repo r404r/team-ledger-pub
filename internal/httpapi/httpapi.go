@@ -34,20 +34,20 @@ var bodyTooLarge = &fault.Fault{Status: 413, Code: "INVALID_INPUT", Reason: "BOD
 var unsupportedMedia = &fault.Fault{Status: 415, Code: "INVALID_INPUT", Reason: "UNSUPPORTED_MEDIA_TYPE"}
 
 type handler struct {
-	service        *organization.Service
-	grants         *authz.Service
-	interviews     *interview.Service
-	assessment     *assessment.Service
-	compensation   *compensation.Service
-	audit          *audit.Service
-	identities     *identity.Service
-	key            []byte
-	origin, static string
+	service                    *organization.Service
+	grants                     *authz.Service
+	interviews                 *interview.Service
+	assessment                 *assessment.Service
+	compensation               *compensation.Service
+	audit                      *audit.Service
+	identities                 *identity.Service
+	key                        []byte
+	origin, static, deployment string
 }
 
-func New(service *organization.Service, interviews *interview.Service, assessmentService *assessment.Service, compensation *compensation.Service, grants *authz.Service, identities *identity.Service, csrfKey []byte, origin, staticDir string) (http.Handler, error) {
+func New(service *organization.Service, interviews *interview.Service, assessmentService *assessment.Service, compensation *compensation.Service, grants *authz.Service, identities *identity.Service, csrfKey []byte, origin, staticDir, deployment string) (http.Handler, error) {
 	u, err := url.Parse(origin)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.RawPath != "" || service == nil || interviews == nil || assessmentService == nil || compensation == nil || grants == nil || identities == nil || len(csrfKey) != 32 {
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.RawPath != "" || service == nil || interviews == nil || assessmentService == nil || compensation == nil || grants == nil || identities == nil || len(csrfKey) != 32 || !audit.ValidDeploymentID(deployment) {
 		return nil, errors.New("invalid HTTP configuration")
 	}
 	root, err := filepath.EvalSymlinks(staticDir)
@@ -66,7 +66,7 @@ func New(service *organization.Service, interviews *interview.Service, assessmen
 	if auditStore, ok := grants.Store.(audit.Store); ok {
 		auditService = &audit.Service{Store: auditStore, CursorKey: grants.CursorKey, Now: grants.Now}
 	}
-	return &handler{service: service, interviews: interviews, assessment: assessmentService, compensation: compensation, grants: grants, audit: auditService, identities: identities, key: bytes.Clone(csrfKey), origin: strings.TrimSuffix(origin, "/"), static: root}, nil
+	return &handler{service: service, interviews: interviews, assessment: assessmentService, compensation: compensation, grants: grants, audit: auditService, identities: identities, key: bytes.Clone(csrfKey), origin: strings.TrimSuffix(origin, "/"), static: root, deployment: deployment}, nil
 }
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")

@@ -12,6 +12,7 @@ import (
 type readinessStore interface {
 	CheckSchema(context.Context) error
 	AuditDeliveryBacklog(context.Context, time.Time) (int64, *time.Time, error)
+	AuditReceiverAvailable(context.Context, string, time.Time, time.Duration) error
 }
 
 type readyWrapper interface {
@@ -58,7 +59,7 @@ func (h *handler) healthRoute(w http.ResponseWriter, r *http.Request, requestID 
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	count, oldest, err := store.AuditDeliveryBacklog(ctx, now)
 	keys := err == nil && probeWrapper(ctx, h.service.Cipher.Wrapper) && probeWrapper(ctx, h.interviews.Cipher.Wrapper) && probeWrapper(ctx, h.assessment.Cipher.Wrapper) && probeWrapper(ctx, h.compensation.Cipher.Wrapper)
-	if err != nil || store.CheckSchema(ctx) != nil || !keys || count > 1000 || oldest != nil && now.Sub(*oldest) > 5*time.Minute {
+	if err != nil || store.CheckSchema(ctx) != nil || store.AuditReceiverAvailable(ctx, h.deployment, now, 15*time.Second) != nil || !keys || count > 1000 || oldest != nil && now.Sub(*oldest) > 5*time.Minute {
 		h.reply(w, 503, struct {
 			Status string `json:"status"`
 		}{"unavailable"})

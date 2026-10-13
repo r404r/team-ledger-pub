@@ -82,7 +82,7 @@ func identityModeMatches(ctx context.Context, reader identityModeReader, configu
 }
 
 func run() error {
-	names := []string{"BACKEND", "DSN", "LISTEN", "PUBLIC_ORIGIN", "TLS_CERT_FILE", "TLS_KEY_FILE", "KEYD_SOCKET", "WEB_DIR"}
+	names := []string{"BACKEND", "DSN", "LISTEN", "PUBLIC_ORIGIN", "TLS_CERT_FILE", "TLS_KEY_FILE", "KEYD_SOCKET", "WEB_DIR", "DEPLOYMENT_ID"}
 	cfg := map[string]string{}
 	for _, name := range names {
 		v, e := required(name)
@@ -229,7 +229,7 @@ func run() error {
 	if e != nil {
 		return errors.New("identity unavailable")
 	}
-	handler, e := httpapi.New(service, interviews, assessments, finance, grants, identities, csrf, cfg["PUBLIC_ORIGIN"], cfg["WEB_DIR"])
+	handler, e := httpapi.New(service, interviews, assessments, finance, grants, identities, csrf, cfg["PUBLIC_ORIGIN"], cfg["WEB_DIR"], cfg["DEPLOYMENT_ID"])
 	if e != nil {
 		return e
 	}

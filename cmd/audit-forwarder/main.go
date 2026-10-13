@@ -2,16 +2,16 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/base64"
 	"errors"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/r404r/team-ledger/internal/audit"
@@ -59,6 +59,10 @@ func run(ctx context.Context) error {
 		return errors.New("unsupported backend")
 	}
 	defer repository.Close()
+	deployment, err := required("TEAMLEDGER_DEPLOYMENT_ID")
+	if err != nil {
+		return err
+	}
 	endpoint, err := required("TEAMLEDGER_AUDIT_ENDPOINT")
 	if err != nil {
 		return err
@@ -67,7 +71,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	caPEM, err := configfile.ReadRootTrust(caPath, 1<<20)
+	caPEM, err := configfile.Read(caPath, 1<<20, false)
 	if err != nil {
 		return err
 	}
@@ -102,34 +106,66 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	encoded, err := configfile.ReadRootTrust(publicPath, 256)
+	encoded, err := configfile.Read(publicPath, 16<<10, false)
 	if err != nil {
 		return err
 	}
 	defer clear(encoded)
-	public, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(string(encoded)))
-	if err != nil || len(public) != ed25519.PublicKeySize {
-		return errors.New("invalid audit receipt key")
+	receiptKeys, err := audit.ParseReceiptKeys(encoded)
+	if err != nil {
+		return errors.New("invalid audit receipt trust")
 	}
-	defer clear(public)
+	defer func() {
+		for _, key := range receiptKeys {
+			clear(key)
+		}
+	}()
 	transport := &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots, Certificates: []tls.Certificate{certificate}}, TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: 5 * time.Second, MaxResponseHeaderBytes: 16 << 10, MaxConnsPerHost: 2, MaxIdleConns: 2, IdleConnTimeout: 30 * time.Second}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect refused") }}
-	for delivered := 0; delivered < 100; delivered++ {
-		found, e := audit.DeliverOne(ctx, repository, client, endpoint, ed25519.PublicKey(public), time.Now().UTC().Truncate(time.Microsecond))
-		if e != nil {
-			return e
+	once := os.Getenv("TEAMLEDGER_AUDIT_ONCE") == "1"
+	var nextProbe time.Time
+	for {
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		var deliveryErr error
+		if !now.Before(nextProbe) {
+			probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			probeErr := audit.ProbeReceiver(probeCtx, client, endpoint)
+			cancel()
+			statusCtx, statusCancel := context.WithTimeout(ctx, 5*time.Second)
+			statusErr := repository.RecordAuditReceiverStatus(statusCtx, deployment, probeErr == nil, now)
+			statusCancel()
+			if statusErr != nil {
+				deliveryErr = statusErr
+			}
+			nextProbe = now.Add(5 * time.Second)
 		}
-		if !found {
+		found := false
+		if deliveryErr == nil {
+			found, deliveryErr = audit.DeliverOne(ctx, repository, client, endpoint, deployment, receiptKeys, now)
+		}
+		if deliveryErr != nil && once {
+			return deliveryErr
+		}
+		if once && !found {
 			return nil
 		}
+		if deliveryErr == nil && found {
+			continue
+		}
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
-	return errors.New("audit backlog remains after bounded batch")
 }
 func main() {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	if err := run(ctx); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal("audit forwarder unavailable")
 	}
 }

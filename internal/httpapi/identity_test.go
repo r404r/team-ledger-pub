@@ -142,7 +142,7 @@ func TestAuthCallbackMissingTrustedMFAKeepsSessionAndReturnsChallenge(t *testing
 			if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<!doctype html><title>Synthetic identity consumer</title>"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			handler, err := httpapi.New(f.Service, f.Interviews, f.Assessment, f.Compensation, f.Authz, service, f.CSRFKey, origin, dir)
+			handler, err := httpapi.New(f.Service, f.Interviews, f.Assessment, f.Compensation, f.Authz, service, f.CSRFKey, origin, dir, "synthetic-deployment")
 			if err != nil {
 				t.Fatal(err)
 			}

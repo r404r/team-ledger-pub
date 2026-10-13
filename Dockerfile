@@ -21,6 +21,8 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/teamledger-api ./c
  && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/teamledger-bonus-hmac ./cmd/bonus-hmac \
  && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/teamledger-identity ./cmd/identity \
  && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/teamledger-audit-forwarder ./cmd/audit-forwarder \
+ && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/teamledger-audit-receiver ./cmd/audit-receiver \
+ && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/teamledger-audit-bootstrap ./cmd/audit-bootstrap \
  && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/teamledger-assessment-worker ./cmd/assessment-worker
 
 FROM debian:bookworm-slim

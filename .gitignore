@@ -4,6 +4,7 @@
 !.env.docker.example
 /docker/secrets/
 /docker/maintenance/
+/docker/audit-maintenance/
 /backups/
 /private/
 /web/node_modules/
