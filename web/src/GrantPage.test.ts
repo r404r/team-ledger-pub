@@ -366,6 +366,7 @@ describe('P-SEC-01 current independent grant management', () => {
     api.reply('GET', `/api/v1/employees/${EMPLOYEE}`, 200, {
       id: EMPLOYEE, org_id: ORG, profile_revision: '1', lifecycle: { valid_from: '2026-01-01', valid_to: null },
       as_of: '2026-10-11', authorization_date: '2026-10-11', profile: { local_name: '合成可读资料' },
+      identifiers: [], employment: [], education: [], job_assignments: [], reporting_lines: [],
     })
     history.pushState({}, '', `/employees/${EMPLOYEE}/profile?as_of=2026-10-11`)
     window.dispatchEvent(new PopStateEvent('popstate')); await settle()

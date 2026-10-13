@@ -46,6 +46,11 @@ function employee(
     as_of: AS_OF,
     authorization_date: AS_OF,
     profile,
+    identifiers: [],
+    employment: [],
+    education: [],
+    job_assignments: [],
+    reporting_lines: [],
   }
 }
 
@@ -61,12 +66,7 @@ function jsonResponse(status: number, body: unknown) {
 }
 
 function deferredResponse() {
-  let resolve!: (response: Response) => void
-  let reject!: (cause: Error) => void
-  const promise = new Promise<Response>((accept, fail) => {
-    resolve = accept
-    reject = fail
-  })
+  const { promise, resolve, reject } = Promise.withResolvers<Response>()
   return {
     promise,
     resolve: (status: number, body: unknown) => resolve(jsonResponse(status, body)),
@@ -505,31 +505,38 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     expect(page.text()).toContain(EMPLOYEE_ID)
     expect(api.matching('PATCH', CORRECTION_PATH)).toHaveLength(0)
   })
-  it('shows as_of primary memberships, position and administrative manager using stable IDs with history navigation', async () => {
-    const membership = { id: REQUEST_ID, employee_id: EMPLOYEE_ID, team_id: ORG_ID, is_primary: true, valid_from: VALID_FROM, valid_to: null }
-    const position = { ...membership, id: SUBJECT_ID, position: { title: '合成获准职位正文', description: '合成获准任职描述' } }
-    const manager = { id: OTHER_EMPLOYEE_ID, employee_id: EMPLOYEE_ID, manager_employee_id: OTHER_EMPLOYEE_ID, kind: 'administrative', valid_from: VALID_FROM, valid_to: null }
-    api.respond('GET', EMPLOYEE_PATH, 200, { ...employee(), graph_revision: '23', memberships: [membership], positions: [position], reporting_lines: [manager] })
+  it('shows Staff Code, employment, education, the single assignment and the shared direct-manager/HOD fact', async () => {
+    const manager = { id: OTHER_EMPLOYEE_ID, employee_id: EMPLOYEE_ID, manager_employee_id: SUBJECT_ID, kind: 'administrative', valid_from: VALID_FROM, valid_to: null }
+    api.respond('GET', EMPLOYEE_PATH, 200, { ...employee(), graph_revision: '23',
+      identifiers: [{ id: REQUEST_ID, kind: 'staff_code', staff_code: '0007', valid_from: VALID_FROM, valid_to: null }],
+      employment: [{ id: SUBJECT_ID, legal_entity_id: ORG_ID, location_code: 'Shanghai', kind: 'hire', valid_from: VALID_FROM, valid_to: null }],
+      education: [{ id: ORG_ID, level: 'Master', institution: '合成大学', valid_from: VALID_FROM, valid_to: null }],
+      job_assignments: [{ id: SUBJECT_ID, department_id: ORG_ID, valid_from: VALID_FROM, valid_to: null, position: { title: '合成获准职位正文' } }],
+      reporting_lines: [manager], direct_manager: manager, hod: manager,
+    })
     const page = await openPage()
-    const organization = page.find('[aria-label="查询日任职与经理"]')
-    expect(organization.text()).toContain(AS_OF)
-    expect(organization.text()).toContain(REQUEST_ID)
+    const organization = page.find('[aria-label="查询日员工主数据"]')
+    expect(organization.text()).toContain('0007')
+    expect(organization.text()).toContain('Shanghai')
+    expect(organization.text()).toContain('Master')
     expect(organization.text()).toContain('合成获准职位正文')
-    expect(organization.text()).toContain(`administrative`)
-    expect(organization.text()).toContain(OTHER_EMPLOYEE_ID)
+    expect(organization.text()).toContain(SUBJECT_ID)
     expect(page.find(`a[href="/employees/${EMPLOYEE_ID}/organization-history"]`).exists()).toBe(true)
     expect(page.find(`a[href="/employees/${EMPLOYEE_ID}/compensation"]`).exists()).toBe(true)
     expect(page.find(`a[href="/orgs/${ORG_ID}/tree?as_of=${AS_OF}"]`).exists()).toBe(true)
     expect(page.text()).toContain('图版本 23')
   })
-  it('metadata-only organization projection exposes stable IDs but no profile revision, title or invented manager', async () => {
+  it('metadata-only workforce projection exposes assignment and employment IDs but no PII or invented manager', async () => {
     api.session = { ...SESSION, capabilities: ['organization.read'] }
     const { profile: _profile, profile_revision: _revision, ...metadata } = employee()
-    api.respond('GET', EMPLOYEE_PATH, 200, { ...metadata, graph_revision: '5', memberships: [{ id: REQUEST_ID, employee_id: EMPLOYEE_ID, team_id: ORG_ID, is_primary: true, valid_from: VALID_FROM, valid_to: null }], positions: [], reporting_lines: [] })
+    api.respond('GET', EMPLOYEE_PATH, 200, { ...metadata, graph_revision: '5',
+      employment: [{ id: REQUEST_ID, legal_entity_id: ORG_ID, location_code: 'Wuxi', kind: 'transfer', valid_from: VALID_FROM, valid_to: null }],
+      job_assignments: [{ id: SUBJECT_ID, department_id: ORG_ID, valid_from: VALID_FROM, valid_to: null }],
+    })
     const page = await openPage()
-    const organization = page.find('[aria-label="查询日任职与经理"]')
+    const organization = page.find('[aria-label="查询日员工主数据"]')
     expect(organization.text()).toContain(REQUEST_ID)
-    expect(organization.text()).toContain('查询日无获准经理关系')
+    expect(organization.text()).toContain('查询日无直属主管')
     expect(page.text()).not.toContain('profile_revision')
     expect(page.text()).not.toContain(ORIGINAL_PROFILE.local_name)
     expect(page.text()).not.toContain('合成获准职位正文')

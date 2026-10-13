@@ -28,6 +28,7 @@ function profile(name = SAVED_NAME, org = ORG) {
     id: EMPLOYEE, org_id: org, profile_revision: '1',
     lifecycle: { valid_from: '2026-10-01', valid_to: null }, as_of: AS_OF, authorization_date: AS_OF,
     profile: { local_name: name, work_contact: { email: 'synthetic-identity@example.invalid' } },
+    identifiers: [], employment: [], education: [], job_assignments: [], reporting_lines: [],
   }
 }
 function response(status: number, body?: unknown) {

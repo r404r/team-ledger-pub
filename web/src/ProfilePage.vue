@@ -18,11 +18,12 @@ type Profile = {
   profile_summary?: string
 }
 
-type Relation = {
-  id: string; employee_id: string; team_id?: string; manager_employee_id?: string; kind?: 'administrative' | 'dotted'
-  is_primary?: boolean; valid_from: string; valid_to: string | null
-  position?: { title: string; position_code?: string; description?: string }
-}
+type Fact = { id: string; valid_from: string; valid_to: string | null }
+type Identifier = Fact & { kind: string; staff_code?: string }
+type Employment = Fact & { legal_entity_id: string; location_code: string; kind: string }
+type Education = Fact & { level: string; institution?: string; field?: string; award_date?: string }
+type Assignment = Fact & { department_id: string; job_family_id?: string; career_level_id?: string; position?: { title: string; position_code?: string; description?: string } }
+type Reporting = Fact & { employee_id: string; manager_employee_id: string; kind: 'administrative' | 'dotted' }
 type Employee = {
   id: string
   org_id: string
@@ -32,9 +33,13 @@ type Employee = {
   authorization_date: string
   profile?: Profile
   graph_revision?: string
-  memberships?: Relation[]
-  positions?: Relation[]
-  reporting_lines?: Relation[]
+  identifiers: Identifier[]
+  employment: Employment[]
+  education: Education[]
+  job_assignments: Assignment[]
+  reporting_lines: Reporting[]
+  direct_manager?: Reporting
+  hod?: Reporting
 }
 
 type Operation = { generation: number; controller: AbortController }
@@ -210,20 +215,18 @@ async function readEmployee(id: string, operation: Operation) {
     clearSensitive()
     delete next.profile_revision
   }
-  details.value = next
-  for (const relations of [next.memberships, next.positions, next.reporting_lines]) {
-    if (relations !== undefined && (!Array.isArray(relations) || !relations.every((relation) =>
-      relation && uuidPattern.test(relation.id) && relation.employee_id === id && validDate(relation.valid_from) &&
-      (relation.valid_to === null || validDate(relation.valid_to) && relation.valid_to > relation.valid_from) &&
-      (!relation.team_id || uuidPattern.test(relation.team_id)) &&
-      (!relation.manager_employee_id || uuidPattern.test(relation.manager_employee_id)) &&
-      (!relation.position || hasCapabilities(session.value, ['pii.read']) && typeof relation.position.title === 'string' &&
-        (relation.position.position_code === undefined || typeof relation.position.position_code === 'string') &&
-        (relation.position.description === undefined || typeof relation.position.description === 'string'))))) {
-      details.value = null
-      throw new ApiFailure(503)
-    }
+  const factValid = (fact: Fact) => uuidPattern.test(fact.id) && validDate(fact.valid_from) && (fact.valid_to === null || validDate(fact.valid_to) && fact.valid_to > fact.valid_from)
+  if (![next.identifiers, next.employment, next.education, next.job_assignments, next.reporting_lines].every(Array.isArray) ||
+      !next.identifiers.every((fact) => factValid(fact) && typeof fact.kind === 'string' && (fact.staff_code === undefined || hasCapabilities(session.value, ['pii.read']) && typeof fact.staff_code === 'string')) ||
+      !next.employment.every((fact) => factValid(fact) && uuidPattern.test(fact.legal_entity_id) && typeof fact.location_code === 'string' && typeof fact.kind === 'string') ||
+      !next.education.every((fact) => factValid(fact) && hasCapabilities(session.value, ['pii.read']) && typeof fact.level === 'string') ||
+      !next.job_assignments.every((fact) => factValid(fact) && uuidPattern.test(fact.department_id) && (!fact.position || hasCapabilities(session.value, ['pii.read']) && typeof fact.position.title === 'string')) ||
+      !next.reporting_lines.every((fact) => factValid(fact) && fact.employee_id === id && uuidPattern.test(fact.manager_employee_id)) ||
+      Boolean(next.direct_manager) !== Boolean(next.hod) || next.direct_manager && (!next.hod || next.direct_manager.id !== next.hod.id)) {
+    details.value = null
+    throw new ApiFailure(503)
   }
+  details.value = next
 }
 
 function showFailure(cause: unknown, operation: Operation) {
@@ -471,18 +474,15 @@ onBeforeUnmount(() => {
           <a :href="`/orgs/${details.org_id}/tree?as_of=${details.as_of}`" @click="navigate($event, `/orgs/${details.org_id}/tree?as_of=${details.as_of}`)">组织树</a>
           <a :href="`/orgs/${details.org_id}/employees?as_of=${details.as_of}`" @click="navigate($event, `/orgs/${details.org_id}/employees?as_of=${details.as_of}`)">员工目录</a>
         </nav>
-        <section aria-label="查询日任职与经理">
-          <h2>{{ details.as_of }} 任职与经理</h2>
+        <section aria-label="查询日员工主数据">
+          <h2>{{ details.as_of }} 员工主数据</h2>
           <p v-if="details.graph_revision">图版本 {{ details.graph_revision }}（独立于个人资料版本）</p>
-          <template v-for="group in [{ label: '团队任职', items: details.memberships }, { label: '职位任职', items: details.positions }, { label: '经理关系', items: details.reporting_lines }]" :key="group.label">
-            <h3>{{ group.label }}</h3>
-            <p v-if="!group.items?.length">查询日无获准{{ group.label }}；不推测当前团队或经理。</p>
-            <ul><li v-for="relation in group.items" :key="relation.id">
-              原稳定关系 {{ relation.id }} · {{ relation.team_id ?? relation.manager_employee_id ?? '未指定团队' }} {{ relation.kind ?? '' }}
-              · [{{ relation.valid_from }}, {{ relation.valid_to ?? '∞' }})
-              <template v-if="relation.position"> · {{ relation.position.title }} <span v-if="relation.position.position_code">（{{ relation.position.position_code }}）</span> <span v-if="relation.position.description">{{ relation.position.description }}</span></template>
-            </li></ul>
-          </template>
+          <h3>工号</h3><p v-if="!details.identifiers.length">无获准工号资料。</p><ul><li v-for="fact in details.identifiers" :key="fact.id">{{ fact.kind }} · {{ fact.staff_code || '正文未授权' }} · [{{ fact.valid_from }}, {{ fact.valid_to ?? '∞' }})</li></ul>
+          <h3>雇佣</h3><p v-if="!details.employment.length">查询日无雇佣事实。</p><ul><li v-for="fact in details.employment" :key="fact.id">事实 {{ fact.id }} · {{ fact.kind }} · {{ fact.location_code }} · 法分公司 {{ fact.legal_entity_id }} · [{{ fact.valid_from }}, {{ fact.valid_to ?? '∞' }})</li></ul>
+          <h3>学历</h3><p v-if="!details.education.length">无获准学历资料。</p><ul><li v-for="fact in details.education" :key="fact.id">{{ fact.level }}<span v-if="fact.institution"> · {{ fact.institution }}</span><span v-if="fact.field"> · {{ fact.field }}</span><span v-if="fact.award_date"> · {{ fact.award_date }}</span></li></ul>
+          <h3>单一任职</h3><p v-if="!details.job_assignments.length">查询日无任职事实。</p><ul><li v-for="fact in details.job_assignments" :key="fact.id">Department {{ fact.department_id }}<span v-if="fact.job_family_id"> · Job Family {{ fact.job_family_id }}</span><span v-if="fact.career_level_id"> · Career Level {{ fact.career_level_id }}</span><span v-if="fact.position"> · {{ fact.position.title }}</span></li></ul>
+          <h3>直属主管 / HOD</h3><p v-if="details.direct_manager">同一administrative事实 {{ details.direct_manager.id }} · {{ details.direct_manager.manager_employee_id }}</p><p v-else>查询日无直属主管。</p>
+          <h3>Dotted reporting</h3><ul><li v-for="fact in details.reporting_lines.filter((fact) => fact.kind === 'dotted')" :key="fact.id">{{ fact.manager_employee_id }}</li></ul>
         </section>
         <button v-if="canEdit && !editing" type="button" :disabled="busy" @click="beginEdit">更正资料</button>
       </section>
