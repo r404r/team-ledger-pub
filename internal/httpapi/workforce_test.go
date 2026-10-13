@@ -85,7 +85,7 @@ func TestAPIWorkforceHierarchyBuildsAcrossCatalogTransactions(t *testing.T) {
 		t.Run(backend, func(t *testing.T) {
 			f := testsupport.NewHarness(t, backend)
 			path := "/api/v1/orgs/" + f.OrgID + "/workforce-catalog-changes"
-			create := `{"expected_catalog_revision":"1","expected_graph_revision":"1","changes":[{"action":"create","kind":"business_group","code":"BG","label":"Business Group","valid_from":"2026-01-01"},{"action":"create","kind":"division","code":"DIV","label":"Division","valid_from":"2026-01-01"},{"action":"create","kind":"department","code":"DEP","label":"Department","valid_from":"2026-01-01"}]}`
+			create := `{"expected_catalog_revision":"1","expected_graph_revision":"1","changes":[{"action":"create","kind":"business_group","code":"BG","label":"Business Group","valid_from":"2026-01-01"},{"action":"create","kind":"division","code":"DIV","label":"Division","valid_from":"2026-01-01"},{"action":"create","kind":"department","code":"DEP","label":"Department","valid_from":"2026-01-01"},{"action":"create","kind":"job_family","code":"ENG","label":"Engineering","valid_from":"2026-01-01"},{"action":"create","kind":"career_level","code":"L1","label":"Level 1","rank":1,"valid_from":"2026-01-01"}]}`
 			var units organization.CatalogChangeResult
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, create, value.NewID()), http.StatusCreated, &units)
 			if units.CatalogRevision != "2" || units.GraphRevision != "2" {
@@ -104,6 +104,31 @@ func TestAPIWorkforceHierarchyBuildsAcrossCatalogTransactions(t *testing.T) {
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodGet, "/api/v1/orgs/"+f.OrgID+"/workforce-catalogs?kind=org_unit_parent&as_of=2026-06-01", "", ""), http.StatusOK, &parents)
 			if parents.CatalogRevision != "4" || parents.GraphRevision != "4" || len(parents.OrgUnitParents) != 2 {
 				t.Fatalf("hierarchy projection = %#v", parents)
+			}
+			var employee, manager organization.Result
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/employees", createJSON, value.NewID()), http.StatusCreated, &employee)
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/employees", createJSON, value.NewID()), http.StatusCreated, &manager)
+			workforce := fmt.Sprintf(`{"expected_catalog_revision":"4","expected_graph_revision":"4","expected_employee_revisions":{%q:"1"},"changes":[{"action":"add","kind":"job_assignment","employee_id":%q,"department_id":%q,"job_family_id":%q,"career_level_id":%q,"position":{"title":"Engineer","position_code":"ENG-1"},"valid_from":"2026-10-11"},{"action":"add","kind":"reporting","employee_id":%q,"manager_employee_id":%q,"reporting_kind":"administrative","valid_from":"2026-10-11"}]}`, employee.ID, employee.ID, units.Items[2].ID, units.Items[3].ID, units.Items[4].ID, employee.ID, manager.ID)
+			var assigned organization.WorkforceChangeResult
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/workforce-changes", workforce, value.NewID()), http.StatusCreated, &assigned)
+			if assigned.GraphRevision != "5" || assigned.EmployeeRevisions[employee.ID] != "2" || f.Count(t, "job_assignment") != 1 || f.Count(t, "reporting_line") != 1 {
+				t.Fatalf("assignment/reporting write = %#v", assigned)
+			}
+		})
+	}
+}
+
+func TestAPIAdministrativeReportingCycleRollsBackWholeCommand(t *testing.T) {
+	for _, backend := range []string{"sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) {
+			f := testsupport.NewHarness(t, backend)
+			var first, second organization.Result
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/employees", createJSON, value.NewID()), http.StatusCreated, &first)
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/employees", createJSON, value.NewID()), http.StatusCreated, &second)
+			body := fmt.Sprintf(`{"expected_catalog_revision":"1","expected_graph_revision":"1","expected_employee_revisions":{%q:"1",%q:"1"},"changes":[{"action":"add","kind":"reporting","employee_id":%q,"manager_employee_id":%q,"reporting_kind":"administrative","valid_from":"2026-10-11"},{"action":"add","kind":"reporting","employee_id":%q,"manager_employee_id":%q,"reporting_kind":"administrative","valid_from":"2026-10-11"}]}`, first.ID, second.ID, first.ID, second.ID, second.ID, first.ID)
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/workforce-changes", body, value.NewID()), http.StatusConflict, nil)
+			if f.Count(t, "reporting_line") != 0 || f.Count(t, "structure_change") != 0 || f.Count(t, "workforce_command_receipt") != 0 {
+				t.Fatal("cyclic reporting command persisted partial facts")
 			}
 		})
 	}
@@ -143,7 +168,16 @@ func TestAPIWorkforceFactsCommitAtomicallyAndReplay(t *testing.T) {
 			if ended.EmployeeRevisions[employee.ID] != "4" {
 				t.Fatalf("identifier end = %#v", ended)
 			}
-			for table, want := range map[string]int{"employee_business_identifier": 2, "employment_spell": 1, "education_record": 1, "workforce_payload": 4, "workforce_command_receipt": 4} {
+			employmentID := first.Items[1].ID
+			transfer := fmt.Sprintf(`{"expected_catalog_revision":"2","expected_graph_revision":"1","expected_employee_revisions":{%q:"4"},"changes":[{"action":"add","kind":"employment","employee_id":%q,"legal_entity_id":%q,"employment_kind":"transfer","location_code":"Wuxi","valid_from":"2027-02-01"},{"action":"end","kind":"employment","ref":%q,"employee_id":%q,"effective_to":"2027-02-01"}]}`, employee.ID, employee.ID, catalog.Items[0].ID, employmentID, employee.ID)
+			var transferred organization.WorkforceChangeResult
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, transfer, value.NewID()), http.StatusCreated, &transferred)
+			if transferred.EmployeeRevisions[employee.ID] != "5" {
+				t.Fatalf("employment transfer = %#v", transferred)
+			}
+			overlap := fmt.Sprintf(`{"expected_catalog_revision":"2","expected_graph_revision":"1","expected_employee_revisions":{%q:"5"},"changes":[{"action":"add","kind":"employment","employee_id":%q,"legal_entity_id":%q,"employment_kind":"transfer","location_code":"Tokyo","valid_from":"2027-03-01"}]}`, employee.ID, employee.ID, catalog.Items[0].ID)
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, overlap, value.NewID()), http.StatusConflict, nil)
+			for table, want := range map[string]int{"employee_business_identifier": 2, "employment_spell": 2, "education_record": 1, "workforce_payload": 4, "workforce_command_receipt": 5} {
 				if got := f.Count(t, table); got != want {
 					t.Fatalf("%s rows=%d want %d", table, got, want)
 				}

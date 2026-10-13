@@ -147,15 +147,23 @@ func (t *transaction) CommitWorkforceChange(ctx context.Context, org string, exp
 	if _, err := t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO structure_change(org_id,id,subject_id,recorded_at,graph_before,graph_after,catalog_before,catalog_after,reason_payload_id) VALUES(?,?,?,?,?,?,?,?,?)"), org, write.ID, write.SubjectID, t.bindTime(write.RecordedAt), expectedGraph, nextGraph, expectedCatalog, expectedCatalog, reasonID); err != nil {
 		return 0, 0, nil, safeError(err)
 	}
-	for ordinal, item := range write.Items {
+	for _, item := range write.Items {
 		if item.Payload != nil {
 			if err := t.insertWorkforcePayload(ctx, *item.Payload); err != nil {
 				return 0, 0, nil, err
 			}
 		}
-		if err := t.applyWorkforceItem(ctx, org, write.ID, write.RecordedAt, item); err != nil {
-			return 0, 0, nil, err
+	}
+	for _, action := range []string{"end", "replace", "add"} {
+		for _, item := range write.Items {
+			if item.Command.Action == action {
+				if err := t.applyWorkforceItem(ctx, org, write.ID, write.RecordedAt, item); err != nil {
+					return 0, 0, nil, err
+				}
+			}
 		}
+	}
+	for ordinal, item := range write.Items {
 		if _, err := t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO structure_change_item(org_id,change_id,ordinal,action,kind,fact_id,employee_id,owner_id,valid_from,valid_to,effective_to,supersedes_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)"), org, write.ID, ordinal, item.Command.Action, item.Command.Kind, item.ID, item.Command.EmployeeID, item.Command.EmployeeID, nullablePointer(item.Command.ValidFrom), nullablePointer(item.Command.ValidTo), nullablePointer(item.Command.EffectiveTo), nullablePointer(item.Command.Ref)); err != nil {
 			return 0, 0, nil, safeError(err)
 		}
@@ -199,6 +207,9 @@ func (t *transaction) applyWorkforceItem(ctx context.Context, org, changeID stri
 		revision++
 		supersedes = *command.Ref
 	}
+	if err = t.validateWorkforceWindow(ctx, org, item); err != nil {
+		return err
+	}
 	switch command.Kind {
 	case "identifier":
 		result, insertErr := t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO employee_identifier_owner(org_id,kind,key_version,digest,employee_id,claimed_at) VALUES(?,'staff_code',1,?,?,?) ON CONFLICT(org_id,kind,key_version,digest) DO NOTHING"), org, item.Digest, command.EmployeeID, t.bindTime(recordedAt))
@@ -217,11 +228,11 @@ func (t *transaction) applyWorkforceItem(ctx context.Context, org, changeID stri
 	case "education":
 		_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO education_record(org_id,id,employee_id,level_code,payload_id,valid_from,valid_to,recorded_at,change_id,revision,supersedes_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)"), org, item.ID, command.EmployeeID, *command.EducationLevel, item.Payload.ID, *command.ValidFrom, nullablePointer(command.ValidTo), t.bindTime(recordedAt), changeID, revision, supersedes)
 	case "job_assignment":
-		var payloadID any
+		var payloadKind, payloadID any
 		if item.Payload != nil {
-			payloadID = item.Payload.ID
+			payloadKind, payloadID = "job_assignment", item.Payload.ID
 		}
-		_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO job_assignment(org_id,id,employee_id,department_id,job_family_id,career_level_id,payload_kind,position_payload_id,is_primary,valid_from,valid_to,recorded_at,change_id,revision,supersedes_id) VALUES(?,?,?,?,?,?,CASE WHEN ? IS NULL THEN NULL ELSE 'job_assignment' END,?,1,?,?,?,?,?,?)"), org, item.ID, command.EmployeeID, *command.DepartmentID, nullablePointer(command.JobFamilyID), nullablePointer(command.CareerLevelID), payloadID, payloadID, *command.ValidFrom, nullablePointer(command.ValidTo), t.bindTime(recordedAt), changeID, revision, supersedes)
+		_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO job_assignment(org_id,id,employee_id,department_id,job_family_id,career_level_id,payload_kind,position_payload_id,is_primary,valid_from,valid_to,recorded_at,change_id,revision,supersedes_id) VALUES(?,?,?,?,?,?,?,?,TRUE,?,?,?,?,?,?)"), org, item.ID, command.EmployeeID, *command.DepartmentID, nullablePointer(command.JobFamilyID), nullablePointer(command.CareerLevelID), payloadKind, payloadID, *command.ValidFrom, nullablePointer(command.ValidTo), t.bindTime(recordedAt), changeID, revision, supersedes)
 	case "reporting":
 		_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO reporting_line(org_id,id,employee_id,manager_employee_id,kind,valid_from,valid_to,effective_to,superseded,change_id,end_change_id,supersedes_id) VALUES(?,?,?,?,?,?,?,NULL,?,?,NULL,?)"), org, item.ID, command.EmployeeID, *command.ManagerEmployeeID, *command.ReportingKind, *command.ValidFrom, nullablePointer(command.ValidTo), false, changeID, supersedes)
 	case "employee_lifecycle":
@@ -230,6 +241,105 @@ func (t *transaction) applyWorkforceItem(ctx context.Context, org, changeID stri
 		return fault.Invalid
 	}
 	return safeError(err)
+}
+
+func (t *transaction) validateWorkforceWindow(ctx context.Context, org string, item organization.WorkforcePreparedItem) error {
+	command := item.Command
+	from, end, exclude := *command.ValidFrom, "9999-12-31", ""
+	if command.ValidTo != nil {
+		end = *command.ValidTo
+	}
+	if command.Ref != nil {
+		exclude = *command.Ref
+	}
+	table := map[string]string{"identifier": "employee_business_identifier", "employment": "employment_spell", "education": "education_record", "job_assignment": "job_assignment"}[command.Kind]
+	if table != "" {
+		var count int
+		err := t.tx.QueryRowContext(ctx, t.structureSQL("SELECT count(*) FROM "+table+" WHERE org_id=? AND employee_id=? AND id<>? AND valid_from<? AND COALESCE(valid_to,'9999-12-31')>?"), org, command.EmployeeID, exclude, end, from).Scan(&count)
+		if err != nil {
+			return safeError(err)
+		}
+		if count != 0 {
+			return fault.Conflict
+		}
+	}
+	switch command.Kind {
+	case "employment":
+		return t.requireCatalogWindow(ctx, "legal_entity_version", "legal_entity_id", org, *command.LegalEntityID, from, command.ValidTo, "")
+	case "job_assignment":
+		if err := t.requireCatalogWindow(ctx, "org_unit_version", "org_unit_id", org, *command.DepartmentID, from, command.ValidTo, "department"); err != nil {
+			return err
+		}
+		if command.JobFamilyID != nil {
+			if err := t.requireCatalogWindow(ctx, "job_family_version", "job_family_id", org, *command.JobFamilyID, from, command.ValidTo, ""); err != nil {
+				return err
+			}
+		}
+		if command.CareerLevelID != nil {
+			return t.requireCatalogWindow(ctx, "career_level_version", "career_level_id", org, *command.CareerLevelID, from, command.ValidTo, "")
+		}
+	case "reporting":
+		if err := t.requireEmployeeWindow(ctx, org, *command.ManagerEmployeeID, from, command.ValidTo); err != nil {
+			return err
+		}
+		if *command.ReportingKind == "administrative" {
+			var count int
+			err := t.tx.QueryRowContext(ctx, t.structureSQL("SELECT count(*) FROM reporting_line WHERE org_id=? AND employee_id=? AND kind='administrative' AND id<>? AND valid_from<? AND COALESCE(effective_to,valid_to,'9999-12-31')>?"), org, command.EmployeeID, exclude, end, from).Scan(&count)
+			if err != nil {
+				return safeError(err)
+			}
+			if count != 0 {
+				return fault.Conflict
+			}
+			var cyclic int
+			err = t.tx.QueryRowContext(ctx, t.structureSQL("WITH RECURSIVE manager_chain(id) AS (SELECT ? UNION SELECT r.manager_employee_id FROM reporting_line r JOIN manager_chain c ON r.employee_id=c.id WHERE r.org_id=? AND r.kind='administrative' AND r.id<>? AND r.valid_from<? AND COALESCE(r.effective_to,r.valid_to,'9999-12-31')>?) SELECT count(*) FROM manager_chain WHERE id=?"), *command.ManagerEmployeeID, org, exclude, end, from, command.EmployeeID).Scan(&cyclic)
+			if err != nil {
+				return safeError(err)
+			}
+			if cyclic != 0 {
+				return fault.Conflict
+			}
+		}
+	}
+	return nil
+}
+
+func (t *transaction) requireCatalogWindow(ctx context.Context, table, ownerColumn, org, owner, from string, to *string, unitKind string) error {
+	endPredicate, args := "v.valid_to IS NULL", []any{org, owner, from}
+	if to != nil {
+		endPredicate, args = "COALESCE(v.valid_to,'9999-12-31')>=?", append(args, *to)
+	}
+	query := "SELECT count(*) FROM " + table + " v"
+	if unitKind != "" {
+		query += " JOIN org_unit u ON u.org_id=v.org_id AND u.id=v." + ownerColumn
+	}
+	query += " WHERE v.org_id=? AND v." + ownerColumn + "=? AND v.valid_from<=? AND " + endPredicate
+	if unitKind != "" {
+		query += " AND u.kind='" + unitKind + "'"
+	}
+	var count int
+	if err := t.tx.QueryRowContext(ctx, t.structureSQL(query), args...).Scan(&count); err != nil {
+		return safeError(err)
+	}
+	if count != 1 {
+		return fault.Conflict
+	}
+	return nil
+}
+
+func (t *transaction) requireEmployeeWindow(ctx context.Context, org, employee, from string, to *string) error {
+	query, args := "SELECT count(*) FROM employee WHERE org_id=? AND id=? AND valid_from<=? AND valid_to IS NULL", []any{org, employee, from}
+	if to != nil {
+		query, args = "SELECT count(*) FROM employee WHERE org_id=? AND id=? AND valid_from<=? AND COALESCE(valid_to,'9999-12-31')>=?", append(args, *to)
+	}
+	var count int
+	if err := t.tx.QueryRowContext(ctx, t.structureSQL(query), args...).Scan(&count); err != nil {
+		return safeError(err)
+	}
+	if count != 1 {
+		return fault.Conflict
+	}
+	return nil
 }
 
 func (t *transaction) applyEmployeeLifecycle(ctx context.Context, org, changeID string, item organization.WorkforcePreparedItem) error {
