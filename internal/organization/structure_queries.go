@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"github.com/r404r/team-ledger/internal/authz"
 	"github.com/r404r/team-ledger/internal/fault"
-	"github.com/r404r/team-ledger/internal/sensitive"
 	"github.com/r404r/team-ledger/internal/value"
 	"sort"
 	"strconv"
@@ -20,22 +19,6 @@ func (s *Service) authorizationDay(snap authz.Snapshot) (string, error) {
 		return "", fault.Unavailable
 	}
 	return s.clock().In(zone).Format("2006-01-02"), nil
-}
-func (s *Service) openOrganization(ctx context.Context, org, employee, record, id, kind, schema string, target any) error {
-	p, err := s.Store.OrganizationPayload(ctx, org, id)
-	if err != nil {
-		return err
-	}
-	binding := sensitive.Context{OrgID: org, EmployeeID: employee, RecordID: record, VersionID: id, ObjectKind: kind, Purpose: "pii", SchemaType: schema, SchemaVersion: 1}
-	plain, err := s.Cipher.Open(ctx, binding, p.Envelope)
-	if err != nil {
-		return fault.Unavailable
-	}
-	defer clear(plain)
-	if json.Unmarshal(plain, target) != nil {
-		return fault.Unavailable
-	}
-	return nil
 }
 func (s *Service) prepareView(ctx context.Context, req Request, snap authz.Snapshot, e Employee, asOf string, includeProfile bool, g Graph) (View, error) {
 	day, err := s.authorizationDay(snap)
@@ -535,9 +518,9 @@ func (s *Service) History(ctx context.Context, req Request, employee string, q H
 			if item.EmployeeID != employee {
 				continue
 			}
-			if item.Kind == "position" && employeePII {
+			if item.Kind == "job_assignment" && employeePII && item.PayloadID != "" {
 				var payload PositionPayload
-				if err = s.openOrganization(ctx, e.OrgID, employee, item.ID, item.PayloadID, "position_assignment", "org.position.v1", &payload); err != nil {
+				if err = s.openWorkforcePayload(ctx, e.OrgID, employee, item.ID, item.PayloadID, "job_assignment", "pii.job_assignment_position.v1", &payload); err != nil {
 					return HistoryPage{}, err
 				}
 				if !positionValid(payload) {
@@ -555,7 +538,7 @@ func (s *Service) History(ctx context.Context, req Request, employee string, q H
 			var payload struct {
 				Reason string `json:"reason"`
 			}
-			if err = s.openOrganization(ctx, e.OrgID, "", c.ID, c.ReasonPayloadID, "structure_change", "org.structure.reason.v1", &payload); err != nil {
+			if err = s.openWorkforcePayload(ctx, e.OrgID, "", c.ID, c.ReasonPayloadID, "structure_change", "org.structure.reason.v1", &payload); err != nil {
 				return HistoryPage{}, err
 			}
 			if !utf8.ValidString(payload.Reason) || len(payload.Reason) > 4096 {

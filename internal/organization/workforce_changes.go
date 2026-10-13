@@ -105,7 +105,7 @@ type WorkforcePreparedItem struct {
 type WorkforceWrite struct {
 	ID, OrgID, SubjectID string
 	RecordedAt           time.Time
-	ReasonPayload        *OrganizationPayload
+	ReasonPayload        *WorkforcePayload
 	Items                []WorkforcePreparedItem
 }
 

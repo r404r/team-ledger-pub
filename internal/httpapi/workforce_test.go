@@ -112,7 +112,7 @@ func TestAPIWorkforceHierarchyBuildsAcrossCatalogTransactions(t *testing.T) {
 			var employee, manager organization.Result
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/employees", createJSON, value.NewID()), http.StatusCreated, &employee)
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/employees", createJSON, value.NewID()), http.StatusCreated, &manager)
-			workforce := fmt.Sprintf(`{"expected_catalog_revision":"4","expected_graph_revision":"4","expected_employee_revisions":{%q:"1"},"changes":[{"action":"add","kind":"identifier","employee_id":%q,"staff_code":"0007","valid_from":"2026-10-11"},{"action":"add","kind":"employment","employee_id":%q,"legal_entity_id":%q,"employment_kind":"hire","location_code":"Shanghai","valid_from":"2026-10-11"},{"action":"add","kind":"education","employee_id":%q,"education_level":"Master","institution":"Synthetic University","field":"Engineering","award_date":"2025-07-01","valid_from":"2026-10-11"},{"action":"add","kind":"job_assignment","employee_id":%q,"department_id":%q,"job_family_id":%q,"career_level_id":%q,"position":{"title":"Engineer","position_code":"ENG-1"},"valid_from":"2026-10-11"},{"action":"add","kind":"reporting","employee_id":%q,"manager_employee_id":%q,"reporting_kind":"administrative","valid_from":"2026-10-11"}]}`, employee.ID, employee.ID, employee.ID, units.Items[5].ID, employee.ID, employee.ID, units.Items[2].ID, units.Items[3].ID, units.Items[4].ID, employee.ID, manager.ID)
+			workforce := fmt.Sprintf(`{"expected_catalog_revision":"4","expected_graph_revision":"4","expected_employee_revisions":{%q:"1"},"reason":"Synthetic workforce reason","changes":[{"action":"add","kind":"identifier","employee_id":%q,"staff_code":"0007","valid_from":"2026-10-11"},{"action":"add","kind":"employment","employee_id":%q,"legal_entity_id":%q,"employment_kind":"hire","location_code":"Shanghai","valid_from":"2026-10-11"},{"action":"add","kind":"education","employee_id":%q,"education_level":"Master","institution":"Synthetic University","field":"Engineering","award_date":"2025-07-01","valid_from":"2026-10-11"},{"action":"add","kind":"job_assignment","employee_id":%q,"department_id":%q,"job_family_id":%q,"career_level_id":%q,"position":{"title":"Engineer","position_code":"ENG-1"},"valid_from":"2026-10-11"},{"action":"add","kind":"reporting","employee_id":%q,"manager_employee_id":%q,"reporting_kind":"administrative","valid_from":"2026-10-11"}]}`, employee.ID, employee.ID, employee.ID, units.Items[5].ID, employee.ID, employee.ID, units.Items[2].ID, units.Items[3].ID, units.Items[4].ID, employee.ID, manager.ID)
 			var assigned organization.WorkforceChangeResult
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/workforce-changes", workforce, value.NewID()), http.StatusCreated, &assigned)
 			if assigned.GraphRevision != "5" || assigned.EmployeeRevisions[employee.ID] != "2" || f.Count(t, "job_assignment") != 1 || f.Count(t, "reporting_line") != 1 {
@@ -141,8 +141,15 @@ func TestAPIWorkforceHierarchyBuildsAcrossCatalogTransactions(t *testing.T) {
 			}
 			var history organization.HistoryPage
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodGet, "/api/v1/employees/"+employee.ID+"/organization-history?from=2026-10-01&to=2026-11-01&limit=10", "", ""), http.StatusOK, &history)
-			if len(history.Items) != 1 || len(history.Items[0].Items) != 5 || history.Items[0].Items[0].EmployeeID != employee.ID {
+			if len(history.Items) != 1 || len(history.Items[0].Items) != 5 || history.Items[0].Items[0].EmployeeID != employee.ID || history.Items[0].Reason == nil || *history.Items[0].Reason != "Synthetic workforce reason" {
 				t.Fatalf("workforce history projection = %#v", history)
+			}
+			positionFound := false
+			for _, item := range history.Items[0].Items {
+				positionFound = positionFound || item.Kind == "job_assignment" && item.Position != nil && item.Position.Title == "Engineer"
+			}
+			if !positionFound {
+				t.Fatalf("workforce history omitted job assignment position = %#v", history.Items[0].Items)
 			}
 		})
 	}

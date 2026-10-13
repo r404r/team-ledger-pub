@@ -140,7 +140,7 @@ func (t *transaction) CommitWorkforceChange(ctx context.Context, org string, exp
 	}
 	reasonID := any(nil)
 	if write.ReasonPayload != nil {
-		if err := t.insertOrganizationPayload(ctx, *write.ReasonPayload); err != nil {
+		if err := t.insertWorkforcePayload(ctx, *write.ReasonPayload); err != nil {
 			return 0, 0, nil, err
 		}
 		reasonID = write.ReasonPayload.ID

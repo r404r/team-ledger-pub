@@ -374,10 +374,6 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 		root = "create"
 	case *organization.UpdateCommand:
 		root = "update"
-	case *organization.CreateTeamCommand:
-		root = "create_team"
-	case *organization.StructureCommand:
-		root = "structure_command"
 	case *organization.CatalogChangeCommand:
 		root = "catalog_command"
 	case *organization.WorkforceChangeCommand:

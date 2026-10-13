@@ -3,17 +3,13 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
-	"io"
-	"math"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/organization"
-	"github.com/r404r/team-ledger/internal/value"
 )
 
 func (r *Repository) Graph(ctx context.Context, org string) (organization.Graph, error) {
@@ -24,12 +20,6 @@ func (r *Repository) GraphState(ctx context.Context, org string) (organization.G
 }
 func (r *Repository) EmployeeRelations(ctx context.Context, org, employee, asOf string) ([]organization.Relation, error) {
 	return r.read().EmployeeRelations(ctx, org, employee, asOf)
-}
-func (r *Repository) OrganizationPayload(ctx context.Context, org, id string) (organization.OrganizationPayload, error) {
-	return r.read().OrganizationPayload(ctx, org, id)
-}
-func (r *Repository) StructureReceipt(ctx context.Context, org, subject, operation, key string) (organization.StructureReceipt, bool, error) {
-	return r.read().StructureReceipt(ctx, org, subject, operation, key)
 }
 func (r *Repository) DirectoryCandidates(ctx context.Context, org, after string, query organization.DirectoryQuery, scope organization.DirectoryScope, limit int) ([]organization.Employee, error) {
 	return r.read().DirectoryCandidates(ctx, org, after, query, scope, limit)
@@ -100,25 +90,6 @@ func (r reader) Graph(ctx context.Context, org string) (organization.Graph, erro
 	g, err := r.GraphState(ctx, org)
 	if err != nil {
 		return organization.Graph{}, err
-	}
-	rows, err := r.db.QueryContext(ctx, r.structureSQL("SELECT org_id,id,code,label_payload_id,"+r.structureDate("valid_from")+","+r.structureDate("valid_to")+" FROM team WHERE org_id=? ORDER BY id"), org)
-	if err != nil {
-		return organization.Graph{}, safeError(err)
-	}
-	for rows.Next() {
-		var team organization.Team
-		var label, to sql.NullString
-		if err = rows.Scan(&team.OrgID, &team.ID, &team.Code, &label, &team.Lifecycle.ValidFrom, &to); err != nil {
-			rows.Close()
-			return organization.Graph{}, safeError(err)
-		}
-		team.LabelPayloadID, team.Lifecycle.ValidTo = label.String, stringPtr(to)
-		g.Teams = append(g.Teams, team)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return organization.Graph{}, safeError(err)
 	}
 	g.Employees, err = r.structureEmployees(ctx, "e.org_id=?", []any{org}, "")
 	if err != nil {
@@ -259,186 +230,6 @@ func (r reader) DirectoryCandidates(ctx context.Context, org, after string, quer
 	return r.structureEmployees(ctx, predicate, args, " LIMIT ?")
 }
 
-func (r reader) OrganizationPayload(ctx context.Context, org, id string) (organization.OrganizationPayload, error) {
-	var payload organization.OrganizationPayload
-	var employee sql.NullString
-	var recorded dbTime
-	envelope := &payload.Envelope
-	binding := &envelope.Context
-	err := r.db.QueryRowContext(ctx, r.structureSQL("SELECT id,org_id,employee_id,record_id,version_id,object_kind,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes,created_at FROM organizational_payload WHERE org_id=? AND id=?"), org, id).Scan(&payload.ID, &binding.OrgID, &employee, &binding.RecordID, &binding.VersionID, &binding.ObjectKind, &binding.Purpose, &binding.SchemaType, &binding.SchemaVersion, &envelope.FormatVersion, &envelope.Algorithm, &envelope.DEKID, &envelope.Key.KEKID, &envelope.Key.Version, &envelope.Key.Data, &envelope.SealedBytes, &recorded)
-	if errors.Is(err, sql.ErrNoRows) {
-		return payload, fault.NotFound
-	}
-	if err != nil {
-		return organization.OrganizationPayload{}, safeError(err)
-	}
-	// The stored context is authenticated by the cipher; routing arguments must
-	// never replace any of these fields.
-	binding.EmployeeID, payload.RecordedAt = employee.String, recorded.Time
-	return payload, nil
-}
-
-func structureResultRevisions(result organization.StructureResult) (int64, int64, bool) {
-	graph, err := strconv.ParseInt(result.GraphRevision, 10, 64)
-	if err != nil || graph < 1 || strconv.FormatInt(graph, 10) != result.GraphRevision {
-		return 0, 0, false
-	}
-	epoch, err := strconv.ParseInt(result.AuthEpoch, 10, 64)
-	if err != nil || epoch < 1 || strconv.FormatInt(epoch, 10) != result.AuthEpoch {
-		return 0, 0, false
-	}
-	return graph, epoch, true
-}
-func structureResultValid(operation string, result organization.StructureResult) bool {
-	if !value.ValidID(result.ID) || len(result.Items) > 100 {
-		return false
-	}
-	switch operation {
-	case "OP-ORG-02":
-		return len(result.Items) == 0
-	case "OP-ORG-03":
-		if len(result.Items) == 0 {
-			return false
-		}
-		for _, item := range result.Items {
-			if !value.ValidID(item.ID) {
-				return false
-			}
-			switch item.Kind {
-			case "team_parent", "membership", "position", "reporting_line", "team_lifecycle", "employee_lifecycle":
-			default:
-				return false
-			}
-		}
-		return true
-	default:
-		return false
-	}
-}
-
-// Receipt authority is immutable routing metadata, not current lifecycle or
-// relation qualification. The latter must not invalidate an original result.
-func (r reader) structureReceiptTargetsValid(ctx context.Context, org string, targets []organization.StructureAuthorityTarget) (bool, error) {
-	if len(targets) == 0 || len(targets) > 1000 || !value.ValidID(org) {
-		return false, nil
-	}
-	var rows strings.Builder
-	args := make([]any, 0, 2*len(targets)+2)
-	for _, target := range targets {
-		if !value.ValidID(target.ID) {
-			return false, nil
-		}
-		switch target.Capability {
-		case "organization.read", "organization.write":
-			if target.Category != "metadata" {
-				return false, nil
-			}
-		case "pii.read", "pii.write":
-			if target.Category != "pii" {
-				return false, nil
-			}
-		default:
-			return false, nil
-		}
-		switch target.Kind {
-		case "org":
-			if target.ID != org {
-				return false, nil
-			}
-			continue
-		case "team", "employee":
-		default:
-			return false, nil
-		}
-		if rows.Len() != 0 {
-			rows.WriteByte(',')
-		}
-		rows.WriteString("(?,?)")
-		args = append(args, target.Kind, target.ID)
-	}
-	if rows.Len() == 0 {
-		return true, nil
-	}
-	args = append(args, org, org)
-	var valid bool
-	err := r.db.QueryRowContext(ctx, r.structureSQL("WITH targets(kind,id) AS (VALUES "+rows.String()+") SELECT NOT EXISTS(SELECT 1 FROM targets t WHERE (t.kind='employee' AND NOT EXISTS(SELECT 1 FROM employee e WHERE e.org_id=? AND e.id=t.id)) OR (t.kind='team' AND NOT EXISTS(SELECT 1 FROM team tm WHERE tm.org_id=? AND tm.id=t.id)))"), args...).Scan(&valid)
-	return valid, safeError(err)
-}
-func (r reader) StructureReceipt(ctx context.Context, org, subject, operation, key string) (organization.StructureReceipt, bool, error) {
-	var receipt organization.StructureReceipt
-	var encoded, targetsEncoded string
-	var team, change sql.NullString
-	var keyVersion int
-	var graph, epoch int64
-	err := r.db.QueryRowContext(ctx, r.structureSQL("SELECT digest,digest_key_version,result_json,result_team_id,result_change_id,graph_revision,auth_epoch,authority_targets_json FROM structure_command_receipt WHERE org_id=? AND subject_id=? AND operation=? AND key=?"), org, subject, operation, key).Scan(&receipt.Digest, &keyVersion, &encoded, &team, &change, &graph, &epoch, &targetsEncoded)
-	if errors.Is(err, sql.ErrNoRows) {
-		return receipt, false, nil
-	}
-	if err != nil {
-		return organization.StructureReceipt{}, false, safeError(err)
-	}
-	decoder := json.NewDecoder(strings.NewReader(encoded))
-	decoder.DisallowUnknownFields()
-	if err = decoder.Decode(&receipt.Result); err != nil || keyVersion != 1 || len(receipt.Digest) != 32 || !structureResultValid(operation, receipt.Result) {
-		return organization.StructureReceipt{}, false, fault.Unavailable
-	}
-	if decoder.Decode(new(any)) != io.EOF {
-		return organization.StructureReceipt{}, false, fault.Unavailable
-	}
-	targetDecoder := json.NewDecoder(strings.NewReader(targetsEncoded))
-	targetDecoder.DisallowUnknownFields()
-	if targetDecoder.Decode(&receipt.Targets) != nil {
-		return organization.StructureReceipt{}, false, fault.Unavailable
-	}
-	var trailing any
-	if targetDecoder.Decode(&trailing) != io.EOF {
-		return organization.StructureReceipt{}, false, fault.Unavailable
-	}
-	targetsValid, err := r.structureReceiptTargetsValid(ctx, org, receipt.Targets)
-	if err != nil {
-		return organization.StructureReceipt{}, false, err
-	}
-	if !targetsValid {
-		return organization.StructureReceipt{}, false, fault.Unavailable
-	}
-	gotGraph, gotEpoch, valid := structureResultRevisions(receipt.Result)
-	if !valid || gotGraph != graph || gotEpoch != epoch ||
-		(operation == "OP-ORG-02" && (!team.Valid || change.Valid || team.String != receipt.Result.ID)) ||
-		(operation == "OP-ORG-03" && (!change.Valid || team.Valid || change.String != receipt.Result.ID)) {
-		return organization.StructureReceipt{}, false, fault.Unavailable
-	}
-	return receipt, true, nil
-}
-func (t *transaction) SaveStructureReceipt(ctx context.Context, org, subject, operation, key string, receipt organization.StructureReceipt) error {
-	graph, epoch, valid := structureResultRevisions(receipt.Result)
-	if org != t.org || !valid || !structureResultValid(operation, receipt.Result) || len(receipt.Digest) != 32 {
-		return fault.Invalid
-	}
-	targetsValid, err := t.structureReceiptTargetsValid(ctx, org, receipt.Targets)
-	if err != nil {
-		return err
-	}
-	if !targetsValid {
-		return fault.Invalid
-	}
-	var team, change any
-	if operation == "OP-ORG-02" {
-		team = receipt.Result.ID
-	} else {
-		change = receipt.Result.ID
-	}
-	encoded, err := json.Marshal(receipt.Result)
-	if err != nil {
-		return fault.Invalid
-	}
-	targetsEncoded, err := json.Marshal(receipt.Targets)
-	if err != nil {
-		return fault.Invalid
-	}
-	_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO structure_command_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_json,result_team_id,result_change_id,graph_revision,auth_epoch,authority_targets_json) VALUES(?,?,?,?,?,1,?,?,?,?,?,?)"), org, subject, operation, key, receipt.Digest, string(encoded), team, change, graph, epoch, string(targetsEncoded))
-	return safeError(err)
-}
-
 func (r reader) StructureHistory(ctx context.Context, org, employee string, query organization.HistoryQuery, after time.Time, afterID string, limit int) ([]organization.StructureChange, error) {
 	if limit < 1 || limit > 101 || (query.From == "") != (query.To == "") {
 		return nil, fault.Invalid
@@ -494,7 +285,7 @@ func (r reader) StructureHistory(ctx context.Context, org, employee string, quer
 	return changes, nil
 }
 func (r reader) structureHistoryItems(ctx context.Context, org, change string) ([]organization.HistoryRelation, error) {
-	rows, err := r.db.QueryContext(ctx, r.structureSQL("SELECT action,kind,fact_id,employee_id,"+r.structureDate("valid_from")+","+r.structureDate("valid_to")+","+r.structureDate("effective_to")+",supersedes_id FROM structure_change_item WHERE org_id=? AND change_id=? ORDER BY ordinal"), org, change)
+	rows, err := r.db.QueryContext(ctx, r.structureSQL("SELECT i.action,i.kind,i.fact_id,i.employee_id,"+r.structureDate("i.valid_from")+","+r.structureDate("i.valid_to")+","+r.structureDate("i.effective_to")+",i.supersedes_id,j.position_payload_id FROM structure_change_item i LEFT JOIN job_assignment j ON j.org_id=i.org_id AND j.id=i.fact_id AND i.kind='job_assignment' WHERE i.org_id=? AND i.change_id=? ORDER BY i.ordinal"), org, change)
 	if err != nil {
 		return nil, safeError(err)
 	}
@@ -502,12 +293,12 @@ func (r reader) structureHistoryItems(ctx context.Context, org, change string) (
 	items := make([]organization.HistoryRelation, 0)
 	for rows.Next() {
 		var item organization.HistoryRelation
-		var id, employee, from, to, effective, supersedes sql.NullString
-		if err = rows.Scan(&item.Action, &item.Kind, &id, &employee, &from, &to, &effective, &supersedes); err != nil {
+		var id, employee, from, to, effective, supersedes, payload sql.NullString
+		if err = rows.Scan(&item.Action, &item.Kind, &id, &employee, &from, &to, &effective, &supersedes, &payload); err != nil {
 			return nil, safeError(err)
 		}
 		item.ID, item.EmployeeID, item.ValidFrom, item.ValidTo = id.String, employee.String, from.String, stringPtr(to)
-		item.EffectiveTo, item.SupersedesID = stringPtr(effective), supersedes.String
+		item.EffectiveTo, item.SupersedesID, item.PayloadID = stringPtr(effective), supersedes.String, payload.String
 		items = append(items, item)
 	}
 	if err = rows.Err(); err != nil {
@@ -543,245 +334,4 @@ func structureAffected(result sql.Result, err error, missing error) error {
 		return missing
 	}
 	return nil
-}
-
-func (t *transaction) CommitStructure(ctx context.Context, org string, expected int64, write organization.StructureWrite) (int64, int64, error) {
-	if org != t.org || !value.ValidID(org) || expected < 1 || expected == math.MaxInt64 || write.Change.OrgID != org || !value.ValidID(write.Change.ID) ||
-		!value.ValidID(write.Change.SubjectID) || !structureOptionalIDsValid(write.Change.ReasonPayloadID) || len(write.Change.Items) == 0 || len(write.Change.Items) > 100 {
-		return 0, 0, fault.Invalid
-	}
-	write.Change.GraphBefore, write.Change.GraphAfter = expected, expected+1
-	for _, item := range write.Change.Items {
-		if !structureHistoryFactValid(item) {
-			return 0, 0, fault.Invalid
-		}
-	}
-	if write.Team != nil && (write.Team.OrgID != org || !value.ValidID(write.Team.ID) || !structureOptionalIDsValid(write.Team.LabelPayloadID) || !structureLifecycleValid(write.Team.Lifecycle)) {
-		return 0, 0, fault.Invalid
-	}
-	for _, relations := range [][]organization.Relation{write.Added, write.Ended, write.Superseded} {
-		for _, relation := range relations {
-			table, _, _, _, _, _, _, _ := structureRelationColumns(relation.Kind)
-			if table == "" || relation.OrgID != org || !value.ValidID(relation.ID) ||
-				!structureOptionalIDsValid(relation.EmployeeID, relation.TeamID, relation.ParentTeamID, relation.ManagerEmployeeID, relation.SupersedesID, relation.PayloadID) {
-				return 0, 0, fault.Invalid
-			}
-		}
-	}
-	for _, relation := range write.Added {
-		if relation.ChangeID != write.Change.ID || relation.Superseded || relation.EffectiveTo != nil || relation.EndChangeID != "" || !structureLifecycleValid(relation.Lifecycle) {
-			return 0, 0, fault.Invalid
-		}
-	}
-	for _, relation := range write.Ended {
-		if relation.EndChangeID != write.Change.ID || relation.EffectiveTo == nil || !structureDateValid(*relation.EffectiveTo) {
-			return 0, 0, fault.Invalid
-		}
-	}
-	for _, fact := range write.Lifecycles {
-		if fact.OrgID != org || !value.ValidID(fact.ID) || !value.ValidID(fact.ObjectID) || !structureOptionalIDsValid(fact.SupersedesID) || fact.ChangeID != write.Change.ID ||
-			(fact.Kind != "team_lifecycle" && fact.Kind != "employee_lifecycle") || !structureLifecycleValid(fact.Lifecycle) {
-			return 0, 0, fault.Invalid
-		}
-	}
-	for _, payload := range write.Payloads {
-		if !structurePayloadRoutingValid(org, write, payload) {
-			return 0, 0, fault.Invalid
-		}
-	}
-	var revision, epoch int64
-	err := t.tx.QueryRowContext(ctx, t.structureSQL("SELECT o.graph_revision,a.auth_epoch FROM organization o JOIN authorization_guard a ON a.org_id=o.id WHERE o.id=?"), org).Scan(&revision, &epoch)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, 0, fault.NotFound
-	}
-	if err != nil {
-		return 0, 0, safeError(err)
-	}
-	if revision != expected || epoch == math.MaxInt64 {
-		return 0, 0, fault.Conflict
-	}
-	// Change ownership exists first. Typed payload and position/team references
-	// are deliberately deferred by the schema, not replaced with free UUIDs.
-	_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO structure_change(org_id,id,subject_id,recorded_at,graph_before,graph_after,reason_payload_id) VALUES(?,?,?,?,?,?,?)"), org, write.Change.ID, write.Change.SubjectID, t.bindTime(write.Change.RecordedAt), expected, expected+1, nullable(write.Change.ReasonPayloadID))
-	if err != nil {
-		return 0, 0, safeError(err)
-	}
-	if write.Team != nil {
-		team := write.Team
-		_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO team(org_id,id,code,valid_from,valid_to,label_payload_id) VALUES(?,?,?,?,?,?)"), org, team.ID, team.Code, team.Lifecycle.ValidFrom, structureDateArg(team.Lifecycle.ValidTo), nullable(team.LabelPayloadID))
-		if err != nil {
-			return 0, 0, safeError(err)
-		}
-	}
-	for _, relation := range write.Ended {
-		table, _, _, _, _, _, _, _ := structureRelationColumns(relation.Kind)
-		result, err := t.tx.ExecContext(ctx, t.structureSQL("UPDATE "+table+" SET effective_to=?,end_change_id=? WHERE org_id=? AND id=? AND superseded=false AND effective_to IS NULL AND end_change_id IS NULL AND valid_from<?"), *relation.EffectiveTo, write.Change.ID, org, relation.ID, *relation.EffectiveTo)
-		if err = structureAffected(result, err, fault.Conflict); err != nil {
-			return 0, 0, err
-		}
-	}
-	for _, relation := range write.Superseded {
-		table, _, _, _, _, _, _, _ := structureRelationColumns(relation.Kind)
-		result, err := t.tx.ExecContext(ctx, t.structureSQL("UPDATE "+table+" SET superseded=true WHERE org_id=? AND id=? AND superseded=false"), org, relation.ID)
-		if err = structureAffected(result, err, fault.Conflict); err != nil {
-			return 0, 0, err
-		}
-	}
-	for _, relation := range write.Added {
-		if err = t.insertStructureRelation(ctx, relation); err != nil {
-			return 0, 0, err
-		}
-	}
-	for i := range write.Lifecycles {
-		fact := &write.Lifecycles[i]
-		if err = t.insertStructureLifecycle(ctx, fact, write.Team != nil && fact.Kind == "team_lifecycle" && fact.ObjectID == write.Team.ID); err != nil {
-			return 0, 0, err
-		}
-	}
-	for _, payload := range write.Payloads {
-		if err = t.insertOrganizationPayload(ctx, payload); err != nil {
-			return 0, 0, err
-		}
-	}
-	for ordinal, item := range write.Change.Items {
-		// Lifecycle supersedes is derived from the immutable head when omitted
-		// by the domain; persist the same exact chain in the command fact.
-		for _, fact := range write.Lifecycles {
-			if fact.ID == item.ID && fact.Kind == item.Kind {
-				item.SupersedesID = fact.SupersedesID
-			}
-		}
-		_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO structure_change_item(org_id,change_id,ordinal,action,kind,relation_id,employee_id,team_id,manager_employee_id,parent_team_id,valid_from,valid_to,end_date,supersedes_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)"), org, write.Change.ID, ordinal, item.Action, item.Kind, item.ID, nullable(item.EmployeeID), nullable(item.TeamID), nullable(item.ManagerEmployeeID), nullable(item.ParentTeamID), nullable(item.ValidFrom), structureDateArg(item.ValidTo), structureDateArg(item.EndDate), nullable(item.SupersedesID))
-		if err != nil {
-			return 0, 0, safeError(err)
-		}
-	}
-	result, err := t.tx.ExecContext(ctx, t.structureSQL("UPDATE organization SET graph_revision=graph_revision+1 WHERE id=? AND graph_revision=? AND graph_revision<?"), org, expected, int64(math.MaxInt64))
-	if err = structureAffected(result, err, fault.Conflict); err != nil {
-		return 0, 0, err
-	}
-	result, err = t.tx.ExecContext(ctx, t.structureSQL("UPDATE authorization_guard SET auth_epoch=auth_epoch+1 WHERE org_id=? AND auth_epoch=? AND auth_epoch<?"), org, epoch, int64(math.MaxInt64))
-	if err = structureAffected(result, err, fault.Conflict); err != nil {
-		return 0, 0, err
-	}
-	return expected + 1, epoch + 1, nil
-}
-func structureOptionalIDsValid(ids ...string) bool {
-	for _, id := range ids {
-		if id != "" && !value.ValidID(id) {
-			return false
-		}
-	}
-	return true
-}
-func structureHistoryFactValid(item organization.HistoryRelation) bool {
-	if !value.ValidID(item.ID) || !structureOptionalIDsValid(item.EmployeeID, item.TeamID, item.ParentTeamID, item.ManagerEmployeeID, item.SupersedesID) {
-		return false
-	}
-	switch item.Kind {
-	case "team_parent", "membership", "position", "reporting_line":
-		if item.Action != "add" && item.Action != "end" && item.Action != "replace" {
-			return false
-		}
-	case "team_lifecycle", "employee_lifecycle":
-		if item.Action != "lifecycle" {
-			return false
-		}
-	default:
-		return false
-	}
-	return (item.ValidFrom == "" || structureDateValid(item.ValidFrom)) &&
-		(item.ValidTo == nil || structureDateValid(*item.ValidTo)) &&
-		(item.EndDate == nil || structureDateValid(*item.EndDate))
-}
-func structureLifecycleValid(lifecycle organization.Lifecycle) bool {
-	return structureDateValid(lifecycle.ValidFrom) && (lifecycle.ValidTo == nil || (structureDateValid(*lifecycle.ValidTo) && *lifecycle.ValidTo > lifecycle.ValidFrom))
-}
-func structurePayloadRoutingValid(org string, write organization.StructureWrite, payload organization.OrganizationPayload) bool {
-	binding := payload.Envelope.Context
-	if binding.OrgID != org || binding.VersionID != payload.ID || payload.ID == "" || binding.Purpose != "pii" || binding.SchemaVersion != 1 {
-		return false
-	}
-	switch binding.ObjectKind {
-	case "team_label":
-		return write.Team != nil && binding.EmployeeID == "" && binding.SchemaType == "org.team.label.v1" && binding.RecordID == write.Team.ID && payload.ID == write.Team.LabelPayloadID
-	case "structure_change":
-		return binding.EmployeeID == "" && binding.SchemaType == "org.structure.reason.v1" && binding.RecordID == write.Change.ID && payload.ID == write.Change.ReasonPayloadID
-	case "position_assignment":
-		if binding.SchemaType != "org.position.v1" {
-			return false
-		}
-		for _, relation := range write.Added {
-			if relation.Kind == "position" && relation.ID == binding.RecordID && relation.EmployeeID == binding.EmployeeID && relation.PayloadID == payload.ID {
-				return true
-			}
-		}
-	}
-	return false
-}
-func (t *transaction) insertStructureRelation(ctx context.Context, relation organization.Relation) error {
-	table, _, _, _, _, _, _, _ := structureRelationColumns(relation.Kind)
-	columns := "org_id,id,valid_from,valid_to,effective_to,superseded,change_id,end_change_id,supersedes_id"
-	args := []any{relation.OrgID, relation.ID, relation.Lifecycle.ValidFrom, structureDateArg(relation.Lifecycle.ValidTo), nil, false, relation.ChangeID, nil, nullable(relation.SupersedesID)}
-	switch relation.Kind {
-	case "team_parent":
-		columns += ",child_team_id,parent_team_id"
-		args = append(args, relation.TeamID, relation.ParentTeamID)
-	case "membership":
-		columns += ",employee_id,team_id,is_primary"
-		args = append(args, relation.EmployeeID, relation.TeamID, relation.IsPrimary)
-	case "position":
-		columns += ",employee_id,team_id,is_primary,payload_id"
-		args = append(args, relation.EmployeeID, nullable(relation.TeamID), relation.IsPrimary, relation.PayloadID)
-	case "reporting_line":
-		columns += ",employee_id,manager_employee_id,kind"
-		args = append(args, relation.EmployeeID, relation.ManagerEmployeeID, relation.ReportingKind)
-	default:
-		return fault.Invalid
-	}
-	_, err := t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO "+table+"("+columns+") VALUES("+structurePlaceholders(len(args))+")"), args...)
-	return safeError(err)
-}
-func (t *transaction) insertOrganizationPayload(ctx context.Context, payload organization.OrganizationPayload) error {
-	envelope := payload.Envelope
-	binding := envelope.Context
-	var team, position, change any
-	switch binding.ObjectKind {
-	case "team_label":
-		team = binding.RecordID
-	case "position_assignment":
-		position = binding.RecordID
-	case "structure_change":
-		change = binding.RecordID
-	default:
-		return fault.Invalid
-	}
-	_, err := t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO organizational_payload(org_id,id,employee_id,team_id,position_id,change_id,record_id,version_id,object_kind,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"), binding.OrgID, payload.ID, nullable(binding.EmployeeID), team, position, change, binding.RecordID, binding.VersionID, binding.ObjectKind, binding.Purpose, binding.SchemaType, binding.SchemaVersion, envelope.FormatVersion, envelope.Algorithm, envelope.DEKID, envelope.Key.KEKID, envelope.Key.Version, envelope.Key.Data, envelope.SealedBytes, t.bindTime(payload.RecordedAt))
-	return safeError(err)
-}
-func (t *transaction) insertStructureLifecycle(ctx context.Context, fact *organization.LifecycleFact, newTeam bool) error {
-	table, objectColumn, projection := "employee_lifecycle_history", "employee_id", "employee"
-	if fact.Kind == "team_lifecycle" {
-		table, objectColumn, projection = "team_lifecycle_history", "team_id", "team"
-	}
-	var head string
-	err := t.tx.QueryRowContext(ctx, t.structureSQL("SELECT h.id FROM "+table+" h WHERE h.org_id=? AND h."+objectColumn+"=? AND NOT EXISTS (SELECT 1 FROM "+table+" n WHERE n.org_id=h.org_id AND n."+objectColumn+"=h."+objectColumn+" AND n.supersedes_id=h.id)"), fact.OrgID, fact.ObjectID).Scan(&head)
-	if errors.Is(err, sql.ErrNoRows) {
-		if !newTeam || fact.SupersedesID != "" {
-			return fault.Conflict
-		}
-	} else if err != nil {
-		return safeError(err)
-	} else if newTeam || (fact.SupersedesID != "" && fact.SupersedesID != head) {
-		return fault.Conflict
-	}
-	fact.SupersedesID = head
-	if !newTeam {
-		result, err := t.tx.ExecContext(ctx, t.structureSQL("UPDATE "+projection+" SET valid_from=?,valid_to=? WHERE org_id=? AND id=?"), fact.Lifecycle.ValidFrom, structureDateArg(fact.Lifecycle.ValidTo), fact.OrgID, fact.ObjectID)
-		if err = structureAffected(result, err, fault.Conflict); err != nil {
-			return err
-		}
-	}
-	_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO "+table+"(org_id,id,"+objectColumn+",valid_from,valid_to,change_id,supersedes_id) VALUES(?,?,?,?,?,?,?)"), fact.OrgID, fact.ID, fact.ObjectID, fact.Lifecycle.ValidFrom, structureDateArg(fact.Lifecycle.ValidTo), fact.ChangeID, nullable(fact.SupersedesID))
-	return safeError(err)
 }

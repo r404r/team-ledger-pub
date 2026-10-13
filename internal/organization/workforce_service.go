@@ -201,7 +201,7 @@ func (s *Service) ChangeWorkforce(ctx context.Context, request Request, org stri
 	}
 	write := WorkforceWrite{ID: value.NewID(), OrgID: org, SubjectID: snapshot.SubjectID, RecordedAt: s.clock(), Items: make([]WorkforcePreparedItem, len(command.Changes))}
 	if command.Reason != nil {
-		payload, sealErr := s.sealOrganization(ctx, org, "", write.ID, "structure_change", "org.structure.reason.v1", struct {
+		payload, sealErr := s.sealWorkforceFact(ctx, org, "", write.ID, "structure_change", "org.structure.reason.v1", struct {
 			Reason string `json:"reason"`
 		}{Reason: *command.Reason})
 		if sealErr != nil {
