@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"strconv"
+	"strings"
 
 	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/organization"
@@ -12,6 +13,10 @@ import (
 
 func (r *Repository) WorkforceCatalogs(ctx context.Context, org, asOf string) (organization.WorkforceCatalogs, error) {
 	return r.read().WorkforceCatalogs(ctx, org, asOf)
+}
+
+func (r *Repository) WorkforceCatalogHistory(ctx context.Context, org, kind, after string, limit int) (organization.WorkforceCatalogs, string, bool, error) {
+	return r.read().WorkforceCatalogHistory(ctx, org, kind, after, limit)
 }
 
 func (r *Repository) WorkforcePayload(ctx context.Context, org, id string) (organization.WorkforcePayload, error) {
@@ -166,6 +171,119 @@ func (r reader) WorkforceCatalogs(ctx context.Context, org, asOf string) (organi
 	}
 	rows.Close()
 	return out, nil
+}
+
+func (r reader) WorkforceCatalogHistory(ctx context.Context, org, kind, after string, limit int) (organization.WorkforceCatalogs, string, bool, error) {
+	out := organization.WorkforceCatalogs{
+		History: true, LegalEntities: []organization.LegalEntityView{}, Locations: []string{}, OrgUnits: []organization.OrgUnitView{}, OrgUnitParents: []organization.OrgUnitParentView{},
+		EducationLevels: []organization.EducationLevelView{}, JobFamilies: []organization.JobFamilyView{}, CareerLevels: []organization.CareerLevelView{},
+	}
+	var catalogRevision, graphRevision int64
+	if err := r.db.QueryRowContext(ctx, r.structureSQL("SELECT catalog_revision,graph_revision FROM organization WHERE id=?"), org).Scan(&catalogRevision, &graphRevision); errors.Is(err, sql.ErrNoRows) {
+		return out, "", false, fault.NotFound
+	} else if err != nil {
+		return out, "", false, safeError(err)
+	}
+	out.CatalogRevision, out.GraphRevision = strconv.FormatInt(catalogRevision, 10), strconv.FormatInt(graphRevision, 10)
+	if limit < 1 || limit > 101 {
+		return out, "", false, fault.Invalid
+	}
+	afterDate, afterID := "0001-01-01", ""
+	if after != "" {
+		parts := strings.Split(after, "|")
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return out, "", false, fault.Invalid
+		}
+		afterDate, afterID = parts[0], parts[1]
+	}
+	var rows *sql.Rows
+	var err error
+	switch kind {
+	case "legal_entity":
+		rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT e.id,v.id,e.code,v.label_payload_id,"+r.structureDate("v.valid_from")+","+r.structureDate("v.valid_to")+" FROM legal_entity e JOIN legal_entity_version v ON v.org_id=e.org_id AND v.legal_entity_id=e.id WHERE e.org_id=? AND (v.valid_from>? OR (v.valid_from=? AND v.id>?)) ORDER BY v.valid_from,v.id LIMIT ?"), org, afterDate, afterDate, afterID, limit)
+	case "business_group", "division", "department":
+		rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT u.id,v.id,u.code,v.label_payload_id,u.kind,"+r.structureDate("v.valid_from")+","+r.structureDate("v.valid_to")+" FROM org_unit u JOIN org_unit_version v ON v.org_id=u.org_id AND v.org_unit_id=u.id WHERE u.org_id=? AND u.kind=? AND (v.valid_from>? OR (v.valid_from=? AND v.id>?)) ORDER BY v.valid_from,v.id LIMIT ?"), org, kind, afterDate, afterDate, afterID, limit)
+	case "org_unit_parent":
+		rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT id,child_unit_id,parent_unit_id,"+r.structureDate("valid_from")+","+r.structureDate("valid_to")+" FROM org_unit_parent_history WHERE org_id=? AND (valid_from>? OR (valid_from=? AND id>?)) ORDER BY valid_from,id LIMIT ?"), org, afterDate, afterDate, afterID, limit)
+	case "job_family":
+		rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT f.id,v.id,f.code,v.label,"+r.structureDate("v.valid_from")+","+r.structureDate("v.valid_to")+" FROM job_family f JOIN job_family_version v ON v.org_id=f.org_id AND v.job_family_id=f.id WHERE f.org_id=? AND (v.valid_from>? OR (v.valid_from=? AND v.id>?)) ORDER BY v.valid_from,v.id LIMIT ?"), org, afterDate, afterDate, afterID, limit)
+	case "career_level":
+		rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT c.id,v.id,c.code,v.label,v.rank,"+r.structureDate("v.valid_from")+","+r.structureDate("v.valid_to")+" FROM career_level c JOIN career_level_version v ON v.org_id=c.org_id AND v.career_level_id=c.id WHERE c.org_id=? AND (v.valid_from>? OR (v.valid_from=? AND v.id>?)) ORDER BY v.valid_from,v.id LIMIT ?"), org, afterDate, afterDate, afterID, limit)
+	default:
+		return out, "", false, fault.Invalid
+	}
+	if err != nil {
+		return out, "", false, safeError(err)
+	}
+	defer rows.Close()
+	keys := make([]string, 0, limit)
+	for rows.Next() {
+		var to sql.NullString
+		switch kind {
+		case "legal_entity":
+			var item organization.LegalEntityView
+			if err = rows.Scan(&item.ID, &item.VersionID, &item.Code, &item.LabelPayloadID, &item.ValidFrom, &to); err == nil {
+				item.ValidTo, item.Active = stringPtr(to), !to.Valid
+				out.LegalEntities = append(out.LegalEntities, item)
+				keys = append(keys, item.ValidFrom+"|"+item.VersionID)
+			}
+		case "business_group", "division", "department":
+			var item organization.OrgUnitView
+			if err = rows.Scan(&item.ID, &item.VersionID, &item.Code, &item.LabelPayloadID, &item.Kind, &item.ValidFrom, &to); err == nil {
+				item.ValidTo, item.Active = stringPtr(to), !to.Valid
+				out.OrgUnits = append(out.OrgUnits, item)
+				keys = append(keys, item.ValidFrom+"|"+item.VersionID)
+			}
+		case "org_unit_parent":
+			var item organization.OrgUnitParentView
+			if err = rows.Scan(&item.ID, &item.ChildUnitID, &item.ParentUnitID, &item.ValidFrom, &to); err == nil {
+				item.ValidTo, item.Active = stringPtr(to), !to.Valid
+				out.OrgUnitParents = append(out.OrgUnitParents, item)
+				keys = append(keys, item.ValidFrom+"|"+item.ID)
+			}
+		case "job_family":
+			var item organization.JobFamilyView
+			if err = rows.Scan(&item.ID, &item.VersionID, &item.Code, &item.Label, &item.ValidFrom, &to); err == nil {
+				item.ValidTo, item.Active = stringPtr(to), !to.Valid
+				out.JobFamilies = append(out.JobFamilies, item)
+				keys = append(keys, item.ValidFrom+"|"+item.VersionID)
+			}
+		case "career_level":
+			var item organization.CareerLevelView
+			if err = rows.Scan(&item.ID, &item.VersionID, &item.Code, &item.Label, &item.Rank, &item.ValidFrom, &to); err == nil {
+				item.ValidTo, item.Active = stringPtr(to), !to.Valid
+				out.CareerLevels = append(out.CareerLevels, item)
+				keys = append(keys, item.ValidFrom+"|"+item.VersionID)
+			}
+		}
+		if err != nil {
+			return out, "", false, safeError(err)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return out, "", false, safeError(err)
+	}
+	more := len(keys) == limit
+	if more {
+		keys = keys[:len(keys)-1]
+		switch kind {
+		case "legal_entity":
+			out.LegalEntities = out.LegalEntities[:len(keys)]
+		case "business_group", "division", "department":
+			out.OrgUnits = out.OrgUnits[:len(keys)]
+		case "org_unit_parent":
+			out.OrgUnitParents = out.OrgUnitParents[:len(keys)]
+		case "job_family":
+			out.JobFamilies = out.JobFamilies[:len(keys)]
+		case "career_level":
+			out.CareerLevels = out.CareerLevels[:len(keys)]
+		}
+	}
+	last := ""
+	if len(keys) != 0 {
+		last = keys[len(keys)-1]
+	}
+	return out, last, more, nil
 }
 
 func (r reader) WorkforcePayload(ctx context.Context, org, id string) (organization.WorkforcePayload, error) {

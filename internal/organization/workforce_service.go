@@ -38,6 +38,9 @@ func (s *Service) Catalogs(ctx context.Context, request Request, org string, que
 	if err != nil {
 		return WorkforceCatalogs{}, err
 	}
+	if query.History {
+		return s.catalogHistory(ctx, request, snapshot, org, day, query)
+	}
 	if query.AsOf == "" {
 		query.AsOf = day
 	}
@@ -81,6 +84,73 @@ func (s *Service) Catalogs(ctx context.Context, request Request, org string, que
 		}
 		catalogs.OrgUnits[i].Label = label.Label
 		catalogs.OrgUnits[i].LabelPayloadID = ""
+	}
+	return catalogs, nil
+}
+
+func (s *Service) catalogHistory(ctx context.Context, request Request, snapshot authz.Snapshot, org, day string, query WorkforceCatalogQuery) (WorkforceCatalogs, error) {
+	if query.Limit == 0 {
+		query.Limit = 50
+	}
+	current, err := s.Store.WorkforceCatalogs(ctx, org, day)
+	if err != nil {
+		return WorkforceCatalogs{}, err
+	}
+	revision, err := strconv.ParseInt(current.CatalogRevision, 10, 64)
+	if err != nil {
+		return WorkforceCatalogs{}, fault.Unavailable
+	}
+	graph := Graph{Revision: revision}
+	filter := struct {
+		Kind  string
+		Limit int
+	}{query.Kind, query.Limit}
+	digest, err := s.queryDigest("catalog-history", filter, "")
+	if err != nil {
+		return WorkforceCatalogs{}, err
+	}
+	after := ""
+	if query.Cursor != "" {
+		after, err = s.openQueryCursor(query.Cursor, "catalog-history", snapshot, graph, day, digest)
+		if err != nil {
+			return WorkforceCatalogs{}, err
+		}
+	}
+	catalogs, last, more, err := s.Store.WorkforceCatalogHistory(ctx, org, query.Kind, after, query.Limit+1)
+	if err != nil {
+		return WorkforceCatalogs{}, err
+	}
+	if more && last != "" {
+		token, sealErr := s.sealQueryCursor("catalog-history", snapshot, graph, day, digest, last)
+		if sealErr != nil {
+			return WorkforceCatalogs{}, sealErr
+		}
+		catalogs.NextCursor = &token
+	}
+	includeLabels := snapshot.Allows("pii.read", "pii", "", request.Purpose, s.clock())
+	for i := range catalogs.LegalEntities {
+		if !includeLabels {
+			catalogs.LegalEntities[i].LabelPayloadID = ""
+			continue
+		}
+		var label legalEntityLabel
+		item := &catalogs.LegalEntities[i]
+		if err = s.openWorkforcePayload(ctx, org, "", item.ID, item.LabelPayloadID, "legal_entity", "pii.legal_entity_label.v1", &label); err != nil || !validCatalogLabel(label.DisplayName) {
+			return WorkforceCatalogs{}, fault.Unavailable
+		}
+		item.DisplayName, item.LabelPayloadID = label.DisplayName, ""
+	}
+	for i := range catalogs.OrgUnits {
+		if !includeLabels {
+			catalogs.OrgUnits[i].LabelPayloadID = ""
+			continue
+		}
+		var label catalogLabel
+		item := &catalogs.OrgUnits[i]
+		if err = s.openWorkforcePayload(ctx, org, "", item.ID, item.LabelPayloadID, "org_unit", "pii.org_unit_label.v1", &label); err != nil || !validCatalogLabel(label.Label) {
+			return WorkforceCatalogs{}, fault.Unavailable
+		}
+		item.Label, item.LabelPayloadID = label.Label, ""
 	}
 	return catalogs, nil
 }
@@ -443,10 +513,13 @@ func (s *Service) openWorkforcePayload(ctx context.Context, org, employee, recor
 }
 
 func validCatalogQuery(query WorkforceCatalogQuery) bool {
-	if query.AsOf != "" && !value.ValidDate(query.AsOf) || query.History || query.Cursor != "" || query.Limit < 0 || query.Limit > 100 {
+	if query.AsOf != "" && !value.ValidDate(query.AsOf) || query.Limit < 0 || query.Limit > 100 {
 		return false
 	}
-	return oneOf(query.Kind, "", "legal_entity", "location", "business_group", "division", "department", "org_unit_parent", "education_level", "job_family", "career_level")
+	if query.History {
+		return query.AsOf == "" && oneOf(query.Kind, "legal_entity", "business_group", "division", "department", "org_unit_parent", "job_family", "career_level")
+	}
+	return query.Cursor == "" && oneOf(query.Kind, "", "legal_entity", "location", "business_group", "division", "department", "org_unit_parent", "education_level", "job_family", "career_level")
 }
 
 func filterCatalogs(catalogs *WorkforceCatalogs, kind string, limit int) {

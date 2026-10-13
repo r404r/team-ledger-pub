@@ -28,15 +28,19 @@ type WorkforceProfile struct {
 }
 
 type LegalEntityView struct {
-	ID             string `json:"id"`
-	Code           string `json:"code"`
-	DisplayName    string `json:"display_name,omitempty"`
-	LabelPayloadID string `json:"-"`
-	Active         bool   `json:"active"`
+	ID             string  `json:"id"`
+	VersionID      string  `json:"version_id,omitempty"`
+	Code           string  `json:"code"`
+	DisplayName    string  `json:"display_name,omitempty"`
+	LabelPayloadID string  `json:"-"`
+	ValidFrom      string  `json:"valid_from,omitempty"`
+	ValidTo        *string `json:"valid_to,omitempty"`
+	Active         bool    `json:"active"`
 }
 
 type OrgUnitView struct {
 	ID             string  `json:"id"`
+	VersionID      string  `json:"version_id,omitempty"`
 	Code           string  `json:"code"`
 	Label          string  `json:"label,omitempty"`
 	LabelPayloadID string  `json:"-"`
@@ -56,18 +60,24 @@ type OrgUnitParentView struct {
 }
 
 type JobFamilyView struct {
-	ID     string `json:"id"`
-	Code   string `json:"code"`
-	Label  string `json:"label"`
-	Active bool   `json:"active"`
+	ID        string  `json:"id"`
+	VersionID string  `json:"version_id,omitempty"`
+	Code      string  `json:"code"`
+	Label     string  `json:"label"`
+	ValidFrom string  `json:"valid_from,omitempty"`
+	ValidTo   *string `json:"valid_to,omitempty"`
+	Active    bool    `json:"active"`
 }
 
 type CareerLevelView struct {
-	ID     string `json:"id"`
-	Code   string `json:"code"`
-	Label  string `json:"label"`
-	Rank   int    `json:"rank"`
-	Active bool   `json:"active"`
+	ID        string  `json:"id"`
+	VersionID string  `json:"version_id,omitempty"`
+	Code      string  `json:"code"`
+	Label     string  `json:"label"`
+	Rank      int     `json:"rank"`
+	ValidFrom string  `json:"valid_from,omitempty"`
+	ValidTo   *string `json:"valid_to,omitempty"`
+	Active    bool    `json:"active"`
 }
 
 type EducationLevelView struct {
@@ -135,6 +145,8 @@ type WorkforceCatalogs struct {
 	CatalogRevision string               `json:"catalog_revision"`
 	GraphRevision   string               `json:"graph_revision"`
 	AsOf            string               `json:"as_of"`
+	History         bool                 `json:"history"`
+	NextCursor      *string              `json:"next_cursor"`
 	LegalEntities   []LegalEntityView    `json:"legal_entities"`
 	Locations       []string             `json:"locations"`
 	OrgUnits        []OrgUnitView        `json:"org_units"`
@@ -152,6 +164,7 @@ type WorkforcePayload struct {
 
 type WorkforceReader interface {
 	WorkforceCatalogs(context.Context, string, string) (WorkforceCatalogs, error)
+	WorkforceCatalogHistory(context.Context, string, string, string, int) (WorkforceCatalogs, string, bool, error)
 	WorkforcePayload(context.Context, string, string) (WorkforcePayload, error)
 	EmployeeWorkforceFacts(context.Context, string, string, string) (WorkforceFacts, error)
 }

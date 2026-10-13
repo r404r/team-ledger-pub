@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"reflect"
 	"testing"
 	"time"
@@ -66,6 +67,16 @@ func TestAPIWorkforceCatalogCreateReplaceEndIsAtomicAndReplaySafe(t *testing.T) 
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodGet, catalogPath+"2026-07-01", "", ""), http.StatusOK, &after)
 			if len(before.JobFamilies) != 1 || before.JobFamilies[0].Label != "Engineering" || len(after.JobFamilies) != 1 || after.JobFamilies[0].Label != "Product Engineering" {
 				t.Fatalf("catalog effective replacement before=%#v after=%#v", before.JobFamilies, after.JobFamilies)
+			}
+			var historyFirst, historySecond organization.WorkforceCatalogs
+			historyPath := "/api/v1/orgs/" + f.OrgID + "/workforce-catalogs?kind=job_family&history=true&limit=1"
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodGet, historyPath, "", ""), http.StatusOK, &historyFirst)
+			if !historyFirst.History || historyFirst.NextCursor == nil || len(historyFirst.JobFamilies) != 1 || historyFirst.JobFamilies[0].Label != "Engineering" || historyFirst.JobFamilies[0].VersionID == "" {
+				t.Fatalf("catalog history first page = %#v", historyFirst)
+			}
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodGet, historyPath+"&cursor="+url.QueryEscape(*historyFirst.NextCursor), "", ""), http.StatusOK, &historySecond)
+			if historySecond.NextCursor != nil || len(historySecond.JobFamilies) != 1 || historySecond.JobFamilies[0].Label != "Product Engineering" || historySecond.JobFamilies[0].VersionID == historyFirst.JobFamilies[0].VersionID {
+				t.Fatalf("catalog history second page = %#v", historySecond)
 			}
 			end := fmt.Sprintf(`{"expected_catalog_revision":"3","expected_graph_revision":"1","changes":[{"action":"end","kind":"job_family","ref":%q,"effective_to":"2027-01-01"}]}`, familyID)
 			var ended organization.CatalogChangeResult
