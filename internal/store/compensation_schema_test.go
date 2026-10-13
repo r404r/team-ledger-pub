@@ -423,8 +423,8 @@ func TestCompensationV7PopulatedV6UpgradePreservesAllOriginalColumnsAndHistory(t
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			f := migrationV1Fixture(t, backend)
-			employee := migrationV1Profile(t, f, organization.Profile{DisplayName: "SYNTHETIC_V6_ORIGINAL"}, "")
-			migrationV1Profile(t, f, organization.Profile{DisplayName: "SYNTHETIC_V6_CURRENT"}, employee.ID)
+			employee := migrationV1Profile(t, f, organization.Profile{LocalName: "SYNTHETIC_V6_ORIGINAL"}, "")
+			migrationV1Profile(t, f, organization.Profile{LocalName: "SYNTHETIC_V6_CURRENT"}, employee.ID)
 			for version := 2; version <= 6; version++ {
 				migrationInstallVersion(t, f.Repo, version)
 			}
@@ -457,7 +457,7 @@ func TestCompensationV7PopulatedV6UpgradePreservesAllOriginalColumnsAndHistory(t
 				}
 			}
 			view, err := f.Service.Read(context.Background(), f.Request(f.Owner), employee.ID, "2026-01-01", true)
-			if err != nil || view.Profile == nil || view.Profile.DisplayName != "SYNTHETIC_V6_CURRENT" {
+			if err != nil || view.Profile == nil || view.Profile.LocalName != "SYNTHETIC_V6_CURRENT" {
 				t.Fatal("old encrypted payload/AAD must remain readable", err)
 			}
 			if err = f.Repo.CheckSchema(context.Background()); err != nil {
@@ -476,7 +476,7 @@ func TestCompensationV7InterruptedCutoverRestoresV6AndPhysicalDriftRefusesStartu
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			f := migrationV1Fixture(t, backend)
-			migrationV1Profile(t, f, organization.Profile{DisplayName: "SYNTHETIC_V6_ROLLBACK"}, "")
+			migrationV1Profile(t, f, organization.Profile{LocalName: "SYNTHETIC_V6_ROLLBACK"}, "")
 			for version := 2; version <= 6; version++ {
 				migrationInstallVersion(t, f.Repo, version)
 			}

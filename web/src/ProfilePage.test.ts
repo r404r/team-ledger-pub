@@ -26,7 +26,7 @@ const SESSION = {
 }
 
 const ORIGINAL_PROFILE = {
-  display_name: '合成资料甲',
+  local_name: '合成资料甲',
   work_contact: { email: 'fixture-a@example.invalid', phone: '+00-000-0001' },
   profile_summary: '仅用于测试的合成资料摘要甲',
 }
@@ -174,7 +174,7 @@ function action(page: VueWrapper, label: RegExp) {
 }
 
 async function submitProfile(page: VueWrapper) {
-  const name = field(page, /姓名|display_name/i)
+  const name = field(page, /本地姓名|local_name/i)
   const forms = page.findAll('form').filter((form) => form.element.contains(name.element))
   expect(forms, 'The profile fields must support user form submission').toHaveLength(1)
   await forms[0]!.trigger('submit')
@@ -224,7 +224,7 @@ async function navigate(path: string) {
 
 async function startCorrection(page: VueWrapper) {
   await action(page, /更正|编辑|edit/i).trigger('click')
-  await field(page, /姓名|display_name/i).setValue(DRAFT_NAME)
+  await field(page, /本地姓名|local_name/i).setValue(DRAFT_NAME)
   await field(page, /更正理由|修改原因|edit_reason/i).setValue(DRAFT_REASON)
 }
 
@@ -250,7 +250,7 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     api.respond('GET', EMPLOYEE_PATH, 200, employee(ORIGINAL_PROFILE, '9007199254740993'))
     const page = await openPage()
 
-    expectDetails(page, ORIGINAL_PROFILE.display_name, '9007199254740993')
+    expectDetails(page, ORIGINAL_PROFILE.local_name, '9007199254740993')
     expect(page.text()).toContain(ORIGINAL_PROFILE.work_contact.email)
     expect(page.text()).toContain(ORIGINAL_PROFILE.work_contact.phone)
     expect(page.text()).toContain(ORIGINAL_PROFILE.profile_summary)
@@ -269,10 +269,10 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     })
     api.respond('GET', EMPLOYEE_PATH, 200, employee())
     const page = await openPage()
-    expectDetails(page, ORIGINAL_PROFILE.display_name, '1')
+    expectDetails(page, ORIGINAL_PROFILE.local_name, '1')
     await startCorrection(page)
     api.respond('PATCH', CORRECTION_PATH, 200, { id: EMPLOYEE_ID, profile_revision: '2' })
-    api.respond('GET', EMPLOYEE_PATH, 200, employee({ ...ORIGINAL_PROFILE, display_name: '合成员工范围保存结果' }, '2'))
+    api.respond('GET', EMPLOYEE_PATH, 200, employee({ ...ORIGINAL_PROFILE, local_name: '合成员工范围保存结果' }, '2'))
     await submitProfile(page)
     expectDetails(page, '合成员工范围保存结果', '2')
     expect(page.text()).not.toContain(DRAFT_NAME)
@@ -282,12 +282,12 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     const created = api.defer('POST', CREATE_PATH)
     const reloaded = api.defer('GET', EMPLOYEE_PATH)
     const serverProfile = {
-      display_name: '合成服务端读取结果丙',
+      local_name: '合成服务端读取结果丙',
       work_contact: { email: 'fixture-server@example.invalid', phone: '+00-000-0003' },
       profile_summary: '服务端实际读取的合成摘要',
     }
     const page = await openPage(`/?as_of=${AS_OF}`)
-    await field(page, /姓名|display_name/i).setValue(DRAFT_NAME)
+    await field(page, /本地姓名|local_name/i).setValue(DRAFT_NAME)
     await field(page, /邮箱|email/i).setValue('fixture-create@example.invalid')
     await field(page, /电话|phone/i).setValue('+00-000-0002')
     await field(page, /摘要|简介|profile_summary/i).setValue('合成创建摘要')
@@ -300,7 +300,7 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     expectMutation(commands[0]!)
     expect(commands[0]!.body).toEqual({
       profile: {
-        display_name: DRAFT_NAME,
+        local_name: DRAFT_NAME,
         work_contact: { email: 'fixture-create@example.invalid', phone: '+00-000-0002' },
         profile_summary: '合成创建摘要',
       },
@@ -314,11 +314,11 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     expect(reads, 'A create receipt is not a saved profile: the UI must actually reload it').toHaveLength(1)
     expect(reads[0]!.url.searchParams.get('as_of')).toBe(AS_OF)
     expect(reads[0]!.url.searchParams.get('include_profile')).toBe('true')
-    expect(page.text()).not.toContain(serverProfile.display_name)
+    expect(page.text()).not.toContain(serverProfile.local_name)
 
     reloaded.resolve(200, employee(serverProfile))
     await settled()
-    expectDetails(page, serverProfile.display_name, '1')
+    expectDetails(page, serverProfile.local_name, '1')
     expect(page.text()).toContain(serverProfile.work_contact.email)
     expect(page.text()).toContain(serverProfile.profile_summary)
     expect(page.text()).not.toContain(DRAFT_NAME)
@@ -333,7 +333,7 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     const newRevision = '9007199254740994'
     api.respond('GET', EMPLOYEE_PATH, 200, employee(ORIGINAL_PROFILE, oldRevision))
     const page = await openPage()
-    expectDetails(page, ORIGINAL_PROFILE.display_name, oldRevision)
+    expectDetails(page, ORIGINAL_PROFILE.local_name, oldRevision)
     await startCorrection(page)
     await field(page, /邮箱|email/i).setValue('')
     await field(page, /电话|phone/i).setValue('')
@@ -346,7 +346,7 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     expectMutation(command!)
     expect(command!.body).toEqual({
       expected_profile_revision: oldRevision,
-      profile: { display_name: DRAFT_NAME },
+      profile: { local_name: DRAFT_NAME },
       edit_reason: DRAFT_REASON,
     })
     expect(api.matching('GET', EMPLOYEE_PATH)).toHaveLength(2)
@@ -354,7 +354,7 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     expect(page.text()).not.toContain(authoritativeName)
     reload.resolve(200, {
       ...employee(ORIGINAL_PROFILE, newRevision),
-      profile: { display_name: authoritativeName },
+      profile: { local_name: authoritativeName },
     })
     await settled()
 
@@ -373,7 +373,7 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     api.respond('GET', EMPLOYEE_PATH, 200, employee())
     api.respondRepeatedly('GET', EMPLOYEE_PATH, 200, employee())
     const page = await openPage()
-    expectDetails(page, ORIGINAL_PROFILE.display_name, '1')
+    expectDetails(page, ORIGINAL_PROFILE.local_name, '1')
     await startCorrection(page)
     const failed = api.defer('PATCH', CORRECTION_PATH)
     await submitProfile(page)
@@ -381,12 +381,12 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     await settled()
 
     expect(page.find('[role="alert"]').exists(), 'A rejected save must remain visibly unsuccessful').toBe(true)
-    expect(field(page, /姓名|display_name/i).element.value).toBe(DRAFT_NAME)
+    expect(field(page, /本地姓名|local_name/i).element.value).toBe(DRAFT_NAME)
     expect(field(page, /更正理由|修改原因|edit_reason/i).element.value).toBe(DRAFT_REASON)
     expect(api.matching('PATCH', CORRECTION_PATH)).toHaveLength(1)
     await action(page, /刷新|重新加载|重载|refresh|reload/i).trigger('click')
     await settled()
-    expectDetails(page, ORIGINAL_PROFILE.display_name, '1')
+    expectDetails(page, ORIGINAL_PROFILE.local_name, '1')
     expect(page.text()).not.toContain(DRAFT_NAME)
   })
 
@@ -394,7 +394,7 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     api.respond('GET', EMPLOYEE_PATH, 200, employee())
     api.respondRepeatedly('GET', EMPLOYEE_PATH, 200, employee())
     const page = await openPage()
-    expectDetails(page, ORIGINAL_PROFILE.display_name, '1')
+    expectDetails(page, ORIGINAL_PROFILE.local_name, '1')
     await startCorrection(page)
     const failed = api.defer('PATCH', CORRECTION_PATH)
     await submitProfile(page)
@@ -402,14 +402,14 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     await settled()
 
     expect(page.find('[role="alert"]').exists()).toBe(true)
-    expect(field(page, /姓名|display_name/i).element.value).toBe(DRAFT_NAME)
+    expect(field(page, /本地姓名|local_name/i).element.value).toBe(DRAFT_NAME)
     expect(api.matching('PATCH', CORRECTION_PATH)).toHaveLength(1)
   })
 
   it('does not confirm a committed correction when its authoritative reload fails', async () => {
     api.respond('GET', EMPLOYEE_PATH, 200, employee())
     const page = await openPage()
-    expectDetails(page, ORIGINAL_PROFILE.display_name, '1')
+    expectDetails(page, ORIGINAL_PROFILE.local_name, '1')
     await startCorrection(page)
     api.respond('PATCH', CORRECTION_PATH, 200, { id: EMPLOYEE_ID, profile_revision: '2' })
     api.respond('GET', EMPLOYEE_PATH, 503, error('UNAVAILABLE'))
@@ -417,7 +417,7 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
 
     expect(page.find('[role="alert"]').exists(), 'Save acknowledgement alone cannot confirm reloaded details').toBe(true)
     expect(page.text()).not.toContain(DRAFT_NAME)
-    api.respond('GET', EMPLOYEE_PATH, 200, employee({ ...ORIGINAL_PROFILE, display_name: '合成后续确认资料戊' }, '2'))
+    api.respond('GET', EMPLOYEE_PATH, 200, employee({ ...ORIGINAL_PROFILE, local_name: '合成后续确认资料戊' }, '2'))
     await action(page, /刷新|重新加载|重载|refresh|reload/i).trigger('click')
     await settled()
     expectDetails(page, '合成后续确认资料戊', '2')
@@ -428,27 +428,27 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     api.respond('GET', EMPLOYEE_PATH, 200, employee())
     api.respondRepeatedly('GET', EMPLOYEE_PATH, 200, employee())
     const page = await openPage()
-    expectDetails(page, ORIGINAL_PROFILE.display_name, '1')
+    expectDetails(page, ORIGINAL_PROFILE.local_name, '1')
     await startCorrection(page)
     api.respond('PATCH', CORRECTION_PATH, 409, error('CONFLICT'))
     await submitProfile(page)
 
     expect(page.find('[role="alert"]').exists(), 'A stale revision must be visibly rejected').toBe(true)
-    expect(field(page, /姓名|display_name/i).element.value).toBe(DRAFT_NAME)
+    expect(field(page, /本地姓名|local_name/i).element.value).toBe(DRAFT_NAME)
     expect(field(page, /更正理由|修改原因|edit_reason/i).element.value).toBe(DRAFT_REASON)
     const firstCommands = api.matching('PATCH', CORRECTION_PATH)
     expect(firstCommands, 'Conflict handling must never retry or overwrite automatically').toHaveLength(1)
     expect(firstCommands[0]!.body).toMatchObject({ expected_profile_revision: '1' })
 
-    const otherWriter = { ...ORIGINAL_PROFILE, display_name: '合成另一维护者已提交资料己' }
+    const otherWriter = { ...ORIGINAL_PROFILE, local_name: '合成另一维护者已提交资料己' }
     api.respond('GET', EMPLOYEE_PATH, 200, employee(otherWriter, '2'))
     await action(page, /刷新|重新加载|重载|refresh|reload/i).trigger('click')
     await settled()
-    expectDetails(page, otherWriter.display_name, '2')
+    expectDetails(page, otherWriter.local_name, '2')
     expect(api.matching('PATCH', CORRECTION_PATH)).toHaveLength(1)
     await startCorrection(page)
     api.respond('PATCH', CORRECTION_PATH, 200, { id: EMPLOYEE_ID, profile_revision: '3' })
-    api.respond('GET', EMPLOYEE_PATH, 200, employee({ ...ORIGINAL_PROFILE, display_name: DRAFT_NAME }, '3'))
+    api.respond('GET', EMPLOYEE_PATH, 200, employee({ ...ORIGINAL_PROFILE, local_name: DRAFT_NAME }, '3'))
     await submitProfile(page)
 
     const commands = api.matching('PATCH', CORRECTION_PATH)
@@ -466,13 +466,13 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
   ])('clears sensitive details and all editing values when a save loses authorization with HTTP %s', async (status, code) => {
     api.respond('GET', EMPLOYEE_PATH, 200, employee())
     const page = await openPage()
-    expectDetails(page, ORIGINAL_PROFILE.display_name, '1')
+    expectDetails(page, ORIGINAL_PROFILE.local_name, '1')
     await startCorrection(page)
     api.respond('PATCH', CORRECTION_PATH, status, error(code))
     await submitProfile(page)
 
     expectSensitiveCleared(page, [
-      ORIGINAL_PROFILE.display_name,
+      ORIGINAL_PROFILE.local_name,
       ORIGINAL_PROFILE.work_contact.email,
       ORIGINAL_PROFILE.work_contact.phone,
       ORIGINAL_PROFILE.profile_summary,
@@ -487,7 +487,7 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
   it('removes a previously visible profile and its edit when a refresh returns metadata without PII', async () => {
     api.respond('GET', EMPLOYEE_PATH, 200, employee())
     const page = await openPage()
-    expectDetails(page, ORIGINAL_PROFILE.display_name, '1')
+    expectDetails(page, ORIGINAL_PROFILE.local_name, '1')
     await startCorrection(page)
     const { profile: _profile, profile_revision: _privateRevision, ...metadataOnly } = employee()
     api.respond('GET', EMPLOYEE_PATH, 200, metadataOnly)
@@ -495,7 +495,7 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     await settled()
 
     expectSensitiveCleared(page, [
-      ORIGINAL_PROFILE.display_name,
+      ORIGINAL_PROFILE.local_name,
       ORIGINAL_PROFILE.work_contact.email,
       ORIGINAL_PROFILE.work_contact.phone,
       ORIGINAL_PROFILE.profile_summary,
@@ -531,7 +531,7 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     expect(organization.text()).toContain(REQUEST_ID)
     expect(organization.text()).toContain('查询日无获准经理关系')
     expect(page.text()).not.toContain('profile_revision')
-    expect(page.text()).not.toContain(ORIGINAL_PROFILE.display_name)
+    expect(page.text()).not.toContain(ORIGINAL_PROFILE.local_name)
     expect(page.text()).not.toContain('合成获准职位正文')
     expect(api.matching('PATCH', CORRECTION_PATH)).toHaveLength(0)
   })
@@ -541,35 +541,35 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     const page = await openPage()
     const oldRequests = api.matching('GET', EMPLOYEE_PATH)
     expect(oldRequests, 'Opening an employee must request its real profile').toHaveLength(1)
-    const newProfile = { ...ORIGINAL_PROFILE, display_name: '合成新路由资料庚' }
+    const newProfile = { ...ORIGINAL_PROFILE, local_name: '合成新路由资料庚' }
     api.respond('GET', OTHER_EMPLOYEE_PATH, 200, employee(newProfile, '7', OTHER_EMPLOYEE_ID))
     await navigate(`/employees/${OTHER_EMPLOYEE_ID}?as_of=${AS_OF}`)
-    expectDetails(page, newProfile.display_name, '7')
+    expectDetails(page, newProfile.local_name, '7')
     expect(oldRequests[0]!.signal?.aborted, 'Navigation must cancel the old employee request').toBe(true)
 
-    oldRead.resolve(200, employee({ ...ORIGINAL_PROFILE, display_name: '合成迟到旧资料辛' }))
+    oldRead.resolve(200, employee({ ...ORIGINAL_PROFILE, local_name: '合成迟到旧资料辛' }))
     await settled()
-    expectDetails(page, newProfile.display_name, '7')
+    expectDetails(page, newProfile.local_name, '7')
     expectSensitiveCleared(page, ['合成迟到旧资料辛'])
   })
 
   it('does not restore sensitive data or issue a save reload when a late correction arrives after revoked access', async () => {
     api.respond('GET', EMPLOYEE_PATH, 200, employee())
     const page = await openPage()
-    expectDetails(page, ORIGINAL_PROFILE.display_name, '1')
+    expectDetails(page, ORIGINAL_PROFILE.local_name, '1')
     await startCorrection(page)
     const oldSave = api.defer('PATCH', CORRECTION_PATH)
     await submitProfile(page)
     const [command] = api.matching('PATCH', CORRECTION_PATH)
     api.respond('GET', OTHER_EMPLOYEE_PATH, 403, error('FORBIDDEN'))
     await navigate(`/employees/${OTHER_EMPLOYEE_ID}?as_of=${AS_OF}`)
-    expectSensitiveCleared(page, [ORIGINAL_PROFILE.display_name, DRAFT_NAME, DRAFT_REASON])
+    expectSensitiveCleared(page, [ORIGINAL_PROFILE.local_name, DRAFT_NAME, DRAFT_REASON])
     expect(page.find('[role="alert"]').exists()).toBe(true)
     expect(command!.signal?.aborted).toBe(true)
 
     oldSave.resolve(200, { id: EMPLOYEE_ID, profile_revision: '2' })
     await settled()
-    expectSensitiveCleared(page, [ORIGINAL_PROFILE.display_name, DRAFT_NAME, DRAFT_REASON])
+    expectSensitiveCleared(page, [ORIGINAL_PROFILE.local_name, DRAFT_NAME, DRAFT_REASON])
     expect(page.find('[role="alert"]').exists(), 'A stale success must not erase the authorization error').toBe(true)
     expect(api.matching('GET', EMPLOYEE_PATH), 'A revoked old save must not trigger any sensitive reload').toHaveLength(1)
     expect(api.matching('PATCH', CORRECTION_PATH)).toHaveLength(1)
@@ -578,14 +578,14 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
   it('clears the page and unsaved form on route departure and discards a late save response', async () => {
     api.respond('GET', EMPLOYEE_PATH, 200, employee())
     const page = await openPage()
-    expectDetails(page, ORIGINAL_PROFILE.display_name, '1')
+    expectDetails(page, ORIGINAL_PROFILE.local_name, '1')
     await startCorrection(page)
     const oldSave = api.defer('PATCH', CORRECTION_PATH)
     await submitProfile(page)
     const [command] = api.matching('PATCH', CORRECTION_PATH)
     await navigate('/security/audit')
     expectSensitiveCleared(page, [
-      ORIGINAL_PROFILE.display_name,
+      ORIGINAL_PROFILE.local_name,
       ORIGINAL_PROFILE.work_contact.email,
       ORIGINAL_PROFILE.work_contact.phone,
       ORIGINAL_PROFILE.profile_summary,
@@ -596,7 +596,7 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
 
     oldSave.resolve(200, { id: EMPLOYEE_ID, profile_revision: '2' })
     await settled()
-    expectSensitiveCleared(page, [ORIGINAL_PROFILE.display_name, DRAFT_NAME, DRAFT_REASON])
+    expectSensitiveCleared(page, [ORIGINAL_PROFILE.local_name, DRAFT_NAME, DRAFT_REASON])
     expect(api.matching('GET', EMPLOYEE_PATH)).toHaveLength(1)
   })
 
@@ -612,7 +612,7 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     expect(page.find('[role="alert"]').exists(), 'A revoked session must be visibly denied').toBe(true)
     expect(request!.signal?.aborted).toBe(true)
 
-    oldRead.resolve(200, employee({ ...ORIGINAL_PROFILE, display_name: '合成撤销会话迟到资料癸' }))
+    oldRead.resolve(200, employee({ ...ORIGINAL_PROFILE, local_name: '合成撤销会话迟到资料癸' }))
     await settled()
     expectSensitiveCleared(page, [
       '合成撤销会话迟到资料癸',
@@ -637,7 +637,7 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     api.session = error('UNAUTHENTICATED')
     const newPage = await openPage(`/employees/${OTHER_EMPLOYEE_ID}?as_of=${AS_OF}`)
     expect(newPage.find('[role="alert"]').exists()).toBe(true)
-    oldRead.resolve(200, employee({ ...ORIGINAL_PROFILE, display_name: '合成已卸载迟到资料壬' }))
+    oldRead.resolve(200, employee({ ...ORIGINAL_PROFILE, local_name: '合成已卸载迟到资料壬' }))
     await settled()
     expectSensitiveCleared(newPage, ['合成已卸载迟到资料壬', ORIGINAL_PROFILE.work_contact.email])
     expect(api.matching('GET', OTHER_EMPLOYEE_PATH), 'An unauthenticated page must not load sensitive data').toHaveLength(0)

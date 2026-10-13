@@ -22,7 +22,7 @@ func FuzzEnvelopeBindingsAndMalformedInput(f *testing.F) {
 	f.Add([]byte("A256GCM-RANDOMNONCE"), uint8(3))
 	f.Add(bytes.Clone(fixture.SealedBytes[:27]), uint8(4))
 	f.Add(bytes.Clone(fixture.Key.Data), uint8(5))
-	f.Add([]byte("pii.profile.v1\x00"), uint8(6))
+	f.Add([]byte("pii.profile.v2\x00"), uint8(6))
 	f.Add([]byte("aaaaaaaa-1111-4111-8111-111111111111"), uint8(7))
 	f.Fuzz(func(t *testing.T, raw []byte, selector uint8) {
 		// Bound every exercised string/blob and all crypto work independently

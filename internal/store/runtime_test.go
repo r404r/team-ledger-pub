@@ -27,7 +27,7 @@ func TestRuntimeCurrentEncryptedProfileSurvivesReopen(t *testing.T) {
 			defer cancel()
 			created := runtimeCreate(t, ctx, f, f.Owner, f.OrgID, "SYNTHETIC_RUNTIME_ORIGINAL")
 			profile := organization.Profile{
-				DisplayName:    "SYNTHETIC_RUNTIME_CURRENT",
+				LocalName:      "SYNTHETIC_RUNTIME_CURRENT",
 				WorkContact:    new(organization.Contact{Email: "synthetic-runtime@example.invalid", Phone: "SYNTHETIC_PHONE"}),
 				ProfileSummary: "SYNTHETIC_RUNTIME_FULL_CORRECTION",
 			}
@@ -45,7 +45,7 @@ func TestRuntimeCurrentEncryptedProfileSurvivesReopen(t *testing.T) {
 			if err != nil || version.Number != 2 || version.SupersedesID == "" {
 				t.Fatalf("current immutable version must supersede the first: %v", err)
 			}
-			for _, marker := range []string{profile.DisplayName, profile.WorkContact.Email, profile.ProfileSummary, "SYNTHETIC_RUNTIME_CORRECTION_REASON"} {
+			for _, marker := range []string{profile.LocalName, profile.WorkContact.Email, profile.ProfileSummary, "SYNTHETIC_RUNTIME_CORRECTION_REASON"} {
 				if bytes.Contains(version.Envelope.SealedBytes, []byte(marker)) {
 					t.Fatal("encrypted current payload must not persist a plaintext synthetic marker")
 				}
@@ -210,7 +210,7 @@ func TestRuntimeCompositeOwnerForeignKeysRejectForeignOrganization(t *testing.T)
 				{f.OtherOwner, foreign, "SYNTHETIC_RUNTIME_FOREIGN_OWNER"},
 			} {
 				view, err := f.Service.Read(ctx, f.Request(entry.credential), entry.result.ID, "2026-01-01", true)
-				if err != nil || view.Revision != "1" || view.Profile == nil || view.Profile.DisplayName != entry.marker {
+				if err != nil || view.Revision != "1" || view.Profile == nil || view.Profile.LocalName != entry.marker {
 					t.Fatalf("each authorized owner must still decrypt their original profile: %v", err)
 				}
 			}
@@ -268,7 +268,7 @@ func TestRuntimeHeldAuthorizationWriterReturnsSafeBusyBeforeCallback(t *testing.
 				t.Fatal("held writer rollback failed:", err)
 			}
 			runtimeUnchanged(t, before, runtimeFacts(t, ctx, f.Repo))
-			profile := organization.Profile{DisplayName: "SYNTHETIC_RUNTIME_AFTER_BUSY"}
+			profile := organization.Profile{LocalName: "SYNTHETIC_RUNTIME_AFTER_BUSY"}
 			updated, err := f.Service.Update(ctx, f.Request(f.Owner), created.ID, organization.UpdateCommand{
 				ExpectedRevision: "1", Profile: profile, EditReason: "SYNTHETIC_RUNTIME_LOCK_RELEASED",
 			})
@@ -286,7 +286,7 @@ func TestRuntimeHeldAuthorizationWriterReturnsSafeBusyBeforeCallback(t *testing.
 func runtimeCreate(t *testing.T, ctx context.Context, f *testsupport.Fixture, credential testsupport.Credential, org, marker string) organization.Result {
 	t.Helper()
 	result, err := f.Service.Create(ctx, f.Request(credential), org, organization.CreateCommand{
-		Profile: organization.Profile{DisplayName: marker}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"},
+		Profile: organization.Profile{LocalName: marker}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"},
 	})
 	if err != nil || !value.ValidID(result.ID) || result.Revision != "1" {
 		t.Fatalf("real authorized synthetic employee creation failed: %v", err)

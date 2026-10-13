@@ -17,7 +17,7 @@ import (
 
 const profileLimit = 16 * 1024
 
-var syntheticProfile = []byte(`{"display_name":"Synthetic employee","profile_summary":"SYNTHETIC-PII-ONLY"}`)
+var syntheticProfile = []byte(`{"local_name":"合成员工","english_name":"Synthetic employee","profile_summary":"SYNTHETIC-PII-ONLY"}`)
 
 func profileContext() sensitive.Context {
 	return sensitive.Context{
@@ -26,7 +26,7 @@ func profileContext() sensitive.Context {
 		RecordID:   "cccccccc-3333-4333-8333-333333333333",
 		VersionID:  "dddddddd-4444-4444-8444-444444444444",
 		ObjectKind: "employee_profile", Purpose: "pii",
-		SchemaType: "pii.profile.v1", SchemaVersion: 1,
+		SchemaType: "pii.profile.v2", SchemaVersion: 1,
 	}
 }
 

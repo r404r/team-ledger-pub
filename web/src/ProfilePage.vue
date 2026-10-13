@@ -12,7 +12,8 @@ type Session = {
 }
 
 type Profile = {
-  display_name: string
+  local_name?: string
+  english_name?: string
   work_contact?: { email?: string; phone?: string }
   profile_summary?: string
 }
@@ -68,7 +69,8 @@ const phase = ref<'idle' | 'loading' | 'saving' | 'verifying'>('idle')
 const errorMessage = ref<string | null>(null)
 const notice = ref<string | null>(null)
 const form = reactive({
-  displayName: '',
+  localName: '',
+  englishName: '',
   email: '',
   phone: '',
   summary: '',
@@ -109,7 +111,8 @@ function validDate(value: string) {
 function clearSensitive() {
   details.value = null
   editing.value = false
-  form.displayName = ''
+  form.localName = ''
+  form.englishName = ''
   form.email = ''
   form.phone = ''
   form.summary = ''
@@ -194,7 +197,9 @@ async function readEmployee(id: string, operation: Operation) {
     if (typeof next.profile_revision !== 'string' || !revisionPattern.test(next.profile_revision)) throw new ApiFailure(503)
     const profile = next.profile
     if (!hasCapabilities(session.value, ['pii.read']) || !profile ||
-        typeof profile.display_name !== 'string' ||
+        (profile.local_name !== undefined && typeof profile.local_name !== 'string') ||
+        (profile.english_name !== undefined && typeof profile.english_name !== 'string') ||
+        (!profile.local_name && !profile.english_name) ||
         (profile.profile_summary !== undefined && typeof profile.profile_summary !== 'string') ||
         (profile.work_contact !== undefined && (!profile.work_contact ||
           (profile.work_contact.email !== undefined && typeof profile.work_contact.email !== 'string') ||
@@ -270,7 +275,8 @@ async function refresh(updateUrl = true) {
 function beginEdit() {
   if (busy.value || !canEdit.value || !details.value?.profile) return
   const profile = details.value.profile
-  form.displayName = profile.display_name
+  form.localName = profile.local_name ?? ''
+  form.englishName = profile.english_name ?? ''
   form.email = profile.work_contact?.email ?? ''
   form.phone = profile.work_contact?.phone ?? ''
   form.summary = profile.profile_summary ?? ''
@@ -285,7 +291,7 @@ async function save() {
   if (busy.value || !session.value || routeKind.value === 'away') return
   const creating = routeKind.value === 'create'
   if ((creating && !canCreate.value) || (!creating && (!editing.value || !canEdit.value))) return
-  if (!validDate(asOf.value) || !form.displayName.trim() ||
+  if (!validDate(asOf.value) || (!form.localName.trim() && !form.englishName.trim()) ||
       (creating && (!validDate(form.validFrom) ||
         (form.validTo !== '' && (!validDate(form.validTo) || form.validTo <= form.validFrom)))) ||
       (!creating && !form.editReason.trim())) {
@@ -301,7 +307,9 @@ async function save() {
     if (!sameSession(originalSession, current) ||
         (creating ? !canCreate.value : !canEdit.value)) throw new ApiFailure(403)
 
-    const profile: Profile = { display_name: form.displayName }
+    const profile: Profile = {}
+    if (form.localName !== '') profile.local_name = form.localName
+    if (form.englishName !== '') profile.english_name = form.englishName
     if (form.email !== '' || form.phone !== '') {
       profile.work_contact = {}
       if (form.email !== '') profile.work_contact.email = form.email
@@ -436,8 +444,10 @@ onBeforeUnmount(() => {
           <dd>{{ details.lifecycle.valid_to ?? '未结束' }}</dd>
         </dl>
         <dl v-if="details.profile">
-          <dt>姓名</dt>
-          <dd>{{ details.profile.display_name }}</dd>
+          <dt>本地姓名</dt>
+          <dd>{{ details.profile.local_name || '未填写' }}</dd>
+          <dt>英文姓名</dt>
+          <dd>{{ details.profile.english_name || '未填写' }}</dd>
           <template v-if="details.profile.work_contact?.email">
             <dt>业务邮箱</dt>
             <dd>{{ details.profile.work_contact.email }}</dd>
@@ -480,8 +490,11 @@ onBeforeUnmount(() => {
       <form v-if="session && ((routeKind === 'create' && canCreate) || editing)" @submit.prevent="save">
         <fieldset :disabled="busy">
           <legend>{{ routeKind === 'create' ? '创建人员' : '完整更正个人资料' }}</legend>
-          <label for="profile-display-name">姓名（display_name）</label>
-          <input id="profile-display-name" v-model="form.displayName" name="display_name" required autocomplete="off" />
+          <label for="profile-local-name">本地姓名（local_name）</label>
+          <input id="profile-local-name" v-model="form.localName" name="local_name" autocomplete="off" />
+
+          <label for="profile-english-name">英文姓名（english_name）</label>
+          <input id="profile-english-name" v-model="form.englishName" name="english_name" autocomplete="off" />
 
           <label for="profile-email">业务邮箱（email，可清空）</label>
           <input id="profile-email" v-model="form.email" name="email" type="email" autocomplete="off" />

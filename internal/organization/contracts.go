@@ -12,11 +12,7 @@ type Contact struct {
 	Email string `json:"email,omitempty"`
 	Phone string `json:"phone,omitempty"`
 }
-type Profile struct {
-	DisplayName    string   `json:"display_name"`
-	WorkContact    *Contact `json:"work_contact,omitempty"`
-	ProfileSummary string   `json:"profile_summary,omitempty"`
-}
+type Profile = WorkforceProfile
 type Lifecycle struct {
 	ValidFrom string  `json:"valid_from"`
 	ValidTo   *string `json:"valid_to"`

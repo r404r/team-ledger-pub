@@ -28,7 +28,7 @@ func TestAuthLogoutRevokesCurrentCookieAndSensitiveAccess(t *testing.T) {
 			path := "/api/v1/employees/" + made.ID + "?as_of=2026-10-11&include_profile=true"
 			var before organization.View
 			apiSend(t, f, apiRequest(t, f, f.Owner, "GET", path, "", ""), http.StatusOK, &before)
-			if before.Profile == nil || before.Profile.DisplayName != "SYNTHETIC_API_PROFILE" {
+			if before.Profile == nil || before.Profile.LocalName != "SYNTHETIC_API_PROFILE" {
 				t.Fatal("authorized persisted profile must be readable before logout")
 			}
 			apiSend(t, f, apiRequest(t, f, f.Owner, "POST", "/api/v1/auth/logout", "{}", ""), http.StatusNoContent, nil)
@@ -66,7 +66,7 @@ func TestAuthLogoutRejectsUntrustedTransportWithoutRevocation(t *testing.T) {
 					apiSend(t, f, req, tc.status, nil)
 					var persisted organization.View
 					apiSend(t, f, apiRequest(t, f, f.Owner, "GET", "/api/v1/employees/"+made.ID+"?as_of=2026-10-11&include_profile=true", "", ""), 200, &persisted)
-					if persisted.Profile == nil || persisted.Profile.DisplayName != "SYNTHETIC_API_PROFILE" {
+					if persisted.Profile == nil || persisted.Profile.LocalName != "SYNTHETIC_API_PROFILE" {
 						t.Fatal("untrusted logout revoked or corrupted the authorized persisted profile")
 					}
 				})

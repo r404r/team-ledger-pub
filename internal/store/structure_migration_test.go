@@ -33,8 +33,8 @@ func TestStructureV5ActualV4PreservesEncryptedHistoryApprovalReceiptSessionAndNa
 		t.Run(backend, func(t *testing.T) {
 			f := migrationV1Fixture(t, backend)
 			ctx := context.Background()
-			employee := migrationV1Profile(t, f, organization.Profile{DisplayName: "SYNTHETIC_V4_ORIGINAL"}, "")
-			migrationV1Profile(t, f, organization.Profile{DisplayName: "SYNTHETIC_V4_CURRENT"}, employee.ID)
+			employee := migrationV1Profile(t, f, organization.Profile{LocalName: "SYNTHETIC_V4_ORIGINAL"}, "")
+			migrationV1Profile(t, f, organization.Profile{LocalName: "SYNTHETIC_V4_CURRENT"}, employee.ID)
 			for _, v := range []int{2, 3, 4} {
 				migrationInstallVersion(t, f.Repo, v)
 			}
@@ -80,7 +80,7 @@ func TestStructureV5ActualV4PreservesEncryptedHistoryApprovalReceiptSessionAndNa
 				}
 			}
 			view, err := f.Service.Read(ctx, f.Request(f.Owner), employee.ID, "2026-01-01", true)
-			if err != nil || view.Profile == nil || view.Profile.DisplayName != "SYNTHETIC_V4_CURRENT" || view.Revision != "2" {
+			if err != nil || view.Profile == nil || view.Profile.LocalName != "SYNTHETIC_V4_CURRENT" || view.Revision != "2" {
 				t.Fatal("old envelope AAD, head and current approved release must survive", err)
 			}
 			afterRelease := structureOriginalFacts(t, f.Repo)
@@ -101,7 +101,7 @@ func TestStructureV5InterruptedAuthorizationCutoverRestoresExactV4(t *testing.T)
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			f := migrationV1Fixture(t, backend)
-			migrationV1Profile(t, f, organization.Profile{DisplayName: "SYNTHETIC_V4_ROLLBACK"}, "")
+			migrationV1Profile(t, f, organization.Profile{LocalName: "SYNTHETIC_V4_ROLLBACK"}, "")
 			for _, v := range []int{2, 3, 4} {
 				migrationInstallVersion(t, f.Repo, v)
 			}
@@ -138,12 +138,12 @@ type structureSchemaFixture struct {
 func structureSchemaSeed(t *testing.T, backend string) structureSchemaFixture {
 	t.Helper()
 	f := migrationV1Fixture(t, backend)
-	employee := migrationV1Profile(t, f, organization.Profile{DisplayName: "SYNTHETIC_SCHEMA_EMPLOYEE"}, "").ID
-	manager := migrationV1Profile(t, f, organization.Profile{DisplayName: "SYNTHETIC_SCHEMA_MANAGER"}, "").ID
+	employee := migrationV1Profile(t, f, organization.Profile{LocalName: "SYNTHETIC_SCHEMA_EMPLOYEE"}, "").ID
+	manager := migrationV1Profile(t, f, organization.Profile{LocalName: "SYNTHETIC_SCHEMA_MANAGER"}, "").ID
 	if err := f.Repo.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	foreignResult, err := f.Service.Create(context.Background(), f.Request(f.OtherOwner), f.OtherOrgID, organization.CreateCommand{Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}, Profile: organization.Profile{DisplayName: "SYNTHETIC_FOREIGN_EMPLOYEE"}})
+	foreignResult, err := f.Service.Create(context.Background(), f.Request(f.OtherOwner), f.OtherOrgID, organization.CreateCommand{Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}, Profile: organization.Profile{LocalName: "SYNTHETIC_FOREIGN_EMPLOYEE"}})
 	if err != nil {
 		t.Fatal(err)
 	}

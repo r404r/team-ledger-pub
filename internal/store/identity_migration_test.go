@@ -51,8 +51,8 @@ func TestIdentityV3ActualV2UpgradePreservesEncryptedHistoryApprovalsReceiptsAndA
 		t.Run(backend, func(t *testing.T) {
 			f := migrationV1Fixture(t, backend)
 			ctx := context.Background()
-			first := migrationV1Profile(t, f, organization.Profile{DisplayName: "SYNTHETIC_V2_ORIGINAL"}, "")
-			migrationV1Profile(t, f, organization.Profile{DisplayName: "SYNTHETIC_V2_CURRENT"}, first.ID)
+			first := migrationV1Profile(t, f, organization.Profile{LocalName: "SYNTHETIC_V2_ORIGINAL"}, "")
+			migrationV1Profile(t, f, organization.Profile{LocalName: "SYNTHETIC_V2_CURRENT"}, first.ID)
 			migrationInstallVersion(t, f.Repo, 2)
 			approver, target := grantSchemaSubject(t, f, f.OrgID), grantSchemaSubject(t, f, f.OrgID)
 			authority := grantSchemaAuthority(f, f.OrgID, f.Owner.SubjectID, approver)
@@ -88,7 +88,7 @@ func TestIdentityV3ActualV2UpgradePreservesEncryptedHistoryApprovalsReceiptsAndA
 			migrationOriginalUnchanged(t, before, after)
 			migrationLedger(t, f.Repo)
 			view, err := f.Service.Read(ctx, f.Request(f.Owner), first.ID, "2026-01-01", true)
-			if err != nil || view.Profile == nil || view.Profile.DisplayName != "SYNTHETIC_V2_CURRENT" {
+			if err != nil || view.Profile == nil || view.Profile.LocalName != "SYNTHETIC_V2_CURRENT" {
 				t.Fatal("v3 must retain decryptable current historical projection:", err)
 			}
 			for _, table := range []string{"subject_identity", "session_auth", "oidc_transaction"} {
@@ -103,7 +103,7 @@ func TestIdentityV3InterruptedUpgradePreservesExactV2(t *testing.T) {
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			f := migrationV1Fixture(t, backend)
-			migrationV1Profile(t, f, organization.Profile{DisplayName: "SYNTHETIC_IDENTITY_INTERRUPTION"}, "")
+			migrationV1Profile(t, f, organization.Profile{LocalName: "SYNTHETIC_IDENTITY_INTERRUPTION"}, "")
 			migrationInstallVersion(t, f.Repo, 2)
 			before := runtimeFacts(t, context.Background(), f.Repo)
 			ctx, cancel := context.WithCancel(context.Background())

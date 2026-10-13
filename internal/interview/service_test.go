@@ -30,7 +30,7 @@ func interviewBackends(t *testing.T, run func(*testing.T, *testsupport.Fixture))
 }
 func interviewEmployee(t *testing.T, f *testsupport.Fixture) string {
 	t.Helper()
-	r, err := f.Service.Create(context.Background(), f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{DisplayName: "SYNTHETIC_INTERVIEW_EMPLOYEE"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
+	r, err := f.Service.Create(context.Background(), f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{LocalName: "SYNTHETIC_INTERVIEW_EMPLOYEE"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
 	if err != nil {
 		t.Fatal("real employee setup:", err)
 	}

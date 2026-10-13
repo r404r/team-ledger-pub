@@ -82,7 +82,7 @@ func TestConcurrentCorrectionsFromSamePreparedRevisionHaveOneWinner(t *testing.T
 		done := make(chan outcome, 2)
 		for _, name := range []string{"SYNTHETIC_CONCURRENT_A", "SYNTHETIC_CONCURRENT_B"} {
 			go func() {
-				r, err := f.Service.Update(ctx, f.Request(f.Owner), id, organization.UpdateCommand{ExpectedRevision: "1", Profile: organization.Profile{DisplayName: name}, EditReason: "synthetic concurrent correction"})
+				r, err := f.Service.Update(ctx, f.Request(f.Owner), id, organization.UpdateCommand{ExpectedRevision: "1", Profile: organization.Profile{LocalName: name}, EditReason: "synthetic concurrent correction"})
 				done <- outcome{r, err}
 			}()
 		}
@@ -111,7 +111,7 @@ func TestConcurrentCorrectionsFromSamePreparedRevisionHaveOneWinner(t *testing.T
 			}
 		}
 		v := read(t, f, id)
-		if success != 1 || conflict != 1 || v.Revision != "2" || v.Profile == nil || (v.Profile.DisplayName != "SYNTHETIC_CONCURRENT_A" && v.Profile.DisplayName != "SYNTHETIC_CONCURRENT_B") || f.Count(t, "employee_profile_version") != 2 {
+		if success != 1 || conflict != 1 || v.Revision != "2" || v.Profile == nil || (v.Profile.LocalName != "SYNTHETIC_CONCURRENT_A" && v.Profile.LocalName != "SYNTHETIC_CONCURRENT_B") || f.Count(t, "employee_profile_version") != 2 {
 			t.Fatal("same prepared revision must commit one replacement and retain immutable original")
 		}
 	})

@@ -4,7 +4,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 
 const emit = defineEmits<{ 'session-expired': [] }>()
 type Lifecycle = { valid_from: string; valid_to: string | null }
 type Session = { subject_id: string; org_id: string; auth_epoch: string; csrf_token: string; capabilities: string[] }
-type Profile = { display_name: string }
+type Profile = { local_name?: string; english_name?: string }
 type Relation = Lifecycle & { id: string; employee_id?: string; team_id?: string; parent_team_id?: string; manager_employee_id?: string; kind?: string; is_primary?: boolean; position?: { title: string; position_code?: string; description?: string } }
 type Employee = { id: string; org_id: string; lifecycle: Lifecycle; as_of: string; authorization_date: string; graph_revision?: string; profile_revision?: string; profile?: Profile; memberships?: Relation[]; positions?: Relation[]; reporting_lines?: Relation[] }
 type Snapshot = { as_of?: string; authorization_date: string; graph_revision: string; auth_epoch: string }
@@ -144,7 +144,7 @@ function validRelation(value: Relation) {
 }
 function validEmployee(value: Employee, include: boolean) {
   if (!value || !uuid.test(value.id) || value.org_id !== session.value?.org_id || value.as_of !== filters.asOf || !validDate(value.authorization_date) || !validLifecycle(value.lifecycle)) return false
-  if (value.profile && (!include || !has('pii.read') || typeof value.profile.display_name !== 'string' || !validRevision(value.profile_revision))) return false
+  if (value.profile && (!include || !has('pii.read') || typeof value.profile !== 'object' || (!value.profile.local_name && !value.profile.english_name) || (value.profile.local_name !== undefined && typeof value.profile.local_name !== 'string') || (value.profile.english_name !== undefined && typeof value.profile.english_name !== 'string') || !validRevision(value.profile_revision))) return false
   if (!value.profile) delete value.profile_revision
   for (const relations of [value.memberships, value.positions, value.reporting_lines]) if (relations !== undefined && (!Array.isArray(relations) || !relations.every(validRelation))) return false
   return !value.positions?.some((value) => value.position && (!include || !has('pii.read')))
@@ -156,7 +156,7 @@ async function loadTree(operation: Operation) {
   if (!validSnapshot(next) || next.org_id !== orgID.value || next.as_of !== filters.asOf || !Array.isArray(next.nodes) || !Array.isArray(next.edges) || !Array.isArray(next.employees) ||
       !next.nodes.every((node) => uuid.test(node.id) && typeof node.code === 'string' && validLifecycle(node.lifecycle) && (node.label === undefined || filters.labels && has('pii.read') && typeof node.label === 'string')) ||
       !next.edges.every((edge) => uuid.test(edge.id) && uuid.test(edge.child_team_id) && uuid.test(edge.parent_team_id) && validLifecycle(edge) && next.nodes.some((node) => node.id === edge.child_team_id) && next.nodes.some((node) => node.id === edge.parent_team_id)) ||
-      !next.employees.every((item) => uuid.test(item.id) && uuid.test(item.team_id) && (!item.profile || filters.labels && has('pii.read') && typeof item.profile.display_name === 'string'))) throw new ApiFailure(503)
+      !next.employees.every((item) => uuid.test(item.id) && uuid.test(item.team_id) && (!item.profile || filters.labels && has('pii.read') && Boolean(item.profile.local_name || item.profile.english_name)))) throw new ApiFailure(503)
   tree.value = next
 }
 function directoryQuery(): DirectoryQuery {
@@ -394,7 +394,7 @@ onBeforeUnmount(() => { alive = false; window.removeEventListener('popstate', re
       <p v-if="!tree.nodes.length">当前范围无可见团队；不推测隐藏团队。</p>
       <ul aria-label="可见团队层级"><li v-for="{ node, depth } in treeOutline" :key="node.id" :style="{ marginInlineStart: `${depth * 1.5}rem` }"><strong>{{ node.code }}</strong> · {{ node.id }} <span v-if="node.label !== undefined">· {{ node.label }}</span> · [{{ node.lifecycle.valid_from }}, {{ node.lifecycle.valid_to ?? '∞' }})
         <ul><li v-for="edge in tree.edges.filter(edge => edge.child_team_id === node.id)" :key="edge.id">父团队 {{ edge.parent_team_id }} · 原关系 {{ edge.id }} · [{{ edge.valid_from }}, {{ edge.valid_to ?? '∞' }}) <button v-if="canWrite" type="button" :disabled="busy || uncertain || Boolean(preview)" @click="addRow('team_parent', 'end', { ...edge, team_id: edge.child_team_id })">结束父团队关系</button><button v-if="canWrite" type="button" :disabled="busy || uncertain || Boolean(preview)" @click="addRow('team_parent', 'replace', { ...edge, team_id: edge.child_team_id })">更正父团队关系</button></li></ul>
-        <ul><li v-for="item in tree.employees.filter(item => item.team_id === node.id)" :key="item.id"><a :href="dated(`/employees/${item.id}`)" @click="navigate($event, dated(`/employees/${item.id}`))">员工 {{ item.id }}</a><span v-if="item.profile"> · {{ item.profile.display_name }}</span></li></ul>
+        <ul><li v-for="item in tree.employees.filter(item => item.team_id === node.id)" :key="item.id"><a :href="dated(`/employees/${item.id}`)" @click="navigate($event, dated(`/employees/${item.id}`))">员工 {{ item.id }}</a><span v-if="item.profile"> · {{ item.profile.local_name || item.profile.english_name }}</span></li></ul>
       </li></ul>
       <p>以上只含独立获准节点与边。子团队不继承父团队权限；超出边界须收窄后重新查询，不静默截断。</p>
     </section>
@@ -403,7 +403,7 @@ onBeforeUnmount(() => { alive = false; window.removeEventListener('popstate', re
       <p v-if="directory.search_incomplete" role="status">有界候选扫描尚未完成；本页不是完整姓名结果。可继续扫描或收窄筛选，即使本页无命中仍可能有下一页。</p>
       <p v-if="!directory.items.length">本页无获准匹配员工；不代表没有后续匹配或隐藏员工。</p>
       <article v-for="employee in directory.items" :key="employee.id">
-        <h3>{{ employee.profile?.display_name ?? employee.id }}</h3>
+        <h3>{{ employee.profile?.local_name || employee.profile?.english_name || employee.id }}</h3>
         <p>员工 {{ employee.id }} · [{{ employee.lifecycle.valid_from }}, {{ employee.lifecycle.valid_to ?? '∞' }})</p>
         <a :href="dated(`/employees/${employee.id}`)" @click="navigate($event, dated(`/employees/${employee.id}`))">资料与任职</a>
         <a :href="`/employees/${employee.id}/organization-history`" @click="navigate($event, `/employees/${employee.id}/organization-history`)">组织历史</a>

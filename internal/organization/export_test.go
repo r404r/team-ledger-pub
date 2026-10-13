@@ -37,7 +37,7 @@ func TestPIIExportRequiresIndependentCurrentGrantAndExactRevisionAtRelease(t *te
 		t.Run(backend, func(t *testing.T) {
 			f := testsupport.NewHarness(t, backend)
 			ctx := context.Background()
-			created, err := f.Service.Create(ctx, f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{DisplayName: "SYNTHETIC_EXPORT_PROFILE", WorkContact: &organization.Contact{Email: "only@example.test"}}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
+			created, err := f.Service.Create(ctx, f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{LocalName: "SYNTHETIC_EXPORT_PROFILE", WorkContact: &organization.Contact{Email: "only@example.test"}}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
 			if err != nil {
 				t.Fatal(err)
 			}

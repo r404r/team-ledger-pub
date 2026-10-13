@@ -18,7 +18,7 @@ func TestKeyRewrapFencesWritesAndCASChangesOnlyWrapper(t *testing.T) {
 		t.Run(backend, func(t *testing.T) {
 			f := testsupport.NewHarness(t, backend)
 			ctx := context.Background()
-			if _, err := f.Service.Create(ctx, f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{DisplayName: "REWRAP_SOURCE"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}}); err != nil {
+			if _, err := f.Service.Create(ctx, f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{LocalName: "REWRAP_SOURCE"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}}); err != nil {
 				t.Fatal(err)
 			}
 			plan := maintenance.Target{OrgID: f.OrgID, Domain: "pii", KEKID: "synthetic-pii-key-next", Version: 2, ManifestDigest: bytes.Repeat([]byte{7}, 32)}
@@ -26,7 +26,7 @@ func TestKeyRewrapFencesWritesAndCASChangesOnlyWrapper(t *testing.T) {
 				t.Fatal(err)
 			}
 			before := f.Count(t, "employee")
-			if _, err := f.Service.Create(ctx, f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{DisplayName: "MUST_NOT_COMMIT"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}}); err == nil || f.Count(t, "employee") != before {
+			if _, err := f.Service.Create(ctx, f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{LocalName: "MUST_NOT_COMMIT"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}}); err == nil || f.Count(t, "employee") != before {
 				t.Fatal("maintenance fence admitted a sensitive write", err)
 			}
 			renewed := plan
@@ -82,7 +82,7 @@ func TestKeyRewrapFencesWritesAndCASChangesOnlyWrapper(t *testing.T) {
 				t.Fatal(err)
 			}
 			before = f.Count(t, "employee")
-			if _, err = f.Service.Create(ctx, f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{DisplayName: "OLD_WRAPPER_AFTER_ROTATION"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}}); err == nil || f.Count(t, "employee") != before {
+			if _, err = f.Service.Create(ctx, f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{LocalName: "OLD_WRAPPER_AFTER_ROTATION"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}}); err == nil || f.Count(t, "employee") != before {
 				t.Fatal("completed rotation admitted an old wrapper", err)
 			}
 			second := maintenance.Target{OrgID: f.OrgID, Domain: "pii", KEKID: "synthetic-pii-key-final", Version: 3, ManifestDigest: bytes.Repeat([]byte{12}, 32)}

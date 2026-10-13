@@ -130,7 +130,7 @@ func TestR2AtomicTransferProjectsDirectoryDetailAndHistoryWithoutMetadataPII(t *
 				var page organization.DirectoryPage
 				query := structureJSON(t, map[string]any{"as_of": at.date, "team_id": at.team, "q": "SYNTHETIC_API_PROFILE", "include_profile": true, "limit": 1})
 				apiSend(t, f, apiRequest(t, f, f.Owner, "POST", base+"/employees/query", query, ""), 200, &page)
-				if len(page.Items) != 1 || page.Items[0].ID != employee.ID || page.Items[0].Profile == nil || page.Items[0].Profile.DisplayName != "SYNTHETIC_API_PROFILE" {
+				if len(page.Items) != 1 || page.Items[0].ID != employee.ID || page.Items[0].Profile == nil || page.Items[0].Profile.LocalName != "SYNTHETIC_API_PROFILE" {
 					t.Fatal("body-only authorized directory must project the persisted profile and dated membership without requiring a mutation key")
 				}
 				var metadata organization.View

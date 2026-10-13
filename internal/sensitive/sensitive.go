@@ -252,7 +252,7 @@ func canonicalAAD(binding Context) ([]byte, error) {
 	purpose := "pii"
 	switch binding.ObjectKind {
 	case "employee_profile":
-		if binding.SchemaType != "pii.profile.v1" {
+		if binding.SchemaType != "pii.profile.v2" {
 			return nil, ErrInvalid
 		}
 		employeeOwned = true

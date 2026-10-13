@@ -19,7 +19,7 @@ func TestORG05CreateProtectedEmployee(t *testing.T) {
 				t.Fatal("real authenticated, explicitly authorized fixture is required")
 			}
 			result, err := f.Service.Create(context.Background(), request, f.OrgID, organization.CreateCommand{
-				Profile:   organization.Profile{DisplayName: "SYNTHETIC_PROFILE_CREATE"},
+				Profile:   organization.Profile{LocalName: "SYNTHETIC_PROFILE_CREATE"},
 				Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"},
 			})
 			if err != nil {

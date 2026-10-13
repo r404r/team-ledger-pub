@@ -112,7 +112,7 @@ func TestOIDCSignedLoginConsumerRotationLogoutAndRestart(t *testing.T) {
 		t.Run(backend, func(t *testing.T) {
 			h := newIdentityHarness(t, backend)
 			ctx := context.Background()
-			created, err := h.f.Service.Create(ctx, h.f.Request(h.f.Owner), h.f.OrgID, organization.CreateCommand{Profile: organization.Profile{DisplayName: "SYNTHETIC_OIDC_PRIVATE_PROFILE"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
+			created, err := h.f.Service.Create(ctx, h.f.Request(h.f.Owner), h.f.OrgID, organization.CreateCommand{Profile: organization.Profile{LocalName: "SYNTHETIC_OIDC_PRIVATE_PROFILE"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -122,7 +122,7 @@ func TestOIDCSignedLoginConsumerRotationLogoutAndRestart(t *testing.T) {
 			hash := cookieHash(t, result.SessionCookie)
 			consumerSession(t, h, hash)
 			view, err := h.f.Service.Read(ctx, organization.Request{TokenHash: hash, RequestID: value.NewID(), Purpose: "organization_management"}, created.ID, "2026-01-01", true)
-			if err != nil || view.Profile == nil || view.Profile.DisplayName != "SYNTHETIC_OIDC_PRIVATE_PROFILE" {
+			if err != nil || view.Profile == nil || view.Profile.LocalName != "SYNTHETIC_OIDC_PRIVATE_PROFILE" {
 				t.Fatal("OIDC session must reach existing encrypted profile consumer:", err)
 			}
 			_, err = h.f.Service.Session(ctx, h.f.Request(h.f.Owner), "")
@@ -568,7 +568,7 @@ func TestIdentityLogoutLinearizesAgainstInFlightSensitiveRelease(t *testing.T) {
 		t.Run(backend, func(t *testing.T) {
 			h := newIdentityHarness(t, backend)
 			ctx := context.Background()
-			created, err := h.f.Service.Create(ctx, h.f.Request(h.f.Owner), h.f.OrgID, organization.CreateCommand{Profile: organization.Profile{DisplayName: "SYNTHETIC_INFLIGHT_IDENTITY_PII"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
+			created, err := h.f.Service.Create(ctx, h.f.Request(h.f.Owner), h.f.OrgID, organization.CreateCommand{Profile: organization.Profile{LocalName: "SYNTHETIC_INFLIGHT_IDENTITY_PII"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
 			if err != nil {
 				t.Fatal(err)
 			}

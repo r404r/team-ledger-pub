@@ -76,7 +76,7 @@ func TestMaintenanceAuditV4PreservesV3HistoryWithoutInventingOperator(t *testing
 		t.Run(backend, func(t *testing.T) {
 			f := migrationV1Fixture(t, backend)
 			ctx := context.Background()
-			employee := migrationV1Profile(t, f, organization.Profile{DisplayName: "SYNTHETIC_V3_AUDIT_HISTORY"}, "")
+			employee := migrationV1Profile(t, f, organization.Profile{LocalName: "SYNTHETIC_V3_AUDIT_HISTORY"}, "")
 			migrationInstallVersion(t, f.Repo, 2)
 			migrationInstallVersion(t, f.Repo, 3)
 			digest := sha256.Sum256([]byte("synthetic-pre-v4-mapping"))
@@ -141,7 +141,7 @@ func TestMaintenanceAuditV4PreservesV3HistoryWithoutInventingOperator(t *testing
 				t.Fatal("historical ambiguous subject must be preserved but never promoted to a verified operator or guessed identity")
 			}
 			view, err := f.Service.Read(ctx, f.Request(f.Owner), employee.ID, "2026-01-01", true)
-			if err != nil || view.Profile == nil || view.Profile.DisplayName != "SYNTHETIC_V3_AUDIT_HISTORY" {
+			if err != nil || view.Profile == nil || view.Profile.LocalName != "SYNTHETIC_V3_AUDIT_HISTORY" {
 				t.Fatal("audit cutover must preserve authorized decryptable business facts:", err)
 			}
 		})

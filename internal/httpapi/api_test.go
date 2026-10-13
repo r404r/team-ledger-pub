@@ -54,7 +54,7 @@ func apiSend(t *testing.T, f *testsupport.Fixture, r *http.Request, status int, 
 	}
 }
 
-const createJSON = `{"profile":{"display_name":"SYNTHETIC_API_PROFILE"},"lifecycle":{"valid_from":"2026-01-01","valid_to":null}}`
+const createJSON = `{"profile":{"local_name":"SYNTHETIC_API_PROFILE","english_name":"Synthetic API Profile"},"lifecycle":{"valid_from":"2026-01-01","valid_to":null}}`
 
 func TestAPIProfileCreateReloadCorrectionAndSafeRejection(t *testing.T) {
 	for _, backend := range []string{"sqlite", "postgres"} {
@@ -71,19 +71,19 @@ func TestAPIProfileCreateReloadCorrectionAndSafeRejection(t *testing.T) {
 			get := "/api/v1/employees/" + made.ID + "?as_of=2026-10-11&include_profile=true"
 			var first organization.View
 			apiSend(t, f, apiRequest(t, f, f.Owner, "GET", get, "", ""), 200, &first)
-			if first.Profile == nil || first.Profile.DisplayName != "SYNTHETIC_API_PROFILE" || first.Revision != "1" {
+			if first.Profile == nil || first.Profile.LocalName != "SYNTHETIC_API_PROFILE" || first.Revision != "1" {
 				t.Fatal("HTTP reload must expose actual authorized saved profile")
 			}
 			var updated organization.Result
 			patch := "/api/v1/employees/" + made.ID + "/profile"
-			body := `{"expected_profile_revision":"1","profile":{"display_name":"SYNTHETIC_API_REPLACEMENT"},"edit_reason":"SYNTHETIC_API_PRIVATE_REASON"}`
+			body := `{"expected_profile_revision":"1","profile":{"local_name":"SYNTHETIC_API_REPLACEMENT","english_name":"Synthetic API Replacement"},"edit_reason":"SYNTHETIC_API_PRIVATE_REASON"}`
 			apiSend(t, f, apiRequest(t, f, f.Owner, "PATCH", patch, body, value.NewID()), 200, &updated)
 			if updated.Revision != "2" {
 				t.Fatal("HTTP correction must confirm revision2")
 			}
 			var after organization.View
 			apiSend(t, f, apiRequest(t, f, f.Owner, "GET", get, "", ""), 200, &after)
-			if after.Profile == nil || after.Profile.DisplayName != "SYNTHETIC_API_REPLACEMENT" {
+			if after.Profile == nil || after.Profile.LocalName != "SYNTHETIC_API_REPLACEMENT" {
 				t.Fatal("HTTP reload did not reflect committed correction")
 			}
 			apiSend(t, f, apiRequest(t, f, f.Owner, "PATCH", patch, body, value.NewID()), 409, nil)
@@ -116,14 +116,14 @@ func TestAPIRejectsFramingAndAmbiguousJSONWithoutWrite(t *testing.T) {
 				status     int
 				alter      func(*http.Request)
 			}{
-				{"unknown field", `{"profile":{"display_name":"synthetic","private_extra":"SYNTHETIC_UNKNOWN"},"lifecycle":{"valid_from":"2026-01-01"}}`, 422, nil},
-				{"duplicate field", `{"profile":{"display_name":"synthetic","display_name":"SYNTHETIC_DUPLICATE"},"lifecycle":{"valid_from":"2026-01-01"}}`, 422, nil},
-				{"noncanonical case", `{"Profile":{"display_name":"synthetic"},"lifecycle":{"valid_from":"2026-01-01"}}`, 422, nil},
-				{"case collision", `{"profile":{"display_name":"synthetic","Display_Name":"SYNTHETIC_CASE_OVERRIDE"},"lifecycle":{"valid_from":"2026-01-01"}}`, 422, nil},
-				{"invalid UTF8", "{\"profile\":{\"display_name\":\"" + string([]byte{0xff}) + "\"},\"lifecycle\":{\"valid_from\":\"2026-01-01\"}}", 422, nil},
+				{"unknown field", `{"profile":{"local_name":"synthetic","private_extra":"SYNTHETIC_UNKNOWN"},"lifecycle":{"valid_from":"2026-01-01"}}`, 422, nil},
+				{"duplicate field", `{"profile":{"local_name":"synthetic","local_name":"SYNTHETIC_DUPLICATE"},"lifecycle":{"valid_from":"2026-01-01"}}`, 422, nil},
+				{"noncanonical case", `{"Profile":{"local_name":"synthetic"},"lifecycle":{"valid_from":"2026-01-01"}}`, 422, nil},
+				{"case collision", `{"profile":{"local_name":"synthetic","Local_Name":"SYNTHETIC_CASE_OVERRIDE"},"lifecycle":{"valid_from":"2026-01-01"}}`, 422, nil},
+				{"invalid UTF8", "{\"profile\":{\"local_name\":\"" + string([]byte{0xff}) + "\"},\"lifecycle\":{\"valid_from\":\"2026-01-01\"}}", 422, nil},
 				{"unsupported media", createJSON, 415, func(r *http.Request) { r.Header.Set("Content-Type", "text/plain") }},
-				{"oversized body", `{"profile":{"display_name":"synthetic","profile_summary":"` + strings.Repeat("x", 257<<10) + `"},"lifecycle":{"valid_from":"2026-01-01"}}`, 413, nil},
-				{"profile payload bound", `{"profile":{"display_name":"synthetic","profile_summary":"` + strings.Repeat("x", 17<<10) + `"},"lifecycle":{"valid_from":"2026-01-01"}}`, 422, nil},
+				{"oversized body", `{"profile":{"local_name":"synthetic","profile_summary":"` + strings.Repeat("x", 257<<10) + `"},"lifecycle":{"valid_from":"2026-01-01"}}`, 413, nil},
+				{"profile payload bound", `{"profile":{"local_name":"synthetic","profile_summary":"` + strings.Repeat("x", 17<<10) + `"},"lifecycle":{"valid_from":"2026-01-01"}}`, 422, nil},
 				{"missing CSRF", createJSON, 403, func(r *http.Request) { r.Header.Del("X-CSRF-Token") }},
 				{"cross Origin", createJSON, 403, func(r *http.Request) { r.Header.Set("Origin", "https://untrusted.invalid") }},
 				{"cross site", createJSON, 403, func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "cross-site") }},
@@ -206,13 +206,13 @@ func TestEmployeeScopedSessionCanReadAndCorrectOnlyGrantedEmployee(t *testing.T)
 			get := "/api/v1/employees/" + first.ID + "?as_of=2026-10-11&include_profile=true"
 			var view organization.View
 			apiSend(t, f, apiRequest(t, f, f.Owner, "GET", get, "", ""), 200, &view)
-			if view.Profile == nil || view.Profile.DisplayName != "SYNTHETIC_API_PROFILE" {
+			if view.Profile == nil || view.Profile.LocalName != "SYNTHETIC_API_PROFILE" {
 				t.Fatal("employee scope cannot read approved profile")
 			}
-			body := `{"expected_profile_revision":"1","profile":{"display_name":"SYNTHETIC_SCOPED_CORRECTION"},"edit_reason":"synthetic scoped correction"}`
+			body := `{"expected_profile_revision":"1","profile":{"local_name":"SYNTHETIC_SCOPED_CORRECTION"},"edit_reason":"synthetic scoped correction"}`
 			apiSend(t, f, apiRequest(t, f, f.Owner, "PATCH", "/api/v1/employees/"+first.ID+"/profile", body, value.NewID()), 200, nil)
 			apiSend(t, f, apiRequest(t, f, f.Owner, "GET", get, "", ""), 200, &view)
-			if view.Revision != "2" || view.Profile.DisplayName != "SYNTHETIC_SCOPED_CORRECTION" {
+			if view.Revision != "2" || view.Profile.LocalName != "SYNTHETIC_SCOPED_CORRECTION" {
 				t.Fatal("employee-scoped correction did not persist")
 			}
 			before := f.KMS.Calls.Load()
@@ -245,7 +245,7 @@ func TestDeniedAuditFailurePreservesRefusalAndReportsSafeCorrelation(t *testing.
 			for _, tc := range []struct{ name, method, path, body string }{
 				{"create", "POST", createPath, createJSON},
 				{"read", "GET", "/api/v1/employees/" + made.ID + "?as_of=2026-10-11&include_profile=true", ""},
-				{"correct", "PATCH", "/api/v1/employees/" + made.ID + "/profile", `{"expected_profile_revision":"1","profile":{"display_name":"SYNTHETIC_DENIED_CHANGE"},"edit_reason":"synthetic denied"}`},
+				{"correct", "PATCH", "/api/v1/employees/" + made.ID + "/profile", `{"expected_profile_revision":"1","profile":{"local_name":"SYNTHETIC_DENIED_CHANGE"},"edit_reason":"synthetic denied"}`},
 				{"context_summary", "GET", "/api/v1/session?employee_id=" + made.ID, ""},
 			} {
 				t.Run(tc.name, func(t *testing.T) {

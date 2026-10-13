@@ -22,7 +22,7 @@ func backends(t *testing.T, run func(*testing.T, *testsupport.Fixture)) {
 }
 func create(t *testing.T, f *testsupport.Fixture, name string) organization.Result {
 	t.Helper()
-	result, err := f.Service.Create(context.Background(), f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{DisplayName: name, WorkContact: &organization.Contact{Email: "synthetic@example.invalid"}}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
+	result, err := f.Service.Create(context.Background(), f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{LocalName: name, WorkContact: &organization.Contact{Email: "synthetic@example.invalid"}}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
 	if err != nil {
 		t.Fatal("authorized setup creation failed:", err)
 	}
@@ -42,7 +42,7 @@ func TestProfileImmutableVersionsCASAndIdempotency(t *testing.T) {
 		ctx := context.Background()
 		made := create(t, f, "SYNTHETIC_PROFILE_OLD")
 		before := read(t, f, made.ID)
-		if before.Profile == nil || before.Profile.DisplayName != "SYNTHETIC_PROFILE_OLD" || before.Revision != "1" {
+		if before.Profile == nil || before.Profile.LocalName != "SYNTHETIC_PROFILE_OLD" || before.Revision != "1" {
 			t.Fatal("created profile must reload exact saved fields and revision")
 		}
 		oldEmployee, err := f.Repo.Employee(ctx, made.ID)
@@ -54,13 +54,13 @@ func TestProfileImmutableVersionsCASAndIdempotency(t *testing.T) {
 			t.Fatal(err)
 		}
 		request := f.Request(f.Owner)
-		command := organization.UpdateCommand{ExpectedRevision: "1", Profile: organization.Profile{DisplayName: "SYNTHETIC_PROFILE_NEW"}, EditReason: "SYNTHETIC_PRIVATE_EDIT_REASON"}
+		command := organization.UpdateCommand{ExpectedRevision: "1", Profile: organization.Profile{LocalName: "SYNTHETIC_PROFILE_NEW"}, EditReason: "SYNTHETIC_PRIVATE_EDIT_REASON"}
 		updated, err := f.Service.Update(ctx, request, made.ID, command)
 		if err != nil || updated.Revision != "2" {
 			t.Fatal("complete authorized replacement must commit revision2")
 		}
 		after := read(t, f, made.ID)
-		if after.Profile == nil || after.Profile.DisplayName != command.Profile.DisplayName || after.Profile.WorkContact != nil || after.Revision != "2" {
+		if after.Profile == nil || after.Profile.LocalName != command.Profile.LocalName || after.Profile.WorkContact != nil || after.Revision != "2" {
 			t.Fatal("complete replacement must reload new fields and clear omitted contact")
 		}
 		current, err := f.Repo.Employee(ctx, made.ID)
@@ -81,7 +81,7 @@ func TestProfileImmutableVersionsCASAndIdempotency(t *testing.T) {
 		}
 		defer clear(plain)
 		var old organization.ProfilePayload
-		if json.Unmarshal(plain, &old) != nil || old.Profile.DisplayName != "SYNTHETIC_PROFILE_OLD" {
+		if json.Unmarshal(plain, &old) != nil || old.Profile.LocalName != "SYNTHETIC_PROFILE_OLD" {
 			t.Fatal("original history must retain old profile, not current replacement")
 		}
 		versions, audits := f.Count(t, "employee_profile_version"), f.Count(t, "audit_event")
@@ -94,14 +94,14 @@ func TestProfileImmutableVersionsCASAndIdempotency(t *testing.T) {
 			t.Fatal("confirmed replay must not create another version/audit fact or touch KMS")
 		}
 		changed := command
-		changed.Profile.DisplayName = "SYNTHETIC_CONFLICTING_REPLAY"
+		changed.Profile.LocalName = "SYNTHETIC_CONFLICTING_REPLAY"
 		if _, err = f.Service.Update(ctx, request, made.ID, changed); !errors.Is(err, fault.Mismatch) {
 			t.Fatal("same key with different command must conflict")
 		}
 		if _, err = f.Service.Update(ctx, f.Request(f.Owner), made.ID, command); !errors.Is(err, fault.Conflict) {
 			t.Fatal("independent command with stale revision must not overwrite")
 		}
-		if read(t, f, made.ID).Profile.DisplayName != "SYNTHETIC_PROFILE_NEW" || f.Count(t, "employee_profile_version") != 2 {
+		if read(t, f, made.ID).Profile.LocalName != "SYNTHETIC_PROFILE_NEW" || f.Count(t, "employee_profile_version") != 2 {
 			t.Fatal("conflicts changed accepted profile/history")
 		}
 	})
@@ -111,7 +111,7 @@ func TestCreateReplayDoesNotCreateAnotherEmployee(t *testing.T) {
 	backends(t, func(t *testing.T, f *testsupport.Fixture) {
 		ctx := context.Background()
 		request := f.Request(f.Owner)
-		cmd := organization.CreateCommand{Profile: organization.Profile{DisplayName: "SYNTHETIC_CREATE_REPLAY"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}}
+		cmd := organization.CreateCommand{Profile: organization.Profile{LocalName: "SYNTHETIC_CREATE_REPLAY"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}}
 		first, err := f.Service.Create(ctx, request, f.OrgID, cmd)
 		if err != nil {
 			t.Fatal(err)
@@ -121,7 +121,7 @@ func TestCreateReplayDoesNotCreateAnotherEmployee(t *testing.T) {
 		if err != nil || first != second || f.Count(t, "employee") != 1 || f.KMS.Calls.Load() != calls {
 			t.Fatal("creation replay must confirm original employee without another encrypted object")
 		}
-		cmd.Profile.DisplayName = "SYNTHETIC_DIFFERENT_COMMAND"
+		cmd.Profile.LocalName = "SYNTHETIC_DIFFERENT_COMMAND"
 		if _, err = f.Service.Create(ctx, request, f.OrgID, cmd); !errors.Is(err, fault.Mismatch) {
 			t.Fatal("creation key reused for different profile must conflict")
 		}
@@ -142,7 +142,7 @@ func TestCurrentAuthorizationPrecedesUnavailableKMS(t *testing.T) {
 		if err != nil || observer.Profile != nil {
 			t.Fatal("metadata reader cannot receive PII or trigger unavailable KMS")
 		}
-		if _, err = f.Service.Update(context.Background(), f.Request(f.Observer), id, organization.UpdateCommand{ExpectedRevision: "1", Profile: organization.Profile{DisplayName: "SYNTHETIC_DENIED_WRITE"}, EditReason: "synthetic"}); !errors.Is(err, fault.Forbidden) {
+		if _, err = f.Service.Update(context.Background(), f.Request(f.Observer), id, organization.UpdateCommand{ExpectedRevision: "1", Profile: organization.Profile{LocalName: "SYNTHETIC_DENIED_WRITE"}, EditReason: "synthetic"}); !errors.Is(err, fault.Forbidden) {
 			t.Fatal("metadata read never implies PII read/write")
 		}
 		missing := f.Request(f.Owner)
@@ -218,7 +218,7 @@ func TestPayloadTamperAndAuditFailureNeverReleasePlaintext(t *testing.T) {
 		if !errors.Is(err, fault.AuditUnavailable) || v.Profile != nil {
 			t.Fatal("mandatory audit failure must prevent sensitive release")
 		}
-		_, err = f.Service.Update(ctx, f.Request(f.Owner), id, organization.UpdateCommand{ExpectedRevision: "1", Profile: organization.Profile{DisplayName: "SYNTHETIC_ROLLED_BACK"}, EditReason: "synthetic"})
+		_, err = f.Service.Update(ctx, f.Request(f.Owner), id, organization.UpdateCommand{ExpectedRevision: "1", Profile: organization.Profile{LocalName: "SYNTHETIC_ROLLED_BACK"}, EditReason: "synthetic"})
 		if !errors.Is(err, fault.AuditUnavailable) {
 			t.Fatal("write audit failure must be explicit")
 		}
@@ -233,8 +233,8 @@ func TestInvalidProfileAndLifecycleNeverPersistPartialEmployee(t *testing.T) {
 	backends(t, func(t *testing.T, f *testsupport.Fixture) {
 		for _, cmd := range []organization.CreateCommand{
 			{Profile: organization.Profile{}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}},
-			{Profile: organization.Profile{DisplayName: "synthetic"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-02-30"}},
-			{Profile: organization.Profile{DisplayName: "synthetic"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01", ValidTo: new("2026-01-01")}},
+			{Profile: organization.Profile{LocalName: "synthetic"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-02-30"}},
+			{Profile: organization.Profile{LocalName: "synthetic"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01", ValidTo: new("2026-01-01")}},
 		} {
 			if _, err := f.Service.Create(context.Background(), f.Request(f.Owner), f.OrgID, cmd); !errors.Is(err, fault.Invalid) {
 				t.Fatal("invalid profile/date must reject with safe input error")

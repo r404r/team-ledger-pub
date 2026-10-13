@@ -20,7 +20,7 @@ func TestFinancialObjectResolverUsesCanonicalOwnerAndExactRevision(t *testing.T)
 		t.Run(backend, func(t *testing.T) {
 			f := testsupport.NewHarness(t, backend)
 			ctx := context.Background()
-			employee, err := f.Service.Create(ctx, f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{DisplayName: "SYNTHETIC_FINANCIAL_OBJECT_OWNER"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
+			employee, err := f.Service.Create(ctx, f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{LocalName: "SYNTHETIC_FINANCIAL_OBJECT_OWNER"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
 			if err != nil {
 				t.Fatal(err)
 			}

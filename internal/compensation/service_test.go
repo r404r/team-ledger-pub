@@ -34,7 +34,7 @@ func financeEmployee(t *testing.T, f *testsupport.Fixture, other bool) string {
 	if other {
 		who, org = f.OtherOwner, f.OtherOrgID
 	}
-	r, err := f.Service.Create(context.Background(), f.Request(who), org, organization.CreateCommand{Profile: organization.Profile{DisplayName: "SYNTHETIC_FINANCE_EMPLOYEE"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
+	r, err := f.Service.Create(context.Background(), f.Request(who), org, organization.CreateCommand{Profile: organization.Profile{LocalName: "SYNTHETIC_FINANCE_EMPLOYEE"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
 	if err != nil {
 		t.Fatal(err)
 	}

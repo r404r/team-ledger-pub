@@ -35,8 +35,8 @@ func TestMigrationActualV1PreservesEveryLegacyFact(t *testing.T) {
 		t.Run(backend, func(t *testing.T) {
 			f := migrationV1Fixture(t, backend)
 			ctx := context.Background()
-			created := migrationV1Profile(t, f, organization.Profile{DisplayName: "SYNTHETIC_V1_ENCRYPTED_ORIGINAL"}, "")
-			profile := organization.Profile{DisplayName: "SYNTHETIC_V1_ENCRYPTED_CURRENT", ProfileSummary: "SYNTHETIC_V1_SUMMARY"}
+			created := migrationV1Profile(t, f, organization.Profile{LocalName: "SYNTHETIC_V1_ENCRYPTED_ORIGINAL"}, "")
+			profile := organization.Profile{LocalName: "SYNTHETIC_V1_ENCRYPTED_CURRENT", ProfileSummary: "SYNTHETIC_V1_SUMMARY"}
 			migrationV1Profile(t, f, profile, created.ID)
 			var err error
 			if err = f.Exec(ctx, "INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked) VALUES(?,?,?,'pii.read','pii','org',?,'organization_management',?,?,1)", "INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked) VALUES($1,$2,$3,'pii.read','pii','org',$4,'organization_management',$5,$6,true)", value.NewID(), f.OrgID, f.Owner.SubjectID, f.OrgID, f.Repo.BindTime(f.Now.Add(-time.Hour)), f.Repo.BindTime(f.Now.Add(time.Hour))); err != nil {
@@ -87,7 +87,7 @@ func TestMigrationInterruptedUpgradeRollsBack(t *testing.T) {
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			f := migrationV1Fixture(t, backend)
-			migrationV1Profile(t, f, organization.Profile{DisplayName: "SYNTHETIC_INTERRUPTED_V1"}, "")
+			migrationV1Profile(t, f, organization.Profile{LocalName: "SYNTHETIC_INTERRUPTED_V1"}, "")
 			before := migrationLegacyFacts(t, f.Repo)
 			ctx, cancel := context.WithCancel(context.Background())
 			tx, err := f.Repo.DB.BeginTx(ctx, nil)
@@ -297,7 +297,7 @@ func migrationV1Profile(t *testing.T, f *testsupport.Fixture, profile organizati
 		t.Fatal(err)
 	}
 	defer clear(payload)
-	binding := sensitive.Context{OrgID: f.OrgID, EmployeeID: employee.ID, RecordID: employee.ID, VersionID: version.ID, ObjectKind: "employee_profile", Purpose: "pii", SchemaType: "pii.profile.v1", SchemaVersion: 1}
+	binding := sensitive.Context{OrgID: f.OrgID, EmployeeID: employee.ID, RecordID: employee.ID, VersionID: version.ID, ObjectKind: "employee_profile", Purpose: "pii", SchemaType: "pii.profile.v2", SchemaVersion: 1}
 	version.Envelope, err = f.Service.Cipher.Seal(ctx, binding, payload)
 	if err != nil {
 		t.Fatal("real v1 synthetic encryption must succeed:", err)

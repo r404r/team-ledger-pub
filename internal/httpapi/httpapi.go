@@ -658,7 +658,7 @@ func allowedField(object, key string) bool {
 		}
 		return false
 	case "profile":
-		return key == "display_name" || key == "work_contact" || key == "profile_summary"
+		return key == "local_name" || key == "english_name" || key == "work_contact" || key == "profile_summary"
 	case "work_contact":
 		return key == "email" || key == "phone"
 	case "lifecycle":

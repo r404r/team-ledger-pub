@@ -162,11 +162,11 @@ func TestRelationGrantNeedsApprovedExactActorAndRejectsForeignReferences(t *test
 		if _, err := f.Authz.Issue(ctx, managementRequest(f), wrong); !errors.Is(err, fault.Forbidden) {
 			t.Fatal("relation employee endpoint mismatch accepted", err)
 		}
-		foreignEmployee, err := f.Service.Create(ctx, f.Request(f.OtherOwner), f.OtherOrgID, organization.CreateCommand{Profile: organization.Profile{DisplayName: "SYNTHETIC_FOREIGN"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
+		foreignEmployee, err := f.Service.Create(ctx, f.Request(f.OtherOwner), f.OtherOrgID, organization.CreateCommand{Profile: organization.Profile{LocalName: "SYNTHETIC_FOREIGN"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		foreignManager, err := f.Service.Create(ctx, f.Request(f.OtherOwner), f.OtherOrgID, organization.CreateCommand{Profile: organization.Profile{DisplayName: "SYNTHETIC_FOREIGN_MANAGER"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
+		foreignManager, err := f.Service.Create(ctx, f.Request(f.OtherOwner), f.OtherOrgID, organization.CreateCommand{Profile: organization.Profile{LocalName: "SYNTHETIC_FOREIGN_MANAGER"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
 		if err != nil {
 			t.Fatal(err)
 		}

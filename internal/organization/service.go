@@ -294,7 +294,7 @@ func (s *Service) prepare(ctx context.Context, employee Employee, profile Profil
 }
 
 func profileBinding(employee Employee, version string) sensitive.Context {
-	return sensitive.Context{OrgID: employee.OrgID, EmployeeID: employee.ID, RecordID: employee.ID, VersionID: version, ObjectKind: "employee_profile", Purpose: "pii", SchemaType: "pii.profile.v1", SchemaVersion: 1}
+	return sensitive.Context{OrgID: employee.OrgID, EmployeeID: employee.ID, RecordID: employee.ID, VersionID: version, ObjectKind: "employee_profile", Purpose: "pii", SchemaType: "pii.profile.v2", SchemaVersion: 1}
 }
 
 func (s *Service) digest(request Request, snapshot authz.Snapshot, operation, object string, command any) ([]byte, error) {
@@ -358,15 +358,7 @@ func confirmReceipt(receipt Receipt, digest []byte) (Result, error) {
 }
 
 func validProfile(profile Profile) bool {
-	if !utf8.ValidString(profile.DisplayName) || strings.TrimSpace(profile.DisplayName) == "" || len(profile.DisplayName) > 256 || len(profile.ProfileSummary) > 16<<10 || !utf8.ValidString(profile.ProfileSummary) {
-		return false
-	}
-	if profile.WorkContact != nil {
-		if !utf8.ValidString(profile.WorkContact.Email) || !utf8.ValidString(profile.WorkContact.Phone) || len(profile.WorkContact.Email) > 256 || len(profile.WorkContact.Phone) > 256 {
-			return false
-		}
-	}
-	return true
+	return validWorkforceProfile(profile)
 }
 func validLifecycle(lifecycle Lifecycle) bool {
 	return value.ValidDate(lifecycle.ValidFrom) && (lifecycle.ValidTo == nil || value.ValidDate(*lifecycle.ValidTo) && lifecycle.ValidFrom < *lifecycle.ValidTo)

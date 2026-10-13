@@ -16,7 +16,7 @@ func TestBonusTypedPaginationTraversesHistoryBeyondReconciliationBound(t *testin
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			f := testsupport.NewHarness(t, backend)
-			created, err := f.Service.Create(context.Background(), f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{DisplayName: "SYNTHETIC_BONUS_PAGING"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
+			created, err := f.Service.Create(context.Background(), f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{LocalName: "SYNTHETIC_BONUS_PAGING"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
 			if err != nil {
 				t.Fatal(err)
 			}

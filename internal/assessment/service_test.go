@@ -30,7 +30,7 @@ func assessmentRequest(credential testsupport.Credential) assessment.Request {
 
 func assessmentEmployee(t *testing.T, f *testsupport.Fixture) string {
 	t.Helper()
-	created, err := f.Service.Create(context.Background(), f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{DisplayName: "SYNTHETIC_ASSESSMENT_EMPLOYEE"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
+	created, err := f.Service.Create(context.Background(), f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{LocalName: "SYNTHETIC_ASSESSMENT_EMPLOYEE"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
 	if err != nil {
 		t.Fatal("real employee setup:", err)
 	}

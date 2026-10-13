@@ -425,7 +425,7 @@ func (s *Service) Directory(ctx context.Context, req Request, org string, q Dire
 		if v.Profile != nil {
 			piiIDs = append(piiIDs, e.ID)
 		}
-		if q.Q == "" || v.Profile != nil && strings.Contains(strings.ToLower(v.Profile.DisplayName), needle) {
+		if q.Q == "" || v.Profile != nil && (strings.Contains(strings.ToLower(v.Profile.LocalName), needle) || strings.Contains(strings.ToLower(v.Profile.EnglishName), needle)) {
 			page.Items = append(page.Items, v)
 		}
 		if i+1 < len(candidates) {

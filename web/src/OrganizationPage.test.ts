@@ -35,7 +35,7 @@ function tree(epoch = '3', graph = '4') {
 function employee(sensitive = false) {
   return { id: EMPLOYEE, org_id: ORG, lifecycle: { valid_from: FROM, valid_to: null }, as_of: AS_OF, authorization_date: AS_OF,
     memberships: [membership], positions: sensitive ? [{ id: POSITION, employee_id: EMPLOYEE, team_id: TEAM, is_primary: true, valid_from: FROM, valid_to: null, position: { title: '合成获准职位' } }] : [], reporting_lines: [reporting],
-    ...(sensitive ? { profile: { display_name: PRIVATE_NAME }, profile_revision: '19' } : {}) }
+    ...(sensitive ? { profile: { local_name: PRIVATE_NAME }, profile_revision: '19' } : {}) }
 }
 function directory(items = [employee()], cursor: string | null = null, partial = false, epoch = '3', graph = '4') {
   return { items, next_cursor: cursor, search_incomplete: partial, as_of: AS_OF, authorization_date: AS_OF, consistency: 'current', graph_revision: graph, auth_epoch: epoch }

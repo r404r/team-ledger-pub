@@ -56,7 +56,7 @@ func TestSecurityAdministrationAuthorityIssuesAuditRead(t *testing.T) {
 
 func makeEmployee(t *testing.T, f *testsupport.Fixture) string {
 	t.Helper()
-	r, err := f.Service.Create(context.Background(), f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{DisplayName: "SYNTHETIC_GRANTED_PROFILE"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
+	r, err := f.Service.Create(context.Background(), f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{LocalName: "SYNTHETIC_GRANTED_PROFILE"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}})
 	if err != nil {
 		t.Fatal("real encrypted employee creation failed:", err)
 	}
@@ -682,7 +682,7 @@ func TestGrantReadReleaseBeforeRevokeKeepsAlreadyDisclosedBoundary(t *testing.T)
 		if err != nil || current.Profile != nil || current.Revision != "" || f.KMS.Calls.Load() != calls {
 			t.Fatal("new read must retain only authorized metadata after PII revoke", err)
 		}
-		if disclosed.Profile.DisplayName != "SYNTHETIC_GRANTED_PROFILE" {
+		if disclosed.Profile.LocalName != "SYNTHETIC_GRANTED_PROFILE" {
 			t.Fatal("system cannot retroactively erase already released consumer data")
 		}
 	})

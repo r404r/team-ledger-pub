@@ -55,8 +55,8 @@ func TestInterviewV6PopulatedV5PreservesAllOriginalColumnsAndDecryptableHistory(
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			f := migrationV1Fixture(t, backend)
-			employee := migrationV1Profile(t, f, organization.Profile{DisplayName: "SYNTHETIC_V5_ORIGINAL"}, "")
-			migrationV1Profile(t, f, organization.Profile{DisplayName: "SYNTHETIC_V5_CURRENT"}, employee.ID)
+			employee := migrationV1Profile(t, f, organization.Profile{LocalName: "SYNTHETIC_V5_ORIGINAL"}, "")
+			migrationV1Profile(t, f, organization.Profile{LocalName: "SYNTHETIC_V5_CURRENT"}, employee.ID)
 			for _, version := range []int{2, 3, 4, 5} {
 				migrationInstallVersion(t, f.Repo, version)
 			}
@@ -94,7 +94,7 @@ func TestInterviewV6PopulatedV5PreservesAllOriginalColumnsAndDecryptableHistory(
 				t.Fatal("preserved historical v6 must advance to current schema", err)
 			}
 			view, err := f.Service.Read(context.Background(), f.Request(f.Owner), employee.ID, "2026-01-01", true)
-			if err != nil || view.Profile == nil || view.Profile.DisplayName != "SYNTHETIC_V5_CURRENT" || view.Revision != "2" {
+			if err != nil || view.Profile == nil || view.Profile.LocalName != "SYNTHETIC_V5_CURRENT" || view.Revision != "2" {
 				t.Fatal("original AAD and history must remain readable", err)
 			}
 			if err = f.Repo.CheckSchema(context.Background()); err != nil {
@@ -113,7 +113,7 @@ func TestInterviewV6InterruptedCutoverRestoresPopulatedV5(t *testing.T) {
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			f := migrationV1Fixture(t, backend)
-			migrationV1Profile(t, f, organization.Profile{DisplayName: "SYNTHETIC_V5_ROLLBACK"}, "")
+			migrationV1Profile(t, f, organization.Profile{LocalName: "SYNTHETIC_V5_ROLLBACK"}, "")
 			for _, version := range []int{2, 3, 4, 5} {
 				migrationInstallVersion(t, f.Repo, version)
 			}

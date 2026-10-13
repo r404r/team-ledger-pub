@@ -118,14 +118,14 @@ func TestAPIGrantIssueReadRevokeConsumer(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			for _, private := range []string{"SYNTHETIC_API_PROFILE", f.Reader.Token, f.Manager.Token, f.DSN, "csrf_token", "total_count", "display_name"} {
+			for _, private := range []string{"SYNTHETIC_API_PROFILE", f.Reader.Token, f.Manager.Token, f.DSN, "csrf_token", "total_count", "local_name", "english_name"} {
 				if strings.Contains(string(safeJSON), private) {
 					t.Fatal("grant metadata disclosed private content or hidden count")
 				}
 			}
 			var view organization.View
 			apiSend(t, f, apiRequest(t, f, f.Reader, "GET", path, "", ""), 200, &view)
-			if view.Profile == nil || view.Profile.DisplayName != "SYNTHETIC_API_PROFILE" {
+			if view.Profile == nil || view.Profile.LocalName != "SYNTHETIC_API_PROFILE" {
 				t.Fatal("issued business grants must authorize real encrypted profile")
 			}
 			apiSend(t, f, apiRequest(t, f, f.Manager, "GET", path, "", ""), 404, nil)

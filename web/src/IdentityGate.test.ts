@@ -27,7 +27,7 @@ function profile(name = SAVED_NAME, org = ORG) {
   return {
     id: EMPLOYEE, org_id: org, profile_revision: '1',
     lifecycle: { valid_from: '2026-10-01', valid_to: null }, as_of: AS_OF, authorization_date: AS_OF,
-    profile: { display_name: name, work_contact: { email: 'synthetic-identity@example.invalid' } },
+    profile: { local_name: name, work_contact: { email: 'synthetic-identity@example.invalid' } },
   }
 }
 function response(status: number, body?: unknown) {
@@ -109,11 +109,11 @@ function closed(page: VueWrapper) {
 }
 async function edit(page: VueWrapper) {
   await action(page, /更正资料/).trigger('click')
-  await page.find('#profile-display-name').setValue(DRAFT_NAME)
+  await page.find('#profile-local-name').setValue(DRAFT_NAME)
   await page.find('#profile-edit-reason').setValue('合成手工更正理由')
 }
 async function submit(page: VueWrapper) {
-  const form = page.findAll('form').find((item) => item.find('#profile-display-name').exists())!
+  const form = page.findAll('form').find((item) => item.find('#profile-local-name').exists())!
   await form.trigger('submit')
   await settled()
 }
@@ -199,7 +199,7 @@ describe('shared protected identity interaction', () => {
     const page = await open()
     expect(page.text()).toContain(SAVED_NAME)
     await edit(page)
-    expect(page.find('#profile-display-name').element).toHaveProperty('value', DRAFT_NAME)
+    expect(page.find('#profile-local-name').element).toHaveProperty('value', DRAFT_NAME)
   })
 
   it('destroys the edited consumer and aborts its command before logout, then rejects late success', async () => {
