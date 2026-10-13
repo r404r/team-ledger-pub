@@ -105,25 +105,28 @@ func (s *Service) ChangeCatalogs(ctx context.Context, request Request, org strin
 	write := CatalogWrite{ID: value.NewID(), OrgID: org, SubjectID: snapshot.SubjectID, RecordedAt: s.clock(), Items: make([]CatalogPreparedItem, len(command.Changes))}
 	for i, item := range command.Changes {
 		prepared := CatalogPreparedItem{Command: item, ID: value.NewID(), VersionID: value.NewID()}
-		if item.Kind == "org_unit_parent" {
+		if item.Action == "end" {
+			prepared.ID, prepared.VersionID = *item.Ref, *item.Ref
+		} else if item.Action == "replace" && item.Kind != "org_unit_parent" {
+			prepared.ID = *item.Ref
+		} else if item.Kind == "org_unit_parent" {
 			prepared.ID = prepared.VersionID
 		}
-		if item.Action != "create" {
-			return CatalogChangeResult{}, fault.Invalid
-		}
-		switch item.Kind {
-		case "legal_entity":
-			payload, sealErr := s.sealWorkforceCatalog(ctx, org, prepared.ID, "legal_entity", "pii.legal_entity_label.v1", legalEntityLabel{DisplayName: *item.Label})
-			if sealErr != nil {
-				return CatalogChangeResult{}, sealErr
+		if item.Action != "end" {
+			switch item.Kind {
+			case "legal_entity":
+				payload, sealErr := s.sealWorkforceCatalog(ctx, org, prepared.ID, "legal_entity", "pii.legal_entity_label.v1", legalEntityLabel{DisplayName: *item.Label})
+				if sealErr != nil {
+					return CatalogChangeResult{}, sealErr
+				}
+				prepared.Payload = &payload
+			case "business_group", "division", "department":
+				payload, sealErr := s.sealWorkforceCatalog(ctx, org, prepared.ID, "org_unit", "pii.org_unit_label.v1", catalogLabel{Label: *item.Label})
+				if sealErr != nil {
+					return CatalogChangeResult{}, sealErr
+				}
+				prepared.Payload = &payload
 			}
-			prepared.Payload = &payload
-		case "business_group", "division", "department":
-			payload, sealErr := s.sealWorkforceCatalog(ctx, org, prepared.ID, "org_unit", "pii.org_unit_label.v1", catalogLabel{Label: *item.Label})
-			if sealErr != nil {
-				return CatalogChangeResult{}, sealErr
-			}
-			prepared.Payload = &payload
 		}
 		write.Items[i] = prepared
 	}

@@ -114,6 +114,10 @@ func validCatalogChangeItem(item CatalogChangeItem) bool {
 	if item.ValidFrom != nil && !value.ValidDate(*item.ValidFrom) || item.ValidTo != nil && !value.ValidDate(*item.ValidTo) || item.EffectiveTo != nil && !value.ValidDate(*item.EffectiveTo) {
 		return false
 	}
+	if item.ValidFrom != nil && item.ValidTo != nil && *item.ValidFrom >= *item.ValidTo ||
+		item.EffectiveTo != nil && item.ValidTo != nil && *item.EffectiveTo >= *item.ValidTo {
+		return false
+	}
 	if item.Label != nil && (!utf8.ValidString(*item.Label) || strings.TrimSpace(*item.Label) == "" || len(*item.Label) > 256) {
 		return false
 	}
@@ -136,13 +140,13 @@ func validCatalogChangeItem(item CatalogChangeItem) bool {
 		}
 		return item.Kind != "career_level" && item.Rank == nil || item.Kind == "career_level" && item.Rank != nil
 	case "end":
-		return item.Ref != nil && item.EffectiveTo != nil && item.Code == nil && item.Label == nil && item.Rank == nil && item.ParentRef == nil && item.ValidFrom == nil
+		return item.Ref != nil && item.EffectiveTo != nil && item.Code == nil && item.Label == nil && item.Rank == nil && item.ParentRef == nil && item.ValidFrom == nil && item.ValidTo == nil
 	case "replace":
 		if item.Ref == nil || item.EffectiveTo == nil || item.Code != nil || item.ValidFrom != nil {
 			return false
 		}
 		if item.Kind == "org_unit_parent" {
-			return validIDPointer(item.ParentRef) && item.Label == nil && item.Rank == nil
+			return validIDPointer(item.ParentRef) && item.Label == nil && item.Rank == nil && item.ValidTo == nil
 		}
 		if item.Label == nil || item.ParentRef != nil {
 			return false
