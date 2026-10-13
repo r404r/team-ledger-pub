@@ -114,6 +114,19 @@ func TestAssessmentIndependentApprovalLeaseFencingEncryptedDraftAndPublish(t *te
 		if err = f.Repo.DB.QueryRow(query, []byte(document.Summary)).Scan(&plaintextCount); err != nil || plaintextCount != 0 {
 			t.Fatal("plaintext crossed encrypted boundary:", plaintextCount, err)
 		}
+		samples, sampleErr := f.Repo.BackupKeySamples(ctx)
+		assessmentSample := false
+		for _, sample := range samples {
+			if sample.Domain == "assessment" {
+				dek, unwrapErr := f.Assessment.Cipher.Wrapper.Unwrap(ctx, sample.Key)
+				assessmentSample = unwrapErr == nil && len(dek) == 32
+				clear(dek)
+				break
+			}
+		}
+		if sampleErr != nil || !assessmentSample {
+			t.Fatal("restore inventory must probe assessment payload with the assessment wrapper:", samples, sampleErr)
+		}
 
 		read, err := f.Assessment.GetResult(ctx, assessmentRequest(f.Manager), employee, draft.ID)
 		if err != nil || read.Document.Summary != document.Summary {

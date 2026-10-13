@@ -13,6 +13,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/teamledger-api ./cmd/api \
+ && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/teamledger-keyd ./cmd/teamledger-keyd \
+ && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/teamledger-keyctl-local ./cmd/keyctl-local \
  && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/teamledger-migrate ./cmd/migrate \
  && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/teamledger-backup ./cmd/backup \
  && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/teamledger-key-rewrap ./cmd/key-rewrap \

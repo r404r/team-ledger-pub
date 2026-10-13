@@ -3,6 +3,8 @@
 !.env.example
 !.env.docker.example
 /docker/secrets/
+/docker/maintenance/
+/backups/
 /private/
 /web/node_modules/
 /web/dist/

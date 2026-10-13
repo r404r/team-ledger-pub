@@ -15,6 +15,7 @@ import (
 	"github.com/r404r/team-ledger/internal/configfile"
 	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/identity"
+	"github.com/r404r/team-ledger/internal/sensitive"
 	"github.com/r404r/team-ledger/internal/store"
 	"github.com/r404r/team-ledger/internal/value"
 )
@@ -36,7 +37,7 @@ func run(args []string) error {
 	backend := flags.String("backend", "", "sqlite or postgres")
 	dsnFile := flags.String("dsn-file", "", "protected DSN file")
 	issuer := flags.String("issuer", "", "exact approved HTTPS issuer")
-	keyFile := flags.String("identity-key-file", "", "protected version-1 identity HMAC key file")
+	keydSocket := flags.String("keyd-socket", "", "local teamledger-keyd Unix socket")
 	subFile := flags.String("sub-file", "", "protected exact UTF-8 IdP subject file; no terminal newline")
 	caFile := flags.String("postgres-ca-file", "", "protected public PostgreSQL CA file")
 	org := flags.String("org-id", "", "existing approved organization UUID")
@@ -64,9 +65,9 @@ func run(args []string) error {
 	} else if *backend != "sqlite" || *caFile != "" {
 		return fault.Invalid
 	}
-	key, err := configfile.Read(*keyFile, 32, true)
-	if err != nil || len(key) != 32 {
-		clear(key)
+	keyd := &sensitive.KeydClient{Socket: *keydSocket, Timeout: 5 * time.Second}
+	key, err := keyd.ProcessKey(context.Background(), sensitive.DomainIdentitySubjectLookup, "identity-subject-v1")
+	if err != nil {
 		return fault.Unavailable
 	}
 	defer clear(key)

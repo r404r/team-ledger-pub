@@ -3,77 +3,58 @@
 - [DEV-002 实装、测试与进度 PLAN](https://github.com/r404r/p-research-hr/blob/main/plans/DEV-002.md)
 - [功能规范](https://github.com/r404r/p-research-hr/blob/main/docs/FUNCTIONAL_SPEC.md) · [技术规范](https://github.com/r404r/p-research-hr/blob/main/docs/TECHNICAL_SPEC.md)
 - [开发与交付规则](https://github.com/r404r/p-research-hr/blob/main/AGENTS.md)
-- [DEV-006 OIDC、会话/MFA、映射维护与 v4 操作者/目标分离实装测试 PLAN](https://github.com/r404r/p-research-hr/blob/main/plans/DEV-006.md) · [身份协议/时序与实际保护配置/CLI](https://github.com/r404r/p-research-hr/blob/main/docs/TECHNICAL_SPEC.md#71-oidcsession与step-up)
-- [DEV-007 当前 R2 组织结构、原子任职/生命周期变更、人员目录/历史、当前精确关系授权与 v5 双库 PLAN](https://github.com/r404r/p-research-hr/blob/main/plans/DEV-007.md) · [实际 API/production 页面、迁移/授权/隐私与测试证据](https://github.com/r404r/p-research-hr/blob/main/research/hr-implementation/DEV-007-VALIDATION.md)；技术架构图在技术规范 §1.1/§1.2，R2 HTTP 契约 §3.4、原子变更时序 §6.3.1、保护 CLI §9.3。
-- [DEV-008 当前 R3 面谈、immutable 三分区版本、独立行动、typed 最小交接与有限导出 PLAN](https://github.com/r404r/p-research-hr/blob/main/plans/DEV-008.md) · [实际双库/成品与测试证据](https://github.com/r404r/p-research-hr/blob/main/research/hr-implementation/DEV-008-VALIDATION.md)；R3 HTTP 窄契约见技术规范 §3.5、独立批准/版本/导出 Mermaid 时序 §6.4.1、必需独立 `TEAMLEDGER_INTERVIEW_KMS_*` 配置 §9.3。不复用 PII key/credential；API 不自动迁移，生产 IdP/MFA/读者/保留批准另验。
-- [DEV-011 评估周期、确定性完成事实与 AI 边界 PLAN](https://github.com/r404r/p-research-hr/blob/main/plans/DEV-011.md)：R6a 提供 `PUT /api/v1/employees/{employee_id}/interview-policy` 与 `GET /api/v1/employees/{employee_id}/interview-status`、`/employees/{employee_id}/followup` 成品页面及 SQLite/PostgreSQL v9。状态仅来自计划窗口、面谈实际时间、已发布共享笔记与行动项；`periodic_structured_v1` 在 R6a 明确返回 `blocked/automation_not_enabled`，不调用模型或伪装后台自动化。
-
+- [DEV-018 本地 keyd、受保护根密钥与无外部KMS切换 PLAN](https://github.com/r404r/p-research-hr/blob/main/plans/DEV-018.md)
+- 技术架构图、keyd协议及密钥生命周期：[技术规范 §1.1/§1.2、§7.3/§7.4](https://github.com/r404r/p-research-hr/blob/main/docs/TECHNICAL_SPEC.md)。
 ## Docker 启动
 
-`Dockerfile`生成包含Vue production资源、API、migration及运维命令的单一镜像；`compose.yaml`以SQLite启动`data-init → migrate → api`。API容器以调用者UID/GID运行、root filesystem只读、默认只发布到宿主机`127.0.0.1:8443`。
+`Dockerfile`生成Vue production资源、API、migration、`teamledger-keyd`、`keyctl-local`及运维命令。首次安装显式执行`key-bootstrap`；普通启动按`data-init → key-check → keyd/migrate → api`运行，缺少密钥材料时直接失败。数据库和密钥分别存放；API不挂载根密钥卷，只通过Unix socket调用本地keyd。
 
-### 当前依赖边界
+本地keyd随同一镜像交付，不依赖云KMS、Vault或网络密钥服务。隔离评估可使用`TEAMLEDGER_OIDC_MODE=disabled`；真实用户登录仍须配置受信OIDC，不能把disabled模式用于生产身份认证。
 
-当前代码基线是v11，仍要求两个Vault Transit-compatible HTTPS端点（PII、interview）及其CA/token。Docker不会内置测试KMS或伪造生产fallback。DES-007已经批准本地root file＋`teamledger-keyd`的无外部KMS设计，但尚未实装；因此**当前镜像不是完全无外部服务版本**。`TEAMLEDGER_OIDC_MODE=disabled`也只适合隔离评估，真实用户部署必须配置受信OIDC。数据库、Vue/API及容器本身可独立部署，不代表当前身份/KMS/审计边界已独立化。
-
-### 1. 准备环境文件
+### 1. 准备环境与TLS文件
 
 ```bash
 cp .env.docker.example .env.docker
-```
-
-编辑`.env.docker`：
-
-- `TEAMLEDGER_UID` / `TEAMLEDGER_GID`填写运行Docker的宿主用户`id -u` / `id -g`；保护文件必须归该UID所有。
-- `TEAMLEDGER_PUBLIC_ORIGIN`必须等于浏览器实际访问的HTTPS origin。
-- 填写PII及interview KMS的HTTPS URL和key name。
-- 仅隔离评估可保持`TEAMLEDGER_OIDC_MODE=disabled`；真实部署必须替换为完整OIDC配置。
-
-`.env.docker`已被Git忽略，不得提交。
-
-### 2. 准备保护文件
-
-```bash
 install -d -m 0700 docker/secrets
 umask 077
-openssl rand 32 > docker/secrets/csrf.key
-openssl rand 32 > docker/secrets/digest.key
-openssl rand 32 > docker/secrets/cursor.key
 openssl req -x509 -newkey rsa:3072 -nodes \
   -keyout docker/secrets/tls-key.pem \
   -out docker/secrets/tls-cert.pem \
   -days 365 -subj '/CN=localhost' \
   -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1'
-```
-
-再放入以下真实部署文件：
-
-| 文件 | 内容 / 权限 |
-| --- | --- |
-| `kms.token` | PII Transit token；运行UID所有，`0400`或`0600` |
-| `kms-ca.pem` | PII Transit CA chain；不得group/other writable |
-| `interview-kms.token` | interview Transit独立token；运行UID所有，`0400`或`0600` |
-| `interview-kms-ca.pem` | interview Transit独立CA chain；不得group/other writable |
-| `tls-key.pem` | API TLS private key；运行UID所有，`0400`或`0600` |
-| `tls-cert.pem` | 与`PUBLIC_ORIGIN`匹配的API certificate chain |
-
-执行：
-
-```bash
 chown -R "$(id -u):$(id -g)" docker/secrets
 chmod 0700 docker/secrets
-chmod 0600 docker/secrets/*.key docker/secrets/*.token
-chmod 0644 docker/secrets/*.pem
 chmod 0600 docker/secrets/tls-key.pem
+chmod 0644 docker/secrets/tls-cert.pem
+install -d -o "$(id -u)" -g "$(id -g)" -m 0750 docker/maintenance
+install -d -o "$(id -u)" -g "$(id -g)" -m 0770 backups
+printf '%s\n' /var/lib/teamledger/teamledger.db > docker/maintenance/sqlite-dsn
+sudo chown 10002:"$(id -g)" docker/maintenance/sqlite-dsn # 10002须等于TEAMLEDGER_MAINTENANCE_UID
+sudo chmod 0600 docker/maintenance/sqlite-dsn
 ```
 
-应用会在同一descriptor上校验owner/type/mode；错误owner、symlink、目录或宽松secret权限会拒绝启动。
+在`.env.docker`中：
 
-### 3. 构建并启动
+- `TEAMLEDGER_UID` / `TEAMLEDGER_GID`填写API使用的主机`id -u` / `id -g`；
+- `TEAMLEDGER_KEYD_UID`和`TEAMLEDGER_MAINTENANCE_UID`必须是两个不同于API UID、且彼此不同的专用数值UID；API、keyd、maintenance以共同`TEAMLEDGER_GID`访问socket，API和maintenance也以该组访问SQLite数据卷；keyd不挂载数据卷，API不挂载key卷；
+- `TEAMLEDGER_PUBLIC_ORIGIN`必须等于浏览器实际访问的HTTPS origin；
+- `TEAMLEDGER_DATA_VOLUME`和`TEAMLEDGER_KEY_VOLUME`使用部署唯一、长期稳定的volume名称；
+- 真实用户环境配置完整`TEAMLEDGER_OIDC_*`，不要保留disabled模式。
+
+`.env.docker`已被Git忽略，不得提交。首次安装必须显式初始化一次密钥volume；命令在目标已存在时失败，不会覆盖材料：
+
+```bash
+docker compose --env-file .env.docker build
+docker compose --env-file .env.docker --profile bootstrap run --rm key-bootstrap
+```
+
+此后普通启动的`key-check`只检查三个必需文件存在；keyd启动再验证RAW32长度、认证keyring、持久锁及owner/mode/type。密钥volume为空、挂载错误或材料校验失败时启动失败，绝不在启动路径中创建或修复密钥。
+
+### 2. 构建、启动与健康检查
 
 ```bash
 docker compose --env-file .env.docker config
-docker compose --env-file .env.docker up --build -d
+docker compose --env-file .env.docker up -d
 docker compose --env-file .env.docker ps
 curl --fail --cacert docker/secrets/tls-cert.pem \
   https://localhost:8443/health/live
@@ -81,27 +62,94 @@ curl --fail --cacert docker/secrets/tls-cert.pem \
   https://localhost:8443/health/ready
 ```
 
-`migrate`必须成功退出后API才启动；每次`up`都会安全重跑migration。`live`只证明进程存活，`ready`才包含schema、key及审计积压门禁。查看日志及停止：
+`migrate`成功且keyd健康后API才启动。`live`只证明进程存活；`ready`包含应用就绪门禁。查看日志及普通停止：
 
 ```bash
-docker compose --env-file .env.docker logs -f api
+docker compose --env-file .env.docker logs -f keyd api
 docker compose --env-file .env.docker down
 ```
 
-### 持久化数据
+### 3. 持久化与重建
 
-Compose默认把SQLite数据库`/var/lib/teamledger/teamledger.db`放入名为`team-ledger-data`的Docker named volume。容器重建、`up --build`及普通`down`均保留该volume。可在`.env.docker`固定另一个稳定名称：
+默认named volumes：
+
+| 数据 | 容器路径 | 默认volume | 必须独立保管 |
+| --- | --- | --- | --- |
+| SQLite业务数据 | `/var/lib/teamledger` | `team-ledger-data` | 是 |
+| root/keyring/lock | `/var/lib/teamledger-keys` | `team-ledger-keys` | 是，且不得并入数据库备份 |
+| keyd Unix socket | `/run/teamledger-keyd` | 临时volume | 否 |
+
+建议生产名称：
 
 ```dotenv
-TEAMLEDGER_DATA_VOLUME=team-ledger-production
+TEAMLEDGER_DATA_VOLUME=team-ledger-production-data
+TEAMLEDGER_KEY_VOLUME=team-ledger-production-keys
 ```
 
-查看和复用：
+普通`down`、容器重建及`up --build`保留两个持久volume：
 
 ```bash
-docker volume inspect team-ledger-production
 docker compose --env-file .env.docker down
 docker compose --env-file .env.docker up -d
+docker volume inspect team-ledger-production-data
+docker volume inspect team-ledger-production-keys
 ```
 
-`docker compose down -v`会删除数据库volume，**有持久化数据时不得执行**。`docker/secrets`是独立宿主目录，不在数据库volume或数据库备份内；必须按独立密钥/凭据备份策略保管。复制运行中的SQLite文件不是一致备份；应使用随镜像提供的`/app/teamledger-backup`及对应受控配置。
+`docker compose down -v`会删除业务数据和唯一在线密钥材料，存在持久化需求时**不得执行**。丢失密钥volume后，数据库内敏感数据及keyd包装的备份无法恢复。离线根密钥副本必须与数据库备份分离保管。
+
+### 4. 备份与恢复
+
+`teamledger-backup`每次创建随机archive DEK，并通过maintenance UID可访问的本地keyd `backup_archive` domain包装；没有长期`backup-key-file`。备份文件不含root/keyring。Compose的profile限定`maintenance`服务使用独立maintenance UID，挂载SQLite数据卷、keyd socket、`docker/maintenance`只读配置及`TEAMLEDGER_BACKUP_DIR`归档目录；API UID不能替代它。
+
+```bash
+docker compose --env-file .env.docker --profile maintenance run --rm maintenance \
+  /app/teamledger-backup \
+  -action create -backend sqlite \
+  -dsn-file /run/teamledger-maintenance/sqlite-dsn \
+  -archive /backup/teamledger-$(date +%F).tlb \
+  -keyd-socket /run/teamledger-keyd/keyd.sock
+
+docker compose --env-file .env.docker --profile maintenance run --rm maintenance \
+  /app/teamledger-backup \
+  -action restore -backend sqlite \
+  -archive /backup/teamledger-2026-10-14.tlb \
+  -target /backup/restored-teamledger.db \
+  -keyd-socket /run/teamledger-keyd/keyd.sock
+```
+
+`sqlite-dsn`必须由`TEAMLEDGER_MAINTENANCE_UID`拥有、权限`0600`，内容为容器内SQLite绝对路径；上例的`10002`须随`.env.docker`同步。恢复只写隔离的`/backup/restored-teamledger.db`，先通过keyd解包archive DEK，再验证archive认证、schema和数据库内包装密钥样本；命令不会替换在线数据库。keyd或所需历史key缺失时不会产生可切流目标；复制运行中的SQLite文件不是一致备份。
+
+每个archive头部记录包装DEK所依赖的`backup_archive` key ID/version；数据库内manifest另列`pii`、`interview`、`assessment`、`financial`全部包装依赖。当前`backup_archive`历史key禁止退役：在尚无外部保留archive清单协议时，保留旧key优先于误删后令离线archive永久不可恢复。
+
+### 5. 包装密钥轮换
+
+先离线生成目标key UUID和下一版本，按`key-rewrap` canonical approval格式签名完整approval JSON，并把approval及真实Ed25519批准者注册表`key-rewrap-approval-authorities.json`放入`docker/maintenance`。approval必须由maintenance UID拥有且为`0600`；批准者注册表是固定trust root，必须由root拥有且不可组/其他用户写（建议`0444`）。keyd只生成key material，目标ID/版本必须与已签approval一致。普通流程只由`keyctl-local stage`建立A1 candidate，再由`teamledger-key-rewrap`完成数据库A1、分批rewrap、activate A2、DB/keyd ack及无引用旧key退役；不要在正常流程中手工调用`activate`。
+
+```bash
+sudo chown 10002:"$(id -g)" docker/maintenance/financial-rewrap-approval.json
+sudo chmod 0600 docker/maintenance/financial-rewrap-approval.json
+sudo chown 0:0 docker/maintenance/key-rewrap-approval-authorities.json
+sudo chmod 0444 docker/maintenance/key-rewrap-approval-authorities.json
+```
+
+上例`10002`同样须等于`TEAMLEDGER_MAINTENANCE_UID`。
+
+```bash
+docker compose --env-file .env.docker --profile maintenance run --rm maintenance \
+  /app/teamledger-keyctl-local stage \
+  -socket /run/teamledger-keyd/keyd.sock \
+  -domain financial \
+  -target-key-id 01234567-89ab-4cde-8f01-23456789abcd \
+  -target-version 2 \
+  -manifest-file /run/teamledger-maintenance/financial-rewrap-approval.json
+
+docker compose --env-file .env.docker --profile maintenance run --rm maintenance \
+  /app/teamledger-key-rewrap \
+  -backend sqlite \
+  -dsn-file /run/teamledger-maintenance/sqlite-dsn \
+  -keyd-socket /run/teamledger-keyd/keyd.sock \
+  -approval-file /run/teamledger-maintenance/financial-rewrap-approval.json \
+  -limit 500
+```
+
+approval的`target_kek_id`、`target_version`必须分别等于stage参数；`keyctl-local`和`key-rewrap`对同一文件计算SHA-256 manifest。未完成DB ack时API除`/health/live`外返回503，keyd拒绝新wrap/MAC。命令可用同一approval重复执行以恢复stage、rewrap、activate、ack或retire之间的中断；任一数据库仍引用旧包装key时不会退役。

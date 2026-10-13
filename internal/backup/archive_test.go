@@ -12,7 +12,7 @@ import (
 func TestEncryptedArchiveRoundTripAndTamperFailure(t *testing.T) {
 	database := bytes.Repeat([]byte("SYNTHETIC_DB_BYTES\x00"), 70000)
 	digest := sha256.Sum256(database)
-	manifest := backup.Manifest{FormatVersion: 1, Backend: "sqlite", SchemaVersion: 11, CreatedAt: time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC), DatabaseSize: int64(len(database)), DatabaseSHA256: hex.EncodeToString(digest[:]), OrganizationIDs: []string{"10000000-0000-4000-8000-000000000001"}, KeyDependencies: []backup.KeyDependency{{Domain: "pii", KeyID: "pii-v1", Version: 1}}}
+	manifest := backup.Manifest{FormatVersion: 1, Backend: "sqlite", SchemaVersion: 11, CreatedAt: time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC), DatabaseSize: int64(len(database)), DatabaseSHA256: hex.EncodeToString(digest[:]), OrganizationIDs: []string{"10000000-0000-4000-8000-000000000001"}, KeyDependencies: []backup.KeyDependency{{Domain: "pii", KeyID: "pii-v1", Version: 1}, {Domain: "assessment", KeyID: "assessment-v1", Version: 1}}}
 	key := bytes.Repeat([]byte{7}, 32)
 	var archive bytes.Buffer
 	if err := backup.WriteArchive(&archive, bytes.NewReader(database), manifest, key); err != nil {

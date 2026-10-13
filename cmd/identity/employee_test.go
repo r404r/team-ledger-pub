@@ -16,9 +16,9 @@ import (
 	"github.com/r404r/team-ledger/internal/value"
 )
 
-func employeeBindArgs(t *testing.T, f *testsupport.Fixture, subject, employee, sub, request string) []string {
+func employeeBindArgs(t *testing.T, f *testsupport.Fixture, socket, subject, employee, sub, request string) []string {
 	t.Helper()
-	args := []string{"bind", "-backend", f.Backend, "-dsn-file", maintenanceFile(t, "dsn", []byte(f.DSN), 0600), "-issuer", "https://approved-synthetic.invalid", "-identity-key-file", maintenanceFile(t, "key", bytes.Repeat([]byte{91}, 32), 0600), "-sub-file", maintenanceFile(t, "sub", []byte(sub), 0600), "-org-id", f.OrgID, "-subject-id", subject, "-request-id", request}
+	args := []string{"bind", "-backend", f.Backend, "-dsn-file", maintenanceFile(t, "dsn", []byte(f.DSN), 0600), "-issuer", "https://approved-synthetic.invalid", "-keyd-socket", socket, "-sub-file", maintenanceFile(t, "sub", []byte(sub), 0600), "-org-id", f.OrgID, "-subject-id", subject, "-request-id", request}
 	if employee != "" {
 		args = append(args, "-employee-id", employee)
 	}
@@ -49,12 +49,13 @@ func TestIdentityCLIExplicitEmployeeLinkIsImmutableTypedAndAuditedWithoutAutoAut
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			f := testsupport.NewHarness(t, backend)
+			_, socket := startIdentityKeyd(t)
 			employee := createCorrespondenceEmployee(t, f, false)
 			otherEmployee := createCorrespondenceEmployee(t, f, false)
 			foreignEmployee := createCorrespondenceEmployee(t, f, true)
 			grants, subjects := f.Count(t, "access_grant"), f.Count(t, "subject")
 			requestID := value.NewID()
-			if err := run(employeeBindArgs(t, f, f.Reader.SubjectID, employee, "synthetic-approved-employee", requestID)); err != nil {
+			if err := run(employeeBindArgs(t, f, socket, f.Reader.SubjectID, employee, "synthetic-approved-employee", requestID)); err != nil {
 				t.Fatal("explicit approved subject/employee CLI link failed:", err)
 			}
 			query := "SELECT org_id,subject_id,employee_id FROM subject_employee"
@@ -78,14 +79,14 @@ func TestIdentityCLIExplicitEmployeeLinkIsImmutableTypedAndAuditedWithoutAutoAut
 				{f.Observer.SubjectID, foreignEmployee, "synthetic-forbidden-foreign-employee"},
 			} {
 				identities, audits := f.Count(t, "subject_identity"), f.Count(t, "audit_event")
-				if err := run(employeeBindArgs(t, f, invalid.subject, invalid.employee, invalid.sub, value.NewID())); err == nil {
+				if err := run(employeeBindArgs(t, f, socket, invalid.subject, invalid.employee, invalid.sub, value.NewID())); err == nil {
 					t.Fatal("wrong existing/occupied/foreign correspondence must fail")
 				}
 				if f.Count(t, "subject_identity") != identities || f.Count(t, "audit_event") != audits || f.Count(t, "subject_employee") != 1 {
 					t.Fatal("failed correspondence cannot leave an identity, link, or successful audit")
 				}
 			}
-			if err := run(employeeBindArgs(t, f, f.Reader.SubjectID, "", "synthetic-approved-alias-no-employee-flag", value.NewID())); err != nil {
+			if err := run(employeeBindArgs(t, f, socket, f.Reader.SubjectID, "", "synthetic-approved-alias-no-employee-flag", value.NewID())); err != nil {
 				t.Fatal(err)
 			}
 			if err := f.Repo.DB.QueryRow("SELECT employee_id FROM subject_employee").Scan(&gotEmployee); err != nil || gotEmployee != employee {

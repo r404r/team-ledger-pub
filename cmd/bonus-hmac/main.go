@@ -10,7 +10,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -28,7 +27,7 @@ import (
 )
 
 func main() {
-	if err := runWithClient(os.Args[1:], &http.Client{Timeout: 15 * time.Second}); err != nil {
+	if err := runWithTrust(os.Args[1:], nil); err != nil {
 		fmt.Fprintln(os.Stderr, "Bonus HMAC maintenance failed")
 		os.Exit(1)
 	}
@@ -130,13 +129,8 @@ func verifyMaintenanceApproval(raw, trust []byte, now time.Time, org string, ver
 	return compensation.BonusHMACMaintenanceApproval{ApprovedBySubjectID: document.ApprovedBySubjectID, RequestID: document.RequestID, ApprovalDigest: digest[:]}, nil
 }
 
-func runWithClient(args []string, client *http.Client) error {
-	return runWithTrust(args, client, nil)
-}
-
-func runWithTrust(args []string, client *http.Client, trustOverride []byte) error {
-
-	if len(args) == 0 || args[0] != "reindex" || client == nil {
+func runWithTrust(args []string, trustOverride []byte) error {
+	if len(args) == 0 || args[0] != "reindex" {
 		return fault.Invalid
 	}
 	flags := flag.NewFlagSet("bonus-hmac reindex", flag.ContinueOnError)
@@ -144,16 +138,13 @@ func runWithTrust(args []string, client *http.Client, trustOverride []byte) erro
 	backend := flags.String("backend", "", "sqlite or postgres")
 	dsnFile := flags.String("dsn-file", "", "protected DSN file")
 	caFile := flags.String("postgres-ca-file", "", "protected public PostgreSQL CA file")
-	vaultEndpoint := flags.String("vault-endpoint", "", "approved HTTPS Vault endpoint")
-	vaultKey := flags.String("vault-key", "", "financial Transit key")
-	vaultTokenFile := flags.String("vault-token-file", "", "protected Vault token file")
-	hmacKeyFile := flags.String("hmac-key-file", "", "protected target HMAC key file")
+	keydSocket := flags.String("keyd-socket", "", "local teamledger-keyd Unix socket")
 	approvalFile := flags.String("approval-file", "", "protected signed maintenance approval")
 	// The signer trust registry is fixed deployment configuration, never a CLI argument.
 	org := flags.String("org-id", "", "organization UUID")
 	targetVersion := flags.String("target-version", "", "monotonic target key version")
 	targetKeyID := flags.String("target-key-id", "", "operator-visible key identifier")
-	if flags.Parse(args[1:]) != nil || flags.NArg() != 0 || !value.ValidID(*org) {
+	if flags.Parse(args[1:]) != nil || flags.NArg() != 0 || !value.ValidID(*org) || *keydSocket == "" {
 		return fault.Invalid
 	}
 	version, err := strconv.ParseInt(*targetVersion, 10, 64)
@@ -179,18 +170,6 @@ func runWithTrust(args []string, client *http.Client, trustOverride []byte) erro
 	} else if *backend != "sqlite" || *caFile != "" {
 		return fault.Invalid
 	}
-	token, err := configfile.Read(*vaultTokenFile, 16<<10, true)
-	if err != nil || len(token) == 0 || strings.ContainsAny(string(token), "\x00\r\n") {
-		clear(token)
-		return fault.Unavailable
-	}
-	defer clear(token)
-	hmacKey, err := configfile.Read(*hmacKeyFile, 32, true)
-	if err != nil || len(hmacKey) != 32 {
-		clear(hmacKey)
-		return fault.Unavailable
-	}
-	defer clear(hmacKey)
 	approvalRaw, err := configfile.Read(*approvalFile, 16<<10, true)
 	if err != nil {
 		return fault.Unavailable
@@ -208,7 +187,14 @@ func runWithTrust(args []string, client *http.Client, trustOverride []byte) erro
 	if err != nil {
 		return err
 	}
-	wrapper, err := sensitive.NewVaultWrapper(*vaultEndpoint, *vaultKey, string(token), client)
+	keys := &sensitive.KeydClient{Socket: *keydSocket, Timeout: 10 * time.Second}
+	hmacValue, err := keys.MACStaging(context.Background(), sensitive.DomainBonusPaymentLookup, approval.ApprovalDigest, []byte("TEAMLEDGER-PROCESS-KEY\x00bonus-payment-v1"))
+	if err != nil || int64(hmacValue.Version) != version || hmacValue.KeyID != *targetKeyID {
+		clear(hmacValue.Digest)
+		return fault.Unavailable
+	}
+	defer clear(hmacValue.Digest)
+	wrapper, err := sensitive.NewKeydWrapper(keys, sensitive.DomainFinancialPayload)
 	if err != nil {
 		return fault.Unavailable
 	}
@@ -229,6 +215,6 @@ func runWithTrust(args []string, client *http.Client, trustOverride []byte) erro
 	if err = repo.CheckSchema(ctx); err != nil {
 		return err
 	}
-	service := compensation.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, BonusHMACKeys: map[int64][]byte{version: hmacKey}}
+	service := compensation.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, BonusHMACKeys: map[int64][]byte{version: hmacValue.Digest}}
 	return service.ReindexBonusPaymentHMAC(ctx, *org, version, *targetKeyID, 0, approval)
 }

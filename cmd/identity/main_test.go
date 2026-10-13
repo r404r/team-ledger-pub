@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"net/url"
 	"os"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/r404r/team-ledger/internal/configfile"
 	"github.com/r404r/team-ledger/internal/identity"
+	"github.com/r404r/team-ledger/internal/sensitive"
 	"github.com/r404r/team-ledger/internal/testsupport"
 	"github.com/r404r/team-ledger/internal/value"
 )
@@ -26,9 +26,9 @@ func TestIdentityCLIReallyBindsApprovedExistingSubjectAndRevokesOnUnbind(t *test
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			f := testsupport.NewHarness(t, backend)
-			key := bytes.Repeat([]byte{73}, 32)
+			client, socket := startIdentityKeyd(t)
 			issuer, sub := "https://approved-synthetic.invalid", "synthetic-cli-approved-sub"
-			args := []string{"bind", "-backend", backend, "-dsn-file", maintenanceFile(t, "dsn", []byte(f.DSN), 0600), "-issuer", issuer, "-identity-key-file", maintenanceFile(t, "identity-key", key, 0400), "-sub-file", maintenanceFile(t, "sub", []byte(sub), 0600), "-org-id", f.OrgID, "-subject-id", f.Owner.SubjectID, "-request-id", value.NewID()}
+			args := []string{"bind", "-backend", backend, "-dsn-file", maintenanceFile(t, "dsn", []byte(f.DSN), 0600), "-issuer", issuer, "-keyd-socket", socket, "-sub-file", maintenanceFile(t, "sub", []byte(sub), 0600), "-org-id", f.OrgID, "-subject-id", f.Owner.SubjectID, "-request-id", value.NewID()}
 			if backend == "postgres" {
 				u, err := url.Parse(f.DSN)
 				if err != nil {
@@ -43,6 +43,11 @@ func TestIdentityCLIReallyBindsApprovedExistingSubjectAndRevokesOnUnbind(t *test
 			if f.Count(t, "subject") != subjects || f.Count(t, "access_grant") != grants {
 				t.Fatal("binding cannot provision new subjects/grants")
 			}
+			key, err := client.ProcessKey(context.Background(), sensitive.DomainIdentitySubjectLookup, "identity-subject-v1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer clear(key)
 			digest, err := identity.IdentityDigest(key, issuer, sub)
 			if err != nil {
 				t.Fatal(err)
@@ -73,11 +78,16 @@ func TestIdentityCLIReallyBindsApprovedExistingSubjectAndRevokesOnUnbind(t *test
 		})
 	}
 }
-func TestIdentityCLIRejectsUnprotectedSecretsAndMissingOrInactiveSubject(t *testing.T) {
+func TestIdentityCLIRejectsMissingKeydAndUnknownOrInactiveSubject(t *testing.T) {
 	f := testsupport.NewHarness(t, "sqlite")
-	keyPath := maintenanceFile(t, "key", bytes.Repeat([]byte{74}, 32), 0600)
-	args := []string{"bind", "-backend", "sqlite", "-dsn-file", maintenanceFile(t, "dsn", []byte(f.DSN), 0600), "-issuer", "https://approved-synthetic.invalid", "-identity-key-file", keyPath, "-sub-file", maintenanceFile(t, "sub", []byte("synthetic-private-sub"), 0600), "-org-id", f.OrgID, "-subject-id", value.NewID(), "-request-id", value.NewID()}
+	_, socket := startIdentityKeyd(t)
+	args := []string{"bind", "-backend", "sqlite", "-dsn-file", maintenanceFile(t, "dsn", []byte(f.DSN), 0600), "-issuer", "https://approved-synthetic.invalid", "-keyd-socket", socket, "-sub-file", maintenanceFile(t, "sub", []byte("synthetic-private-sub"), 0600), "-org-id", f.OrgID, "-subject-id", value.NewID(), "-request-id", value.NewID()}
 	before := f.Count(t, "subject")
+	missing := append([]string(nil), args...)
+	missing[8] = filepath.Join(t.TempDir(), "missing.sock")
+	if err := run(missing); err == nil {
+		t.Fatal("missing local key service was accepted")
+	}
 	if err := run(args); err == nil {
 		t.Fatal("unknown subject cannot be auto-provisioned")
 	}
@@ -85,15 +95,6 @@ func TestIdentityCLIRejectsUnprotectedSecretsAndMissingOrInactiveSubject(t *test
 		t.Fatal("refused maintenance must preserve identities")
 	}
 	args[14] = f.Owner.SubjectID
-	if err := os.Chmod(keyPath, 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := run(args); err == nil {
-		t.Fatal("world-readable identity HMAC key must be rejected")
-	}
-	if err := os.Chmod(keyPath, 0600); err != nil {
-		t.Fatal(err)
-	}
 	if err := f.Exec(context.Background(), "UPDATE subject SET active=0 WHERE org_id=? AND id=?", "UPDATE subject SET active=false WHERE org_id=$1 AND id=$2", f.OrgID, f.Owner.SubjectID); err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +117,7 @@ func TestIdentityCLIRejectsUnsafePostgresTrustWithoutChangingIdentityFacts(t *te
 		t.Fatal("test CA must satisfy the protected public-file policy")
 	}
 	caPath := maintenanceFile(t, "postgres-ca.pem", valid, 0600)
-	keyPath := maintenanceFile(t, "key", bytes.Repeat([]byte{75}, 32), 0600)
+	_, socket := startIdentityKeyd(t)
 	subPath := maintenanceFile(t, "sub", []byte("synthetic-cli-trust-subject"), 0600)
 	for _, change := range []string{"mode", "mismatch", "writable", "malformed_bundle", "duplicate_mode", "ssl_alias"} {
 		t.Run(change, func(t *testing.T) {
@@ -148,7 +149,7 @@ func TestIdentityCLIRejectsUnsafePostgresTrustWithoutChangingIdentityFacts(t *te
 				q.Set("ssl", "true")
 			}
 			copyURL.RawQuery = q.Encode()
-			args := []string{"bind", "-backend", "postgres", "-dsn-file", maintenanceFile(t, "dsn", []byte(copyURL.String()), 0600), "-postgres-ca-file", caPath, "-issuer", "https://approved-synthetic.invalid", "-identity-key-file", keyPath, "-sub-file", subPath, "-org-id", f.OrgID, "-subject-id", f.Owner.SubjectID, "-request-id", value.NewID()}
+			args := []string{"bind", "-backend", "postgres", "-dsn-file", maintenanceFile(t, "dsn", []byte(copyURL.String()), 0600), "-postgres-ca-file", caPath, "-issuer", "https://approved-synthetic.invalid", "-keyd-socket", socket, "-sub-file", subPath, "-org-id", f.OrgID, "-subject-id", f.Owner.SubjectID, "-request-id", value.NewID()}
 			identities, subjects, grants, audits := f.Count(t, "subject_identity"), f.Count(t, "subject"), f.Count(t, "access_grant"), f.Count(t, "audit_event")
 			if err := run(args); err == nil {
 				t.Fatal("unsafe PostgreSQL trust must prevent identity maintenance")

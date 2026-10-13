@@ -1,41 +1,62 @@
 package main
 
 import (
-	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
-	"crypto/tls"
+	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/r404r/team-ledger/internal/backup"
-	"github.com/r404r/team-ledger/internal/configfile"
-	"github.com/r404r/team-ledger/internal/sensitive"
-	"github.com/r404r/team-ledger/internal/store"
 	"io"
-	"net"
-	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/r404r/team-ledger/internal/backup"
+	"github.com/r404r/team-ledger/internal/configfile"
+	"github.com/r404r/team-ledger/internal/sensitive"
+	"github.com/r404r/team-ledger/internal/store"
 )
 
-type wrapperConfig struct {
-	Domain    string `json:"domain"`
-	KeyID     string `json:"key_id"`
-	Endpoint  string `json:"endpoint"`
-	TokenFile string `json:"token_file"`
-}
-type keyConfig struct {
-	Wrappers []wrapperConfig `json:"wrappers"`
+func protected(path string, limit int) ([]byte, error) { return configfile.Read(path, limit, true) }
+
+var keyEnvelopeMagic = [8]byte{'T', 'L', 'B', 'K', 'E', 'Y', 'D', 1}
+
+func writeArchiveKey(out io.Writer, key sensitive.WrappedKey) error {
+	if len(key.Data) != 150 {
+		return errors.New("invalid archive key")
+	}
+	header := make([]byte, 12)
+	copy(header, keyEnvelopeMagic[:])
+	binary.BigEndian.PutUint16(header[8:10], 1)
+	binary.BigEndian.PutUint16(header[10:12], uint16(len(key.Data)))
+	if _, err := out.Write(header); err != nil {
+		return err
+	}
+	_, err := out.Write(key.Data)
+	return err
 }
 
-func protected(path string, limit int) ([]byte, error) { return configfile.Read(path, limit, true) }
+func readArchiveKey(in io.Reader) (sensitive.WrappedKey, error) {
+	header := make([]byte, 12)
+	if _, err := io.ReadFull(in, header); err != nil ||
+		string(header[:8]) != string(keyEnvelopeMagic[:]) ||
+		binary.BigEndian.Uint16(header[8:10]) != 1 ||
+		binary.BigEndian.Uint16(header[10:12]) != 150 {
+		return sensitive.WrappedKey{}, errors.New("invalid archive key header")
+	}
+	packet := make([]byte, 150)
+	if _, err := io.ReadFull(in, packet); err != nil {
+		return sensitive.WrappedKey{}, errors.New("truncated archive key")
+	}
+	return sensitive.ParseBackupWrappedKey(packet)
+}
+
 func hashFile(path string) (int64, string, error) {
 	file, e := os.Open(path)
 	if e != nil {
@@ -71,7 +92,7 @@ func syncRename(temp, final string) error {
 	defer dir.Close()
 	return dir.Sync()
 }
-func createSQLite(ctx context.Context, dsn, archivePath string, key []byte, now time.Time) error {
+func createSQLite(ctx context.Context, dsn, archivePath string, keyd *sensitive.KeydClient, now time.Time) error {
 	if !filepath.IsAbs(dsn) || !filepath.IsAbs(archivePath) {
 		return errors.New("absolute paths required")
 	}
@@ -111,10 +132,10 @@ func createSQLite(ctx context.Context, dsn, archivePath string, key []byte, now 
 	if e != nil {
 		return e
 	}
-	return sealSnapshot(snapshotPath, archivePath, key, manifest)
+	return sealSnapshot(ctx, snapshotPath, archivePath, keyd, manifest)
 }
 
-func sealSnapshot(snapshotPath, archivePath string, key []byte, manifest backup.Manifest) error {
+func sealSnapshot(ctx context.Context, snapshotPath, archivePath string, keyd *sensitive.KeydClient, manifest backup.Manifest) error {
 	source, e := os.Open(snapshotPath)
 	if e != nil {
 		return e
@@ -126,9 +147,18 @@ func sealSnapshot(snapshotPath, archivePath string, key []byte, manifest backup.
 	}
 	tempPath := temp.Name()
 	defer os.Remove(tempPath)
-	if e = temp.Chmod(0600); e == nil {
-		e = backup.WriteArchive(temp, source, manifest, key)
+	var archiveKey [32]byte
+	if _, e = rand.Read(archiveKey[:]); e == nil {
+		var wrapped sensitive.WrappedKey
+		wrapped, e = keyd.WrapBackup(ctx, archiveKey[:])
+		if e == nil {
+			e = writeArchiveKey(temp, wrapped)
+		}
+		if e == nil {
+			e = backup.WriteArchive(temp, source, manifest, archiveKey[:])
+		}
 	}
+	clear(archiveKey[:])
 	closeErr := temp.Close()
 	if e != nil {
 		return e
@@ -221,7 +251,7 @@ func postgresClientFiles(dsn, caPath, directory string) (string, string, string,
 	return serviceFile, schema, caCopy, nil
 }
 
-func createPostgres(ctx context.Context, dsn, caPath, archivePath string, key []byte, now time.Time) error {
+func createPostgres(ctx context.Context, dsn, caPath, archivePath string, keyd *sensitive.KeydClient, now time.Time) error {
 	if !filepath.IsAbs(caPath) || !filepath.IsAbs(archivePath) || !filepath.IsAbs(pgDumpBinary) || filepath.Base(pgDumpBinary) != "pg_dump" {
 		return errors.New("invalid PostgreSQL backup configuration")
 	}
@@ -275,39 +305,26 @@ func createPostgres(ctx context.Context, dsn, caPath, archivePath string, key []
 	if e = tx.Commit(); e != nil {
 		return e
 	}
-	return sealSnapshot(dumpPath, archivePath, key, manifest)
+	return sealSnapshot(ctx, dumpPath, archivePath, keyd, manifest)
 }
-func loadWrappers(raw []byte, client *http.Client) (map[string]sensitive.Wrapper, error) {
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	var config keyConfig
-	if decoder.Decode(&config) != nil || len(config.Wrappers) == 0 {
-		return nil, errors.New("invalid key config")
+func loadWrappers(client *sensitive.KeydClient) (map[string]sensitive.Wrapper, error) {
+	if _, err := client.Ready(context.Background()); err != nil {
+		return nil, errors.New("local key service unavailable")
 	}
-	out := map[string]sensitive.Wrapper{}
-	for _, entry := range config.Wrappers {
-		token, e := protected(entry.TokenFile, 16<<10)
-		if e != nil {
-			return nil, e
+	out := make(map[string]sensitive.Wrapper, 4)
+	for domain, keyDomain := range map[string]sensitive.KeyDomain{
+		"pii": sensitive.DomainPIIPayload, "interview": sensitive.DomainInterviewPayload,
+		"assessment": sensitive.DomainAssessmentPayload, "financial": sensitive.DomainFinancialPayload,
+	} {
+		wrapper, err := sensitive.NewKeydWrapper(client, keyDomain)
+		if err != nil {
+			return nil, err
 		}
-		if strings.ContainsAny(string(token), "\x00\r\n") {
-			clear(token)
-			return nil, errors.New("invalid Vault token")
-		}
-		wrapper, e := sensitive.NewVaultWrapper(entry.Endpoint, entry.KeyID, string(token), client)
-		clear(token)
-		if e != nil {
-			return nil, e
-		}
-		key := entry.Domain + "\x00" + entry.KeyID
-		if _, exists := out[key]; exists {
-			return nil, errors.New("duplicate key config")
-		}
-		out[key] = wrapper
+		out[domain] = wrapper
 	}
 	return out, nil
 }
-func restore(ctx context.Context, archivePath, target string, key, configRaw []byte, client *http.Client, now time.Time) error {
+func restore(ctx context.Context, archivePath, target string, keyd *sensitive.KeydClient, now time.Time) error {
 	if !filepath.IsAbs(archivePath) || !filepath.IsAbs(target) {
 		return errors.New("absolute paths required")
 	}
@@ -331,7 +348,18 @@ func restore(ctx context.Context, archivePath, target string, key, configRaw []b
 		temp.Close()
 		return e
 	}
+	wrapped, e := readArchiveKey(reader)
+	if e != nil {
+		temp.Close()
+		return e
+	}
+	key, e := keyd.UnwrapBackup(ctx, wrapped)
+	if e != nil {
+		temp.Close()
+		return errors.New("required archive key unavailable")
+	}
 	manifest, e := backup.ReadArchive(reader, temp, key)
+	clear(key)
 	closeErr := temp.Close()
 	if e != nil {
 		return e
@@ -350,7 +378,7 @@ func restore(ctx context.Context, archivePath, target string, key, configRaw []b
 	if e = repo.CheckSchema(ctx); e != nil {
 		return e
 	}
-	wrappers, e := loadWrappers(configRaw, client)
+	wrappers, e := loadWrappers(keyd)
 	if e != nil {
 		return e
 	}
@@ -359,7 +387,7 @@ func restore(ctx context.Context, archivePath, target string, key, configRaw []b
 		return e
 	}
 	for _, sample := range samples {
-		wrapper := wrappers[sample.Domain+"\x00"+sample.Key.KEKID]
+		wrapper := wrappers[sample.Domain]
 		if wrapper == nil {
 			return errors.New("required independent key unavailable")
 		}
@@ -417,7 +445,7 @@ func postgresRestoreList(ctx context.Context, dumpPath, work string) (string, er
 	return listPath, nil
 }
 
-func restorePostgres(ctx context.Context, archivePath, targetDSN, caPath string, key, configRaw []byte, client *http.Client, now time.Time) error {
+func restorePostgres(ctx context.Context, archivePath, targetDSN, caPath string, keyd *sensitive.KeydClient, now time.Time) error {
 	if !filepath.IsAbs(archivePath) || !filepath.IsAbs(caPath) || !filepath.IsAbs(pgRestoreBinary) || filepath.Base(pgRestoreBinary) != "pg_restore" {
 		return errors.New("invalid PostgreSQL restore configuration")
 	}
@@ -440,7 +468,21 @@ func restorePostgres(ctx context.Context, archivePath, targetDSN, caPath string,
 		return e
 	}
 	archiveHash := sha256.New()
-	manifest, readErr := backup.ReadArchive(io.TeeReader(source, archiveHash), dump, key)
+	reader := io.TeeReader(source, archiveHash)
+	wrapped, readErr := readArchiveKey(reader)
+	if readErr != nil {
+		source.Close()
+		dump.Close()
+		return readErr
+	}
+	key, readErr := keyd.UnwrapBackup(ctx, wrapped)
+	if readErr != nil {
+		source.Close()
+		dump.Close()
+		return errors.New("required archive key unavailable")
+	}
+	manifest, readErr := backup.ReadArchive(reader, dump, key)
+	clear(key)
 	source.Close()
 	closeErr := dump.Close()
 	if readErr != nil {
@@ -480,7 +522,7 @@ func restorePostgres(ctx context.Context, archivePath, targetDSN, caPath string,
 	if e = repo.CheckSchema(ctx); e != nil {
 		return e
 	}
-	wrappers, e := loadWrappers(configRaw, client)
+	wrappers, e := loadWrappers(keyd)
 	if e != nil {
 		return e
 	}
@@ -489,7 +531,7 @@ func restorePostgres(ctx context.Context, archivePath, targetDSN, caPath string,
 		return e
 	}
 	for _, sample := range samples {
-		wrapper := wrappers[sample.Domain+"\x00"+sample.Key.KEKID]
+		wrapper := wrappers[sample.Domain]
 		if wrapper == nil {
 			return errors.New("required independent key unavailable")
 		}
@@ -506,7 +548,7 @@ func restorePostgres(ctx context.Context, archivePath, targetDSN, caPath string,
 	hostDigest := sha256.Sum256([]byte("TEAMLEDGER-RESTORE-HOST\x00\x01" + host))
 	return repo.FinalizeRestore(ctx, archiveHash.Sum(nil), hostDigest[:], int64(os.Geteuid()), now)
 }
-func run(args []string, client *http.Client) error {
+func run(args []string) error {
 
 	flags := flag.NewFlagSet("backup", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -516,25 +558,23 @@ func run(args []string, client *http.Client) error {
 	dsnFile := flags.String("dsn-file", "", "")
 	archivePath := flags.String("archive", "", "")
 	target := flags.String("target", "", "")
-	keyFile := flags.String("backup-key-file", "", "")
-	configFile := flags.String("key-config-file", "", "")
-	if flags.Parse(args) != nil || flags.NArg() != 0 || client == nil {
+	keydSocket := flags.String("keyd-socket", "", "")
+	if flags.Parse(args) != nil || flags.NArg() != 0 {
 		return errors.New("invalid arguments")
 	}
-	key, e := protected(*keyFile, 32)
-	if e != nil {
-		return e
+	if *keydSocket == "" {
+		return errors.New("keyd socket is required")
 	}
-	defer clear(key)
-	if len(key) != 32 {
-		return errors.New("backup key must be exactly 32 bytes")
+	keyd := &sensitive.KeydClient{Socket: *keydSocket, Timeout: 10 * time.Second}
+	if _, e := keyd.Ready(context.Background()); e != nil {
+		return errors.New("local key service unavailable")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	switch *action {
 	case "create":
-		if *target != "" || *configFile != "" {
+		if *target != "" {
 			return errors.New("invalid create arguments")
 		}
 		dsnRaw, e := protected(*dsnFile, 16<<10)
@@ -548,24 +588,19 @@ func run(args []string, client *http.Client) error {
 			if *dbCA != "" {
 				return errors.New("invalid SQLite backup arguments")
 			}
-			return createSQLite(ctx, dsn, *archivePath, key, now)
+			return createSQLite(ctx, dsn, *archivePath, keyd, now)
 		case "postgres":
-			return createPostgres(ctx, dsn, *dbCA, *archivePath, key, now)
+			return createPostgres(ctx, dsn, *dbCA, *archivePath, keyd, now)
 		default:
 			return errors.New("invalid backend")
 		}
 	case "restore":
-		config, e := protected(*configFile, 64<<10)
-		if e != nil {
-			return e
-		}
-		defer clear(config)
 		switch *backend {
 		case "sqlite":
 			if *dsnFile != "" || *dbCA != "" || *target == "" {
 				return errors.New("invalid SQLite restore arguments")
 			}
-			return restore(ctx, *archivePath, *target, key, config, client, now)
+			return restore(ctx, *archivePath, *target, keyd, now)
 		case "postgres":
 			if *target != "" {
 				return errors.New("invalid PostgreSQL restore arguments")
@@ -575,7 +610,7 @@ func run(args []string, client *http.Client) error {
 				return readErr
 			}
 			defer clear(dsnRaw)
-			return restorePostgres(ctx, *archivePath, strings.TrimSpace(string(dsnRaw)), *dbCA, key, config, client, now)
+			return restorePostgres(ctx, *archivePath, strings.TrimSpace(string(dsnRaw)), *dbCA, keyd, now)
 		default:
 			return errors.New("invalid backend")
 		}
@@ -584,10 +619,7 @@ func run(args []string, client *http.Client) error {
 	}
 }
 func main() {
-	transport := &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}, TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: 10 * time.Second, MaxResponseHeaderBytes: 16 << 10}
-	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect refused") }}
-	if e := run(os.Args[1:], client); e != nil {
+	if e := run(os.Args[1:]); e != nil {
 		fmt.Fprintln(os.Stderr, "backup operation failed")
 		os.Exit(1)
 	}

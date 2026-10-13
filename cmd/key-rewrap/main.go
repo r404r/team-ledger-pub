@@ -5,20 +5,12 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/r404r/team-ledger/internal/configfile"
-	"github.com/r404r/team-ledger/internal/maintenance"
-	"github.com/r404r/team-ledger/internal/sensitive"
-	"github.com/r404r/team-ledger/internal/store"
-	"github.com/r404r/team-ledger/internal/value"
 	"io"
-	"net"
-	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -26,6 +18,12 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/r404r/team-ledger/internal/configfile"
+	"github.com/r404r/team-ledger/internal/maintenance"
+	"github.com/r404r/team-ledger/internal/sensitive"
+	"github.com/r404r/team-ledger/internal/store"
+	"github.com/r404r/team-ledger/internal/value"
 )
 
 var approvalTrustFile = "/etc/teamledger/key-rewrap-approval-authorities.json"
@@ -75,7 +73,7 @@ func strict(raw []byte, out any) error {
 }
 func verify(raw, registry []byte, now time.Time) (maintenance.Target, error) {
 	var doc document
-	if strict(raw, &doc) != nil || !value.ValidID(doc.OrgID) || !value.ValidID(doc.ApprovedBy) || !value.ValidID(doc.RequestID) || (doc.Domain != "pii" && doc.Domain != "interview" && doc.Domain != "financial") || doc.TargetKEKID == "" || len(doc.TargetKEKID) > 128 || doc.TargetVersion == 0 {
+	if strict(raw, &doc) != nil || !value.ValidID(doc.OrgID) || !value.ValidID(doc.ApprovedBy) || !value.ValidID(doc.RequestID) || (doc.Domain != "pii" && doc.Domain != "interview" && doc.Domain != "assessment" && doc.Domain != "financial") || doc.TargetKEKID == "" || len(doc.TargetKEKID) > 128 || doc.TargetVersion == 0 {
 		return maintenance.Target{}, errors.New("invalid approval")
 	}
 	expires, e := time.Parse(time.RFC3339, doc.ExpiresAt)
@@ -113,21 +111,16 @@ func protected(path string, limit int) ([]byte, error) {
 	}
 	return raw, nil
 }
-func run(args []string, client *http.Client, trustOverride []byte) error {
+func run(args []string, trustOverride []byte) error {
 	flags := flag.NewFlagSet("key-rewrap", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	backend := flags.String("backend", "", "")
 	dsnFile := flags.String("dsn-file", "", "")
 	dbCA := flags.String("postgres-ca-file", "", "")
-	sourceURL := flags.String("source-vault-endpoint", "", "")
-	sourceKey := flags.String("source-vault-key", "", "")
-	sourceTokenFile := flags.String("source-vault-token-file", "", "")
-	targetURL := flags.String("target-vault-endpoint", "", "")
-	targetKey := flags.String("target-vault-key", "", "")
-	targetTokenFile := flags.String("target-vault-token-file", "", "")
+	keydSocket := flags.String("keyd-socket", "", "")
 	approvalFile := flags.String("approval-file", "", "")
 	limitRaw := flags.String("limit", "100", "")
-	if flags.Parse(args) != nil || flags.NArg() != 0 || client == nil {
+	if flags.Parse(args) != nil || flags.NArg() != 0 || *keydSocket == "" {
 		return errors.New("invalid arguments")
 	}
 	limit, e := strconv.Atoi(*limitRaw)
@@ -164,30 +157,6 @@ func run(args []string, client *http.Client, trustOverride []byte) error {
 	if e = repo.CheckSchema(context.Background()); e != nil {
 		return e
 	}
-	sourceToken, e := protected(*sourceTokenFile, 16<<10)
-	if e != nil {
-		return e
-	}
-	defer clear(sourceToken)
-	if strings.ContainsAny(string(sourceToken), "\x00\r\n") {
-		return errors.New("invalid source token")
-	}
-	targetToken, e := protected(*targetTokenFile, 16<<10)
-	if e != nil {
-		return e
-	}
-	defer clear(targetToken)
-	if strings.ContainsAny(string(targetToken), "\x00\r\n") {
-		return errors.New("invalid target token")
-	}
-	source, e := sensitive.NewVaultWrapper(*sourceURL, *sourceKey, string(sourceToken), client)
-	if e != nil {
-		return e
-	}
-	target, e := sensitive.NewVaultWrapper(*targetURL, *targetKey, string(targetToken), client)
-	if e != nil {
-		return e
-	}
 	approval, e := protected(*approvalFile, 16<<10)
 	if e != nil {
 		return e
@@ -214,20 +183,84 @@ func run(args []string, client *http.Client, trustOverride []byte) error {
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
-	_, done, e := maintenance.RunKeyRewrap(ctx, repo, source, target, plan, maintenance.Actor{UID: int64(os.Geteuid()), HostDigest: hostDigest[:]}, limit, time.Now().UTC().Truncate(time.Microsecond))
+	keyDomain := map[string]sensitive.KeyDomain{"pii": sensitive.DomainPIIPayload, "interview": sensitive.DomainInterviewPayload, "assessment": sensitive.DomainAssessmentPayload, "financial": sensitive.DomainFinancialPayload}[plan.Domain]
+	keys := &sensitive.KeydClient{Socket: *keydSocket, Timeout: 10 * time.Second}
+	ready, readyErr := keys.Ready(ctx)
+	if readyErr != nil {
+		return errors.New("local key service unavailable")
+	}
+	target := sensitive.KeyReference{KeyID: plan.KEKID, Version: plan.Version}
+	control, controlErr := repo.CryptoControl(ctx)
+	if controlErr != nil {
+		return errors.New("database key material control unavailable")
+	}
+	retire := func() error {
+		old, proof, needed, retireErr := repo.PrepareCryptoRetirement(ctx, keyDomain, plan.ManifestDigest, time.Now().UTC())
+		if retireErr != nil {
+			return retireErr
+		}
+		if !needed {
+			return nil
+		}
+		retired, retireErr := keys.Retire(ctx, keyDomain, old, proof)
+		if retireErr != nil {
+			return errors.New("key retirement failed")
+		}
+		return repo.CompleteCryptoRetirement(ctx, retired, keyDomain, old, proof, time.Now().UTC())
+	}
+	if ready.WriteEnabled {
+		if control.Phase == "activated" && ready.Active[keyDomain] == plan.Version {
+			if e = repo.CompleteCryptoActivation(ctx, ready, keyDomain, plan.ManifestDigest, time.Now().UTC()); e != nil {
+				return e
+			}
+			control.Phase = "stable"
+		}
+		if (control.Phase == "stable" || control.Phase == "retiring") && ready.Active[keyDomain] == plan.Version {
+			return retire()
+		}
+		return errors.New("approved key is not staged")
+	}
+	if ready.Staged[keyDomain] != target || len(ready.Staged) != 1 {
+		return errors.New("staged key does not match approval")
+	}
+	if control.Phase == "stable" {
+		if e = repo.BeginCryptoStage(ctx, ready, keyDomain, plan.ManifestDigest, time.Now().UTC()); e != nil {
+			return e
+		}
+	} else if control.Phase != "staged" && control.Phase != "activated" {
+		return errors.New("invalid database key material phase")
+	}
+	if control.Phase != "activated" {
+		_, done, e := maintenance.RunKeyRewrapWith(ctx, repo, func(callContext context.Context, current sensitive.WrappedKey) (sensitive.WrappedKey, error) {
+			return keys.Rewrap(callContext, keyDomain, current)
+		}, plan, maintenance.Actor{UID: int64(os.Geteuid()), HostDigest: hostDigest[:]}, limit, time.Now().UTC().Truncate(time.Microsecond))
+		if e != nil {
+			return e
+		}
+		if !done {
+			return errors.New("bounded batch complete; re-run same approval")
+		}
+		if ready.Active[keyDomain] != plan.Version {
+			ready, e = keys.Activate(ctx, keyDomain, plan.ManifestDigest)
+			if e != nil {
+				return errors.New("key activation failed")
+			}
+		}
+		if e = repo.RecordCryptoActivation(ctx, ready, keyDomain, plan.ManifestDigest, time.Now().UTC()); e != nil {
+			return e
+		}
+	}
+	ready, e = keys.Acknowledge(ctx, keyDomain, plan.ManifestDigest)
 	if e != nil {
+		return errors.New("key acknowledgement failed")
+	}
+	if e = repo.CompleteCryptoActivation(ctx, ready, keyDomain, plan.ManifestDigest, time.Now().UTC()); e != nil {
 		return e
 	}
-	if !done {
-		return errors.New("bounded batch complete; re-run same approval")
-	}
-	return nil
+	return retire()
 }
 func main() {
-	transport := &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}, TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: 10 * time.Second, MaxResponseHeaderBytes: 16 << 10}
-	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect refused") }}
-	if e := run(os.Args[1:], client, nil); e != nil {
+	if e := run(os.Args[1:], nil); e != nil {
 		fmt.Fprintln(os.Stderr, "KEK rewrap failed")
 		os.Exit(1)
 	}

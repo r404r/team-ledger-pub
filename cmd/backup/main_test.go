@@ -1,63 +1,97 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"crypto/tls"
-	"encoding/json"
-	"github.com/r404r/team-ledger/internal/organization"
-	"github.com/r404r/team-ledger/internal/store"
-	"github.com/r404r/team-ledger/internal/testsupport"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/r404r/team-ledger/internal/sensitive"
+	"github.com/r404r/team-ledger/internal/store"
 )
 
-func TestSQLiteBackupRestoreChecksIndependentKeysAndRevokesSessions(t *testing.T) {
-	f := testsupport.NewHarness(t, "sqlite")
-	if _, err := f.Service.Create(context.Background(), f.Request(f.Owner), f.OrgID, organization.CreateCommand{Profile: organization.Profile{LocalName: "BACKUP_KEY_PROBE"}, Lifecycle: organization.Lifecycle{ValidFrom: "2026-01-01"}}); err != nil {
-		t.Fatal(err)
-	}
+func TestSQLiteBackupRestoreRequiresLocalKeydAndRecordsRestore(t *testing.T) {
+	ctx := context.Background()
 	dir := t.TempDir()
-	archive, target := filepath.Join(dir, "snapshot.tlb"), filepath.Join(dir, "restored.db")
-	key := bytes.Repeat([]byte{23}, 32)
-	if err := createSQLite(context.Background(), f.DSN, archive, key, f.Now); err != nil {
-		t.Fatal(err)
-	}
-	configs := []wrapperConfig{}
-	for _, entry := range []struct {
-		domain string
-		vault  *testsupport.VaultFixture
-	}{{"pii", f.KMS}, {"interview", f.InterviewKMS}, {"financial", f.FinancialKMS}} {
-		tokenPath := filepath.Join(dir, entry.domain+".token")
-		if err := os.WriteFile(tokenPath, []byte(entry.vault.Token), 0600); err != nil {
-			t.Fatal(err)
-		}
-		configs = append(configs, wrapperConfig{entry.domain, entry.vault.KeyName, entry.vault.Server.URL, tokenPath})
-	}
-	raw, _ := json.Marshal(keyConfig{Wrappers: configs})
-	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
-	if err := restore(context.Background(), archive, target, key, raw, client, f.Now); err != nil {
-		t.Fatal(err)
-	}
-	repo, err := store.Open(context.Background(), "sqlite", target)
+	source := filepath.Join(dir, "source.db")
+	repo, err := store.Open(ctx, "sqlite", source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer repo.Close()
-	var active int
-	if err = repo.DB.QueryRow("SELECT count(*) FROM session WHERE revoked=0").Scan(&active); err != nil || active != 0 {
-		t.Fatal("restored sessions remained active", active, err)
+	if err = repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archive, target := filepath.Join(dir, "snapshot.tlb"), filepath.Join(dir, "restored.db")
+	now := time.Date(2026, 10, 14, 0, 0, 0, 0, time.UTC)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, err := os.MkdirTemp(home, ".teamledger-backup-keyd-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(parent)
+	if err = os.Chmod(parent, 0700); err != nil {
+		t.Fatal(err)
+	}
+	keyDir, socket := filepath.Join(parent, "keys"), filepath.Join(parent, "keyd.sock")
+	if err = sensitive.InitKeyDirectory(keyDir); err != nil {
+		t.Fatal(err)
+	}
+	keyContext, stop := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() {
+		done <- sensitive.ServeKeyd(keyContext, sensitive.KeydServerConfig{KeyDirectory: keyDir, Socket: socket, APIUIDs: []uint32{uint32(os.Geteuid())}, MaintenanceUIDs: []uint32{uint32(os.Geteuid())}})
+	}()
+	client := &sensitive.KeydClient{Socket: socket, Timeout: time.Second}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err = client.Ready(ctx); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		stop()
+		<-done
+		t.Fatal(err)
+	}
+	if err = createSQLite(ctx, source, archive, client, now); err != nil {
+		stop()
+		<-done
+		t.Fatal(err)
+	}
+	if err = restore(ctx, archive, target, client, now); err != nil {
+		stop()
+		<-done
+		t.Fatal(err)
+	}
+	restored, err := store.Open(ctx, "sqlite", target)
+	if err != nil {
+		stop()
+		<-done
+		t.Fatal(err)
 	}
 	var audits int
-	if err = repo.DB.QueryRow("SELECT count(*) FROM backup_restore_audit").Scan(&audits); err != nil || audits != 1 {
+	if err = restored.DB.QueryRow("SELECT count(*) FROM backup_restore_audit").Scan(&audits); err != nil || audits != 1 {
+		restored.Close()
+		stop()
+		<-done
 		t.Fatal("restore audit missing", audits, err)
 	}
-	missing, _ := json.Marshal(keyConfig{Wrappers: configs[1:]})
-	if err = restore(context.Background(), archive, filepath.Join(dir, "must-not-activate.db"), key, missing, client, f.Now); err == nil {
-		t.Fatal("restore activated without every independent key")
+	_ = restored.Close()
+	stop()
+	if err = <-done; err != nil {
+		t.Fatal(err)
+	}
+	if err = restore(ctx, archive, filepath.Join(dir, "must-not-activate.db"), client, now); err == nil {
+		t.Fatal("restore activated without local key service")
 	}
 }
 

@@ -72,3 +72,48 @@ func RunKeyRewrap(ctx context.Context, store Store, source, target sensitive.Wra
 	}
 	return completed, false, nil
 }
+
+func RunKeyRewrapWith(ctx context.Context, store Store, rewrap func(context.Context, sensitive.WrappedKey) (sensitive.WrappedKey, error), plan Target, actor Actor, limit int, now time.Time) (int, bool, error) {
+	if store == nil || rewrap == nil || plan.OrgID == "" || plan.KEKID == "" || plan.Version == 0 || len(plan.ManifestDigest) != 32 || limit < 1 || limit > 1000 {
+		return 0, false, errors.New("invalid key rewrap plan")
+	}
+	if err := store.BeginKeyRewrap(ctx, plan, now); err != nil {
+		return 0, false, err
+	}
+	completed := 0
+	for completed < limit {
+		item, found, err := store.NextKeyRewrap(ctx, plan)
+		if err != nil {
+			return completed, false, err
+		}
+		if !found {
+			if err = store.CompleteKeyRewrap(ctx, plan, actor, now); err != nil {
+				return completed, false, err
+			}
+			return completed, true, nil
+		}
+		next, err := rewrap(ctx, item.Key)
+		if err != nil {
+			return completed, false, err
+		}
+		if next.KEKID != plan.KEKID || next.Version != plan.Version {
+			clear(next.Data)
+			return completed, false, errors.New("key service returned unapproved target")
+		}
+		if err = store.CommitKeyRewrap(ctx, plan, item, next, now); err != nil {
+			clear(next.Data)
+			return completed, false, err
+		}
+		clear(next.Data)
+		completed++
+	}
+	if _, found, err := store.NextKeyRewrap(ctx, plan); err != nil {
+		return completed, false, err
+	} else if !found {
+		if err = store.CompleteKeyRewrap(ctx, plan, actor, now); err != nil {
+			return completed, false, err
+		}
+		return completed, true, nil
+	}
+	return completed, false, nil
+}

@@ -14,11 +14,14 @@ import (
 )
 
 var _ maintenance.Store = (*Repository)(nil)
-var rewrapTables = map[string][]string{"pii": {"encrypted_payload", "workforce_payload"}, "interview": {"interview_payload", "assessment_payload"}, "financial": {"compensation_payload", "bonus_payload", "compensation_batch_payload", "compensation_batch_import_candidate", "salary_range_payload"}}
+var rewrapTables = map[string][]string{
+	"pii": {"encrypted_payload", "workforce_payload"}, "interview": {"interview_payload"},
+	"assessment": {"assessment_payload"}, "financial": {"compensation_payload", "bonus_payload", "compensation_batch_payload", "compensation_batch_import_candidate", "salary_range_payload"},
+}
 
 func validRewrapTarget(target maintenance.Target) bool {
 	tables := rewrapTables[target.Domain]
-	return value.ValidID(target.OrgID) && len(tables) == 2 && target.KEKID != "" && len(target.KEKID) <= 128 && target.Version > 0 && len(target.ManifestDigest) == 32
+	return value.ValidID(target.OrgID) && len(tables) > 0 && target.KEKID != "" && len(target.KEKID) <= 128 && target.Version > 0 && len(target.ManifestDigest) == 32
 }
 func (r *Repository) recordKeyRewrapApproval(ctx context.Context, tx *sql.Tx, target maintenance.Target, kind string, now time.Time) error {
 	_, err := tx.ExecContext(ctx, r.read().sql("INSERT INTO key_rewrap_approval_audit(id,org_id,domain,target_kek_id,target_kek_version,manifest_digest,kind,recorded_at) VALUES(?,?,?,?,?,?,?,?)", "INSERT INTO key_rewrap_approval_audit(id,org_id,domain,target_kek_id,target_kek_version,manifest_digest,kind,recorded_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)"), value.NewID(), target.OrgID, target.Domain, target.KEKID, int64(target.Version), target.ManifestDigest, kind, r.read().bindTime(now))

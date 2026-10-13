@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -13,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -31,8 +28,8 @@ import (
 )
 
 func main() {
-	if run() != nil {
-		fmt.Fprintln(os.Stderr, "API startup or runtime failed")
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "API startup or runtime failed:", err)
 		os.Exit(1)
 	}
 }
@@ -76,7 +73,7 @@ func secret(name string, size int) ([]byte, error) {
 }
 
 func run() error {
-	names := []string{"BACKEND", "DSN", "LISTEN", "PUBLIC_ORIGIN", "TLS_CERT_FILE", "TLS_KEY_FILE", "KMS_URL", "KMS_KEY", "INTERVIEW_KMS_URL", "INTERVIEW_KMS_KEY", "WEB_DIR"}
+	names := []string{"BACKEND", "DSN", "LISTEN", "PUBLIC_ORIGIN", "TLS_CERT_FILE", "TLS_KEY_FILE", "KEYD_SOCKET", "WEB_DIR"}
 	cfg := map[string]string{}
 	for _, name := range names {
 		v, e := required(name)
@@ -88,59 +85,56 @@ func run() error {
 	if !validListener(cfg["LISTEN"], os.Getenv("TEAMLEDGER_LISTEN_SCOPE")) {
 		return errors.New("invalid listener")
 	}
-	csrf, e := secret("CSRF_KEY_FILE", 32)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	startup, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	keys := &sensitive.KeydClient{Socket: cfg["KEYD_SOCKET"], Timeout: 5 * time.Second}
+	ready, e := keys.Ready(startup)
+	if e != nil || ready.MaterialGeneration == 0 {
+		return errors.New("key service unavailable")
+	}
+	csrf, e := keys.ProcessKey(startup, sensitive.DomainCSRFToken, "csrf-v1")
 	if e != nil {
-		return e
+		return errors.New("key service unavailable")
 	}
 	defer clear(csrf)
-	digest, e := secret("DIGEST_KEY_FILE", 32)
+	digest, e := keys.ProcessKey(startup, sensitive.DomainCommandReceipt, "command-receipt-v1")
 	if e != nil {
-		return e
+		return errors.New("key service unavailable")
 	}
 	defer clear(digest)
-	cursor, e := secret("CURSOR_KEY_FILE", 32)
+	cursor, e := keys.ProcessKey(startup, sensitive.DomainCursorToken, "cursor-v1")
 	if e != nil {
-		return e
+		return errors.New("key service unavailable")
 	}
 	defer clear(cursor)
-	if bytes.Equal(csrf, digest) || bytes.Equal(cursor, csrf) || bytes.Equal(cursor, digest) {
-		return errors.New("keys must be distinct")
-	}
-	tokenPath, e := required("KMS_TOKEN_FILE")
+	identityKey, e := keys.ProcessKey(startup, sensitive.DomainIdentitySubjectLookup, "identity-subject-v1")
 	if e != nil {
-		return e
+		return errors.New("key service unavailable")
 	}
-	token, e := configfile.Read(tokenPath, 4096, true)
+	defer clear(identityKey)
+	transactionKey, e := keys.ProcessKey(startup, sensitive.DomainCommandReceipt, "identity-transaction-v1")
 	if e != nil {
-		return e
+		return errors.New("key service unavailable")
 	}
-	defer clear(token)
-	tokenText := strings.TrimSpace(string(token))
-	if tokenText == "" || strings.ContainsAny(tokenText, "\r\n") {
-		return errors.New("invalid token")
-	}
-	roots, e := x509.SystemCertPool()
+	defer clear(transactionKey)
+	wrapper, e := sensitive.NewKeydWrapper(keys, sensitive.DomainPIIPayload)
 	if e != nil {
-		return errors.New("invalid trust store")
+		return errors.New("invalid key service configuration")
 	}
-	if ca := os.Getenv("TEAMLEDGER_KMS_CA_FILE"); ca != "" {
-		pem, e := configfile.Read(ca, 1<<20, false)
-		if e != nil || !roots.AppendCertsFromPEM(pem) {
-			return errors.New("invalid KMS CA")
-		}
-	}
-	transport := &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}, TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: 5 * time.Second, MaxResponseHeaderBytes: 16 << 10, MaxConnsPerHost: 8, MaxIdleConns: 8, IdleConnTimeout: 30 * time.Second}
-	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect refused") }}
-	wrapper, e := sensitive.NewVaultWrapper(cfg["KMS_URL"], cfg["KMS_KEY"], tokenText, client)
+	interviewWrapper, e := sensitive.NewKeydWrapper(keys, sensitive.DomainInterviewPayload)
 	if e != nil {
-		return errors.New("invalid KMS configuration")
+		return errors.New("invalid key service configuration")
 	}
-	interviewWrapper, closeInterviewKeys, e := interviewKeyService(cfg, tokenText)
+	assessmentWrapper, e := sensitive.NewKeydWrapper(keys, sensitive.DomainAssessmentPayload)
 	if e != nil {
-		return e
+		return errors.New("invalid key service configuration")
 	}
-	defer closeInterviewKeys()
+	financialWrapper, e := sensitive.NewKeydWrapper(keys, sensitive.DomainFinancialPayload)
+	if e != nil {
+		return errors.New("invalid key service configuration")
+	}
 	policy, e := compensationPolicy()
 	if e != nil {
 		return e
@@ -149,31 +143,14 @@ func run() error {
 	var bonusHMACKeyIDs map[int64]string
 	var bonusHMACActive int64
 	if len(policy.ControlledBonusSources) != 0 {
-		activeText, activeKeyID := os.Getenv("TEAMLEDGER_BONUS_HMAC_ACTIVE_VERSION"), os.Getenv("TEAMLEDGER_BONUS_HMAC_ACTIVE_KEY_ID")
-		active, parseErr := strconv.ParseInt(activeText, 10, 64)
-		if parseErr != nil || active < 1 || strconv.FormatInt(active, 10) != activeText || !validConfigurationKeyID(activeKeyID) {
-			return errors.New("invalid bonus HMAC configuration")
-		}
-		bonusKey, err := secret("BONUS_HMAC_ACTIVE_KEY_FILE", 32)
+		value, err := keys.MAC(startup, sensitive.DomainBonusPaymentLookup, []byte("TEAMLEDGER-PROCESS-KEY\x00bonus-payment-v1"))
 		if err != nil {
-			return err
+			return errors.New("key service unavailable")
 		}
-		defer clear(bonusKey)
-		if bytes.Equal(bonusKey, csrf) || bytes.Equal(bonusKey, digest) || bytes.Equal(bonusKey, cursor) {
-			return errors.New("keys must be distinct")
-		}
-		bonusHMACActive = active
-		bonusHMACKeys = map[int64][]byte{active: bonusKey}
-		bonusHMACKeyIDs = map[int64]string{active: activeKeyID}
-	}
-	var financialWrapper sensitive.Wrapper
-	if policy.Enabled {
-		var closeFinancialKeys func()
-		financialWrapper, closeFinancialKeys, e = financialKeyService(cfg, tokenText)
-		if e != nil {
-			return e
-		}
-		defer closeFinancialKeys()
+		bonusHMACActive = int64(value.Version)
+		bonusHMACKeys = map[int64][]byte{bonusHMACActive: value.Digest}
+		bonusHMACKeyIDs = map[int64]string{bonusHMACActive: value.KeyID}
+		defer clear(value.Digest)
 	}
 	keyPEM, e := configfile.Read(cfg["TLS_KEY_FILE"], 64<<10, true)
 	if e != nil {
@@ -202,10 +179,6 @@ func run() error {
 	if e != nil {
 		return e
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	startup, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
 	repo, e := store.Open(startup, cfg["BACKEND"], cfg["DSN"])
 	if e != nil {
 		return errors.New("database unavailable")
@@ -214,9 +187,12 @@ func run() error {
 	if repo.CheckSchema(startup) != nil {
 		return errors.New("invalid database schema")
 	}
+	if repo.VerifyOrInitializeCryptoState(startup, ready, time.Now().UTC()) != nil {
+		return errors.New("key material does not match database")
+	}
 	service := &organization.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, DigestKey: digest, CursorKey: cursor, Now: time.Now}
 	interviews := &interview.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: interviewWrapper}, DigestKey: digest, CursorKey: cursor, Now: time.Now}
-	assessments := &assessment.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: interviewWrapper}, DigestKey: digest, ProviderPolicies: assessmentProviders, Workers: assessmentWorkers, ServiceSubjects: assessmentServices, Now: time.Now}
+	assessments := &assessment.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: assessmentWrapper}, DigestKey: digest, ProviderPolicies: assessmentProviders, Workers: assessmentWorkers, ServiceSubjects: assessmentServices, Now: time.Now}
 	schedulerFailed := make(chan struct{}, 1)
 	go func() {
 		if runAssessmentScheduler(ctx, assessments) != nil {
@@ -225,7 +201,7 @@ func run() error {
 	}()
 	finance := &compensation.Service{Store: repo, Batches: repo, Cipher: sensitive.Cipher{Wrapper: financialWrapper}, DigestKey: digest, CursorKey: cursor, BonusHMACKeys: bonusHMACKeys, BonusHMACKeyIDs: bonusHMACKeyIDs, BonusHMACActive: bonusHMACActive, Policy: policy, Now: time.Now}
 	grants := &authz.Service{Store: repo, DigestKey: digest, CursorKey: cursor, Now: time.Now}
-	oidcConfig, closeIdentity, e := identityConfiguration(cfg["PUBLIC_ORIGIN"], csrf, digest, cursor)
+	oidcConfig, closeIdentity, e := identityConfiguration(cfg["PUBLIC_ORIGIN"], csrf, digest, cursor, identityKey, transactionKey)
 	if e != nil {
 		return e
 	}
@@ -240,12 +216,24 @@ func run() error {
 	if e != nil {
 		return e
 	}
+	verifiedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health/live" {
+			handler.ServeHTTP(w, r)
+			return
+		}
+		state, err := keys.Ready(r.Context())
+		if err != nil || repo.VerifyCryptoState(r.Context(), state) != nil {
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
 	serverTLS := &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}
 	if workerRoots != nil {
 		serverTLS.ClientAuth = tls.VerifyClientCertIfGiven
 		serverTLS.ClientCAs = workerRoots
 	}
-	server := &http.Server{Addr: cfg["LISTEN"], Handler: handler, TLSConfig: serverTLS, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10, ErrorLog: log.New(io.Discard, "", 0)}
+	server := &http.Server{Addr: cfg["LISTEN"], Handler: verifiedHandler, TLSConfig: serverTLS, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10, ErrorLog: log.New(io.Discard, "", 0)}
 	listener, e := net.Listen("tcp", cfg["LISTEN"])
 	if e != nil {
 		return errors.New("listener unavailable")

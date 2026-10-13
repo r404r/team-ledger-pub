@@ -3,8 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"encoding/pem"
 	"net"
 	"net/http"
@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/r404r/team-ledger/internal/sensitive"
 	"github.com/r404r/team-ledger/internal/testsupport"
 )
 
@@ -50,36 +51,36 @@ func TestValidListenerScopes(t *testing.T) {
 	}
 }
 
-func TestAPIStartupRequiresProtectedCredentialFiles(t *testing.T) {
+func TestAPIStartupRequiresProtectedTLSAndLocalKeyd(t *testing.T) {
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			f := testsupport.NewHarness(t, backend)
+			home, err := os.UserHomeDir()
+			if err != nil {
+				t.Fatal(err)
+			}
+			keyParent, err := os.MkdirTemp(home, ".teamledger-api-keyd-test-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.RemoveAll(keyParent)
+			if err = os.Chmod(keyParent, 0700); err != nil {
+				t.Fatal(err)
+			}
+			keyDirectory, socket := filepath.Join(keyParent, "keys"), filepath.Join(keyParent, "keyd.sock")
+			if err = sensitive.InitKeyDirectory(keyDirectory); err != nil {
+				t.Fatal(err)
+			}
 			for _, tc := range []struct {
-				name, unsafeFile string
-				mode             os.FileMode
-				accepts          bool
+				name      string
+				keyMode   os.FileMode
+				startKeyd bool
+				accepts   bool
 			}{
-				{"owner_read_only", "", 0400, true},
-				{"owner_read_write", "", 0600, true},
-				{"public_csrf", "csrf.key", 0644, false},
-				{"group_digest", "digest.key", 0640, false},
-				{"public_cursor", "cursor.key", 0644, false},
-				{"missing_cursor", "cursor.key", 0600, false},
-				{"nonregular_cursor", "cursor.key", 0600, false},
-				{"cursor_equals_csrf", "cursor.key", 0600, false},
-				{"cursor_equals_digest", "cursor.key", 0600, false},
-				{"public_kms_token", "kms.token", 0666, false},
-				{"public_tls_private_key", "api.key", 0644, false},
-				{"public_interview_token", "interview.token", 0644, false},
-				{"missing_interview_token", "", 0600, false},
-				{"interview_token_equals_pii", "", 0600, false},
-				{"interview_key_equals_pii", "", 0600, false},
-				{"public_writable_interview_ca", "interview-cert.pem", 0666, false},
-				{"public_readable_interview_ca", "interview-cert.pem", 0644, true},
-				{"public_read_only_ca", "cert.pem", 0444, true},
-				{"public_readable_ca", "cert.pem", 0644, true},
-				{"group_writable_ca", "cert.pem", 0660, false},
-				{"public_writable_ca", "cert.pem", 0666, false},
+				{"protected_local_keyd", 0600, true, true},
+				{"owner_read_only_tls_key", 0400, true, true},
+				{"public_tls_private_key", 0644, true, false},
+				{"missing_local_keyd", 0600, false, false},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					dir := t.TempDir()
@@ -90,55 +91,44 @@ func TestAPIStartupRequiresProtectedCredentialFiles(t *testing.T) {
 					}
 					defer clear(key)
 					cert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Certificate[0]})
-					interviewCert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: f.InterviewKMS.Server.TLS.Certificates[0].Certificate[0]})
-					files := map[string][]byte{"csrf.key": f.CSRFKey, "digest.key": f.DigestKey, "cursor.key": f.CursorKey, "kms.token": []byte(f.KMS.Token), "interview.token": []byte(f.InterviewKMS.Token), "interview-cert.pem": interviewCert, "api.key": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: key}), "cert.pem": cert, "index.html": []byte("<!doctype html><title>Fixture</title>")}
-					for name, data := range files {
-						if name == "interview.token" {
-							if tc.name == "missing_interview_token" {
-								continue
+					if err = os.WriteFile(filepath.Join(dir, "api.key"), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: key}), tc.keyMode); err != nil {
+						t.Fatal(err)
+					}
+					if err = os.WriteFile(filepath.Join(dir, "cert.pem"), cert, 0644); err != nil {
+						t.Fatal(err)
+					}
+					if err = os.WriteFile(filepath.Join(dir, "index.html"), []byte("<!doctype html><title>Fixture</title>"), 0644); err != nil {
+						t.Fatal(err)
+					}
+					// Every startup for this database uses the same persisted keyring.
+					keyContext, stopKeys := context.WithCancel(context.Background())
+					defer stopKeys()
+					keyDone := make(chan error, 1)
+					if tc.startKeyd {
+						go func() {
+							keyDone <- sensitive.ServeKeyd(keyContext, sensitive.KeydServerConfig{KeyDirectory: keyDirectory, Socket: socket, APIUIDs: []uint32{uint32(os.Geteuid())}})
+						}()
+						client := &sensitive.KeydClient{Socket: socket, Timeout: time.Second}
+						deadline := time.Now().Add(3 * time.Second)
+						for time.Now().Before(deadline) {
+							if _, err = client.Ready(context.Background()); err == nil {
+								break
 							}
-							if tc.name == "interview_token_equals_pii" {
-								data = []byte(f.KMS.Token)
-							}
+							time.Sleep(10 * time.Millisecond)
 						}
-						if name == "cursor.key" {
-							switch tc.name {
-							case "missing_cursor":
-								continue
-							case "nonregular_cursor":
-								if err := os.Mkdir(filepath.Join(dir, name), 0700); err != nil {
-									t.Fatal(err)
-								}
-								continue
-							case "cursor_equals_csrf":
-								data = f.CSRFKey
-							case "cursor_equals_digest":
-								data = f.DigestKey
-							}
+						if err != nil {
+							stopKeys()
+							<-keyDone
+							t.Fatal("keyd did not become ready", err)
 						}
-						mode := os.FileMode(0600)
-						if tc.unsafeFile == "" {
-							mode = tc.mode
-						}
-						if name == tc.unsafeFile {
-							mode = tc.mode
-						}
-						path := filepath.Join(dir, name)
-						if err := os.WriteFile(path, data, 0600); err != nil {
-							t.Fatal(err)
-						}
-						if err := os.Chmod(path, mode); err != nil {
-							t.Fatal(err)
-						}
+						defer func() { stopKeys(); <-keyDone }()
 					}
 					listener, err := net.Listen("tcp", "127.0.0.1:0")
 					if err != nil {
 						t.Fatal(err)
 					}
 					address := listener.Addr().String()
-					if err = listener.Close(); err != nil {
-						t.Fatal(err)
-					}
+					_ = listener.Close()
 					origin := "https://" + address
 					executable, err := os.Executable()
 					if err != nil {
@@ -147,24 +137,14 @@ func TestAPIStartupRequiresProtectedCredentialFiles(t *testing.T) {
 					ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 					defer cancel()
 					command := exec.CommandContext(ctx, executable, "-test.run=^TestAPIStartupChildProcess$")
-					env := map[string]string{"BACKEND": backend, "DSN": f.DSN, "LISTEN": address, "PUBLIC_ORIGIN": origin, "TLS_CERT_FILE": filepath.Join(dir, "cert.pem"), "TLS_KEY_FILE": filepath.Join(dir, "api.key"), "CSRF_KEY_FILE": filepath.Join(dir, "csrf.key"), "DIGEST_KEY_FILE": filepath.Join(dir, "digest.key"), "KMS_URL": f.KMS.Server.URL, "KMS_KEY": "dev002-pii", "KMS_TOKEN_FILE": filepath.Join(dir, "kms.token"), "KMS_CA_FILE": filepath.Join(dir, "cert.pem"), "WEB_DIR": dir, "TEST_API_CHILD": "1"}
-					env["CURSOR_KEY_FILE"] = filepath.Join(dir, "cursor.key")
-					env["INTERVIEW_KMS_URL"] = f.InterviewKMS.Server.URL
-					env["INTERVIEW_KMS_KEY"] = f.InterviewKMS.KeyName
-					env["INTERVIEW_KMS_TOKEN_FILE"] = filepath.Join(dir, "interview.token")
-					env["INTERVIEW_KMS_CA_FILE"] = filepath.Join(dir, "interview-cert.pem")
-					env["COMPENSATION_POLICY_FILE"] = ""
-					if tc.name == "interview_key_equals_pii" {
-						env["INTERVIEW_KMS_KEY"] = f.KMS.KeyName
-					}
+					env := map[string]string{"BACKEND": backend, "DSN": f.DSN, "LISTEN": address, "PUBLIC_ORIGIN": origin, "TLS_CERT_FILE": filepath.Join(dir, "cert.pem"), "TLS_KEY_FILE": filepath.Join(dir, "api.key"), "KEYD_SOCKET": socket, "WEB_DIR": dir, "TEST_API_CHILD": "1", "COMPENSATION_POLICY_FILE": ""}
 					command.Env = os.Environ()
 					for name, value := range env {
 						command.Env = append(command.Env, "TEAMLEDGER_"+name+"="+value)
 					}
 					var output bytes.Buffer
-					command.Stdout = &output
-					command.Stderr = &output
-					if err := command.Start(); err != nil {
+					command.Stdout, command.Stderr = &output, &output
+					if err = command.Start(); err != nil {
 						t.Fatal("actual API child launch failed")
 					}
 					exited := make(chan error, 1)
@@ -181,21 +161,20 @@ func TestAPIStartupRequiresProtectedCredentialFiles(t *testing.T) {
 							}
 						}
 					}()
-					client := *f.KMS.Server.Client()
-					client.Timeout = 300 * time.Millisecond
+					client := http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, Timeout: 300 * time.Millisecond} // controlled loopback fixture
 					ticker := time.NewTicker(10 * time.Millisecond)
 					defer ticker.Stop()
 					for {
 						select {
-						case err := <-exited:
+						case childErr := <-exited:
 							finished = true
 							if tc.accepts {
-								t.Fatal("protected configuration did not start actual API")
+								t.Fatalf("protected local-keyd configuration did not start API: %s", output.String())
 							}
-							if err == nil || command.ProcessState.ExitCode() == 0 {
-								t.Fatal("insecure file must fail startup")
+							if childErr == nil || command.ProcessState.ExitCode() == 0 {
+								t.Fatal("invalid startup configuration exited successfully")
 							}
-							for _, private := range []string{dir, f.DSN, f.KMS.Token, f.InterviewKMS.Token, string(f.CSRFKey), string(f.DigestKey), string(f.CursorKey), "-----BEGIN PRIVATE KEY-----"} {
+							for _, private := range []string{dir, f.DSN, keyDirectory, "-----BEGIN PRIVATE KEY-----"} {
 								if strings.Contains(output.String(), private) {
 									t.Fatal("startup error disclosed private configuration")
 								}
@@ -204,25 +183,20 @@ func TestAPIStartupRequiresProtectedCredentialFiles(t *testing.T) {
 						case <-ctx.Done():
 							t.Fatal("API startup observation deadline exceeded")
 						case <-ticker.C:
-							request, err := http.NewRequestWithContext(ctx, "GET", origin+"/api/v1/session", nil)
-							if err != nil {
-								t.Fatal(err)
+							request, requestErr := http.NewRequestWithContext(ctx, "GET", origin+"/health/live", nil)
+							if requestErr != nil {
+								t.Fatal(requestErr)
 							}
-							request.AddCookie(&http.Cookie{Name: "__Host-teamledger_session", Value: f.Owner.Token})
-							response, err := client.Do(request)
-							if err != nil {
+							response, requestErr := client.Do(request)
+							if requestErr != nil {
 								continue
 							}
-							var session struct {
-								SubjectID string `json:"subject_id"`
-							}
-							decode := json.NewDecoder(response.Body).Decode(&session)
 							_ = response.Body.Close()
 							if !tc.accepts {
-								t.Fatal("actual API accepted insecure credential-file permissions")
+								t.Fatal("API accepted invalid startup configuration")
 							}
-							if response.StatusCode != 200 || decode != nil || session.SubjectID != f.Owner.SubjectID {
-								t.Fatal("protected startup must serve actual authenticated session")
+							if response.StatusCode != 200 {
+								t.Fatalf("protected startup readiness status = %d", response.StatusCode)
 							}
 							return
 						}
@@ -277,67 +251,4 @@ func TestCompensationPolicyRejectsUnapprovedConfiguration(t *testing.T) {
 			t.Fatal("mutable untrusted policy accepted")
 		}
 	})
-}
-
-func TestFinancialKeyConfigurationRequiresIndependentCredentials(t *testing.T) {
-	f := testsupport.NewHarness(t, "sqlite")
-	cert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: f.InterviewKMS.Server.TLS.Certificates[0].Certificate[0]})
-	for _, tc := range []string{"missing_url", "missing_key", "missing_token", "missing_ca", "pii_key", "interview_key", "pii_token", "interview_token", "public_token", "writable_ca", "invalid_ca", "insecure_url"} {
-		t.Run(tc, func(t *testing.T) {
-			dir := t.TempDir()
-			token := "synthetic-independent-financial-token"
-			switch tc {
-			case "pii_token":
-				token = f.KMS.Token
-			case "interview_token":
-				token = f.InterviewKMS.Token
-			}
-			for name, data := range map[string][]byte{"financial.token": []byte(token), "interview.token": []byte(f.InterviewKMS.Token), "financial.pem": cert} {
-				if tc == "invalid_ca" && name == "financial.pem" {
-					data = []byte("not a trust anchor")
-				}
-				if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if tc == "public_token" {
-				if err := os.Chmod(filepath.Join(dir, "financial.token"), 0644); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if tc == "writable_ca" {
-				if err := os.Chmod(filepath.Join(dir, "financial.pem"), 0666); err != nil {
-					t.Fatal(err)
-				}
-			}
-			values := map[string]string{"URL": f.InterviewKMS.Server.URL, "KEY": "synthetic-financial-key", "TOKEN_FILE": filepath.Join(dir, "financial.token"), "CA_FILE": filepath.Join(dir, "financial.pem")}
-			switch tc {
-			case "missing_url":
-				values["URL"] = ""
-			case "missing_key":
-				values["KEY"] = ""
-			case "missing_token":
-				values["TOKEN_FILE"] = ""
-			case "missing_ca":
-				values["CA_FILE"] = ""
-			case "pii_key":
-				values["KEY"] = f.KMS.KeyName
-			case "interview_key":
-				values["KEY"] = f.InterviewKMS.KeyName
-			case "insecure_url":
-				values["URL"] = "http://127.0.0.1"
-			}
-			for name, value := range values {
-				t.Setenv("TEAMLEDGER_FINANCIAL_KMS_"+name, value)
-			}
-			t.Setenv("TEAMLEDGER_INTERVIEW_KMS_TOKEN_FILE", filepath.Join(dir, "interview.token"))
-			wrapper, closeKeys, err := financialKeyService(map[string]string{"KMS_KEY": f.KMS.KeyName, "INTERVIEW_KMS_KEY": f.InterviewKMS.KeyName}, f.KMS.Token)
-			if closeKeys != nil {
-				defer closeKeys()
-			}
-			if err == nil || wrapper != nil {
-				t.Fatal("financial encryption accepted insecure or shared credentials")
-			}
-		})
-	}
 }

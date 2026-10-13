@@ -2,21 +2,14 @@ package main
 
 import (
 	"bytes"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
-	"net/http"
 	"os"
-	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/r404r/team-ledger/internal/compensation"
 	"github.com/r404r/team-ledger/internal/configfile"
-	"github.com/r404r/team-ledger/internal/sensitive"
 )
 
 // Approval is explicit: absence of a policy never enables financial operations.
@@ -119,52 +112,4 @@ func uniquePolicyJSON(decoder *json.Decoder, depth int) error {
 	}
 	_, err = decoder.Token()
 	return err
-}
-
-func financialKeyService(cfg map[string]string, piiToken string) (sensitive.Wrapper, func(), error) {
-	financial := make(map[string]string, 4)
-	for _, name := range []string{"URL", "KEY", "TOKEN_FILE", "CA_FILE"} {
-		value, err := required("FINANCIAL_KMS_" + name)
-		if err != nil {
-			return nil, nil, err
-		}
-		financial[name] = value
-	}
-	if financial["KEY"] == cfg["KMS_KEY"] || financial["KEY"] == cfg["INTERVIEW_KMS_KEY"] {
-		return nil, nil, errors.New("invalid purpose-separated financial KMS configuration")
-	}
-	token, err := configfile.Read(financial["TOKEN_FILE"], 4096, true)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer clear(token)
-	tokenText := strings.TrimSpace(string(token))
-	if tokenText == "" || strings.ContainsAny(tokenText, "\r\n") || tokenText == piiToken {
-		return nil, nil, errors.New("invalid purpose-separated financial KMS configuration")
-	}
-	interviewPath, err := required("INTERVIEW_KMS_TOKEN_FILE")
-	if err != nil {
-		return nil, nil, err
-	}
-	interviewToken, err := configfile.Read(interviewPath, 4096, true)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer clear(interviewToken)
-	if tokenText == strings.TrimSpace(string(interviewToken)) {
-		return nil, nil, errors.New("invalid purpose-separated financial KMS configuration")
-	}
-	pem, err := configfile.Read(financial["CA_FILE"], 1<<20, false)
-	roots := x509.NewCertPool()
-	if err != nil || !roots.AppendCertsFromPEM(pem) {
-		return nil, nil, errors.New("invalid financial KMS trust")
-	}
-	transport := &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}, TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: 5 * time.Second, MaxResponseHeaderBytes: 16 << 10, MaxConnsPerHost: 8, MaxIdleConns: 8, IdleConnTimeout: 30 * time.Second}
-	client := &http.Client{Transport: transport, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect refused") }}
-	wrapper, err := sensitive.NewVaultWrapper(financial["URL"], financial["KEY"], tokenText, client)
-	if err != nil {
-		transport.CloseIdleConnections()
-		return nil, nil, errors.New("invalid financial KMS configuration")
-	}
-	return wrapper, transport.CloseIdleConnections, nil
 }

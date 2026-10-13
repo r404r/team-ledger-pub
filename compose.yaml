@@ -10,16 +10,81 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >-
-        chown ${TEAMLEDGER_UID:?set TEAMLEDGER_UID}:${TEAMLEDGER_GID:?set TEAMLEDGER_GID} /var/lib/teamledger
-        && chmod 0700 /var/lib/teamledger
+        test "${TEAMLEDGER_UID:?set TEAMLEDGER_UID}" != "${TEAMLEDGER_KEYD_UID:?set TEAMLEDGER_KEYD_UID}" &&
+        test "${TEAMLEDGER_UID:?set TEAMLEDGER_UID}" != "${TEAMLEDGER_MAINTENANCE_UID:?set TEAMLEDGER_MAINTENANCE_UID}" &&
+        test "${TEAMLEDGER_KEYD_UID:?set TEAMLEDGER_KEYD_UID}" != "${TEAMLEDGER_MAINTENANCE_UID:?set TEAMLEDGER_MAINTENANCE_UID}" &&
+        install -d -o ${TEAMLEDGER_UID} -g ${TEAMLEDGER_GID:?set TEAMLEDGER_GID} -m 0770 /var/lib/teamledger &&
+        install -d -o ${TEAMLEDGER_KEYD_UID} -g ${TEAMLEDGER_GID} -m 0700 /var/lib/teamledger-keys &&
+        install -d -o ${TEAMLEDGER_KEYD_UID} -g ${TEAMLEDGER_GID} -m 0770 /run/teamledger-keyd &&
+        for path in /var/lib/teamledger/teamledger.db /var/lib/teamledger/teamledger.db-wal /var/lib/teamledger/teamledger.db-shm; do
+        if [ -e "$$path" ] || [ -L "$$path" ]; then
+        test -f "$$path" && test ! -L "$$path" &&
+        chown ${TEAMLEDGER_UID}:${TEAMLEDGER_GID} "$$path" && chmod 0660 "$$path" || exit 1;
+        fi;
+        done
     volumes:
       - team-ledger-data:/var/lib/teamledger
+      - team-ledger-keys:/var/lib/teamledger-keys
+      - team-ledger-run:/run/teamledger-keyd
     restart: "no"
+
+  key-bootstrap:
+    <<: *team-ledger-image
+    profiles: ["bootstrap"]
+    user: "${TEAMLEDGER_KEYD_UID:?set TEAMLEDGER_KEYD_UID}:${TEAMLEDGER_GID:?set TEAMLEDGER_GID}"
+    command: ["/app/teamledger-keyctl-local", "init", "-dir", "/var/lib/teamledger-keys/material"]
+    depends_on:
+      data-init:
+        condition: service_completed_successfully
+    volumes:
+      - team-ledger-keys:/var/lib/teamledger-keys
+    restart: "no"
+
+  key-check:
+    <<: *team-ledger-image
+    user: "${TEAMLEDGER_KEYD_UID:?set TEAMLEDGER_KEYD_UID}:${TEAMLEDGER_GID:?set TEAMLEDGER_GID}"
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["test -f /var/lib/teamledger-keys/material/root.key && test -f /var/lib/teamledger-keys/material/keyring.bin && test -f /var/lib/teamledger-keys/material/.lock"]
+    depends_on:
+      data-init:
+        condition: service_completed_successfully
+    volumes:
+      - team-ledger-keys:/var/lib/teamledger-keys
+    restart: "no"
+
+  keyd:
+    <<: *team-ledger-image
+    user: "${TEAMLEDGER_KEYD_UID:?set TEAMLEDGER_KEYD_UID}:${TEAMLEDGER_GID:?set TEAMLEDGER_GID}"
+    command: ["/app/teamledger-keyd"]
+    environment:
+      TEAMLEDGER_KEYD_DIR: /var/lib/teamledger-keys/material
+      TEAMLEDGER_KEYD_SOCKET: /run/teamledger-keyd/keyd.sock
+      TEAMLEDGER_KEYD_API_UIDS: "${TEAMLEDGER_UID:?set TEAMLEDGER_UID}"
+      TEAMLEDGER_KEYD_MAINTENANCE_UIDS: "${TEAMLEDGER_MAINTENANCE_UID:?set TEAMLEDGER_MAINTENANCE_UID}"
+    depends_on:
+      key-check:
+        condition: service_completed_successfully
+    volumes:
+      - team-ledger-keys:/var/lib/teamledger-keys
+      - team-ledger-run:/run/teamledger-keyd
+    read_only: true
+    tmpfs:
+      - /tmp:mode=0700,uid=${TEAMLEDGER_KEYD_UID:?set TEAMLEDGER_KEYD_UID},gid=${TEAMLEDGER_GID:?set TEAMLEDGER_GID}
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "/bin/sh", "-c", "test -S /run/teamledger-keyd/keyd.sock"]
+      interval: 5s
+      timeout: 2s
+      retries: 6
+    restart: unless-stopped
 
   migrate:
     <<: *team-ledger-image
     user: "${TEAMLEDGER_UID:?set TEAMLEDGER_UID}:${TEAMLEDGER_GID:?set TEAMLEDGER_GID}"
-    command: ["/app/teamledger-migrate"]
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["umask 0007; exec /app/teamledger-migrate"]
     environment:
       TEAMLEDGER_BACKEND: sqlite
       TEAMLEDGER_DSN: /var/lib/teamledger/teamledger.db
@@ -36,6 +101,8 @@ services:
       context: .
       dockerfile: Dockerfile
     user: "${TEAMLEDGER_UID:?set TEAMLEDGER_UID}:${TEAMLEDGER_GID:?set TEAMLEDGER_GID}"
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["umask 0007; exec /app/teamledger-api"]
     env_file:
       - path: .env.docker
         required: true
@@ -47,20 +114,17 @@ services:
       TEAMLEDGER_WEB_DIR: /app/web
       TEAMLEDGER_TLS_CERT_FILE: /run/teamledger/tls-cert.pem
       TEAMLEDGER_TLS_KEY_FILE: /run/teamledger/tls-key.pem
-      TEAMLEDGER_CSRF_KEY_FILE: /run/teamledger/csrf.key
-      TEAMLEDGER_DIGEST_KEY_FILE: /run/teamledger/digest.key
-      TEAMLEDGER_CURSOR_KEY_FILE: /run/teamledger/cursor.key
-      TEAMLEDGER_KMS_TOKEN_FILE: /run/teamledger/kms.token
-      TEAMLEDGER_KMS_CA_FILE: /run/teamledger/kms-ca.pem
-      TEAMLEDGER_INTERVIEW_KMS_TOKEN_FILE: /run/teamledger/interview-kms.token
-      TEAMLEDGER_INTERVIEW_KMS_CA_FILE: /run/teamledger/interview-kms-ca.pem
+      TEAMLEDGER_KEYD_SOCKET: /run/teamledger-keyd/keyd.sock
     depends_on:
       migrate:
         condition: service_completed_successfully
+      keyd:
+        condition: service_healthy
     ports:
       - "${TEAMLEDGER_BIND_ADDRESS:-127.0.0.1}:${TEAMLEDGER_DOCKER_PORT:-8443}:8443"
     volumes:
       - team-ledger-data:/var/lib/teamledger
+      - team-ledger-run:/run/teamledger-keyd
       - ./docker/secrets:/run/teamledger:ro
     read_only: true
     tmpfs:
@@ -76,6 +140,33 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  maintenance:
+    <<: *team-ledger-image
+    profiles: ["maintenance"]
+    user: "${TEAMLEDGER_MAINTENANCE_UID:?set TEAMLEDGER_MAINTENANCE_UID}:${TEAMLEDGER_GID:?set TEAMLEDGER_GID}"
+    command: ["/bin/true"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      keyd:
+        condition: service_healthy
+    volumes:
+      - team-ledger-data:/var/lib/teamledger
+      - team-ledger-run:/run/teamledger-keyd
+      - ./docker/maintenance:/run/teamledger-maintenance:ro
+      - ./docker/maintenance:/etc/teamledger:ro
+      - ${TEAMLEDGER_BACKUP_DIR:-./backups}:/backup
+    read_only: true
+    tmpfs:
+      - /tmp:mode=0700,uid=${TEAMLEDGER_MAINTENANCE_UID:?set TEAMLEDGER_MAINTENANCE_UID},gid=${TEAMLEDGER_GID:?set TEAMLEDGER_GID}
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
 volumes:
   team-ledger-data:
     name: ${TEAMLEDGER_DATA_VOLUME:-team-ledger-data}
+  team-ledger-keys:
+    name: ${TEAMLEDGER_KEY_VOLUME:-team-ledger-keys}
+  team-ledger-run:

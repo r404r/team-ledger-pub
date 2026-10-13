@@ -1,6 +1,7 @@
 package testsupport
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdsa"
@@ -99,7 +100,65 @@ func NewVaultFixture(keyName string) (*VaultFixture, error) {
 }
 
 func (f *VaultFixture) Wrapper() (sensitive.Wrapper, error) {
-	return sensitive.NewVaultWrapper(f.Server.URL, f.KeyName, f.Token, f.Server.Client())
+	return fixtureWrapper{fixture: f}, nil
+}
+
+type fixtureWrapper struct{ fixture *VaultFixture }
+
+func (w fixtureWrapper) Wrap(ctx context.Context, dek []byte) (sensitive.WrappedKey, error) {
+	f := w.fixture
+	f.Calls.Add(1)
+	if f.Fail.Load() || len(dek) != 32 || ctx.Err() != nil {
+		return sensitive.WrappedKey{}, sensitive.ErrUnavailable
+	}
+	f.mu.Lock()
+	var arrived chan<- struct{}
+	var release <-chan struct{}
+	if f.encryptRemaining > 0 {
+		f.encryptRemaining--
+		arrived, release = f.encryptArrived, f.encryptRelease
+	}
+	f.mu.Unlock()
+	if arrived != nil {
+		select {
+		case arrived <- struct{}{}:
+		case <-ctx.Done():
+			return sensitive.WrappedKey{}, sensitive.ErrUnavailable
+		}
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return sensitive.WrappedKey{}, sensitive.ErrUnavailable
+		}
+	}
+	data := f.aead.Seal(nil, nil, dek, []byte(f.KeyName+":v1"))
+	return sensitive.WrappedKey{KEKID: f.KeyName, Version: 1, Data: data}, nil
+}
+
+func (w fixtureWrapper) Unwrap(ctx context.Context, key sensitive.WrappedKey) ([]byte, error) {
+	f := w.fixture
+	f.Calls.Add(1)
+	if f.Fail.Load() || key.KEKID != f.KeyName || key.Version != 1 || ctx.Err() != nil {
+		return nil, sensitive.ErrUnavailable
+	}
+	f.mu.Lock()
+	arrived, release := f.arrived, f.release
+	f.arrived, f.release = nil, nil
+	f.mu.Unlock()
+	if arrived != nil {
+		close(arrived)
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return nil, sensitive.ErrUnavailable
+		}
+	}
+	dek, err := f.aead.Open(nil, nil, key.Data, []byte(f.KeyName+":v1"))
+	if err != nil || len(dek) != 32 {
+		clear(dek)
+		return nil, sensitive.ErrInvalid
+	}
+	return dek, nil
 }
 func (f *VaultFixture) Close() { f.Server.Close(); clear(f.key) }
 func (f *VaultFixture) BlockNextDecrypt(arrived chan struct{}, release <-chan struct{}) {

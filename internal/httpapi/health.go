@@ -14,9 +14,16 @@ type readinessStore interface {
 	AuditDeliveryBacklog(context.Context, time.Time) (int64, *time.Time, error)
 }
 
+type readyWrapper interface {
+	Ready(context.Context) error
+}
+
 func probeWrapper(ctx context.Context, wrapper sensitive.Wrapper) bool {
 	if wrapper == nil {
 		return false
+	}
+	if ready, ok := wrapper.(readyWrapper); ok {
+		return ready.Ready(ctx) == nil
 	}
 	dek := make([]byte, 32)
 	defer clear(dek)
