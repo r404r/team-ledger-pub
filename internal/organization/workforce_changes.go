@@ -43,6 +43,7 @@ type WorkforceChangeItem struct {
 	EmployeeID        string           `json:"employee_id"`
 	StaffCode         *string          `json:"staff_code,omitempty"`
 	LegalEntityID     *string          `json:"legal_entity_id,omitempty"`
+	EmploymentKind    *string          `json:"employment_kind,omitempty"`
 	LocationCode      *string          `json:"location_code,omitempty"`
 	EducationLevel    *string          `json:"education_level,omitempty"`
 	Institution       *string          `json:"institution,omitempty"`
@@ -150,28 +151,59 @@ func validWorkforceChangeItem(item WorkforceChangeItem) bool {
 		return false
 	}
 	if item.Action == "end" {
-		return item.Ref != nil && item.EffectiveTo != nil && item.ValidFrom == nil
+		return item.Ref != nil && item.EffectiveTo != nil && item.ValidFrom == nil && item.ValidTo == nil && noWorkforcePayload(item)
 	}
 	if item.ValidFrom == nil || item.EffectiveTo != nil || item.Action == "add" && item.Ref != nil || item.Action == "replace" && item.Ref == nil {
 		return false
 	}
 	switch item.Kind {
 	case "identifier":
-		if item.StaffCode == nil {
+		if item.StaffCode == nil || !onlyWorkforceFields(item, "identifier") {
 			return false
 		}
 		_, ok := NormalizeStaffCode(*item.StaffCode)
 		return ok
 	case "employment":
-		return item.LegalEntityID != nil && value.ValidID(*item.LegalEntityID) && item.LocationCode != nil && validLocation(*item.LocationCode)
+		return validIDPointer(item.LegalEntityID) && item.LocationCode != nil && validLocation(*item.LocationCode) &&
+			item.EmploymentKind != nil && oneOf(*item.EmploymentKind, "hire", "rehire", "transfer") && onlyWorkforceFields(item, "employment")
 	case "education":
-		return item.EducationLevel != nil && validEducationLevel(*item.EducationLevel)
+		return item.EducationLevel != nil && validEducationLevel(*item.EducationLevel) &&
+			textValid(item.Institution, 256, false) && textValid(item.Field, 256, false) &&
+			(item.AwardDate == nil || value.ValidDate(*item.AwardDate)) && onlyWorkforceFields(item, "education")
 	case "job_assignment":
-		return validIDPointer(item.DepartmentID) && validIDPointer(item.JobFamilyID) && validIDPointer(item.CareerLevelID) && item.Position != nil
+		return validIDPointer(item.DepartmentID) && (item.JobFamilyID == nil || value.ValidID(*item.JobFamilyID)) &&
+			(item.CareerLevelID == nil || value.ValidID(*item.CareerLevelID)) && (item.Position == nil || positionValid(*item.Position)) &&
+			onlyWorkforceFields(item, "job_assignment")
 	case "reporting":
-		return validIDPointer(item.ManagerEmployeeID) && item.ManagerEmployeeID != nil && *item.ManagerEmployeeID != item.EmployeeID && item.ReportingKind != nil && oneOf(*item.ReportingKind, "administrative", "dotted")
+		return validIDPointer(item.ManagerEmployeeID) && *item.ManagerEmployeeID != item.EmployeeID &&
+			item.ReportingKind != nil && oneOf(*item.ReportingKind, "administrative", "dotted") && onlyWorkforceFields(item, "reporting")
 	case "employee_lifecycle":
-		return true
+		return onlyWorkforceFields(item, "employee_lifecycle")
+	}
+	return false
+}
+
+func noWorkforcePayload(item WorkforceChangeItem) bool {
+	return item.StaffCode == nil && item.EmploymentKind == nil && item.LegalEntityID == nil && item.LocationCode == nil &&
+		item.EducationLevel == nil && item.Institution == nil && item.Field == nil && item.AwardDate == nil &&
+		item.DepartmentID == nil && item.JobFamilyID == nil && item.CareerLevelID == nil && item.Position == nil &&
+		item.ManagerEmployeeID == nil && item.ReportingKind == nil
+}
+
+func onlyWorkforceFields(item WorkforceChangeItem, kind string) bool {
+	switch kind {
+	case "identifier":
+		return item.EmploymentKind == nil && item.LegalEntityID == nil && item.LocationCode == nil && item.EducationLevel == nil && item.Institution == nil && item.Field == nil && item.AwardDate == nil && item.DepartmentID == nil && item.JobFamilyID == nil && item.CareerLevelID == nil && item.Position == nil && item.ManagerEmployeeID == nil && item.ReportingKind == nil
+	case "employment":
+		return item.StaffCode == nil && item.EducationLevel == nil && item.Institution == nil && item.Field == nil && item.AwardDate == nil && item.DepartmentID == nil && item.JobFamilyID == nil && item.CareerLevelID == nil && item.Position == nil && item.ManagerEmployeeID == nil && item.ReportingKind == nil
+	case "education":
+		return item.StaffCode == nil && item.EmploymentKind == nil && item.LegalEntityID == nil && item.LocationCode == nil && item.DepartmentID == nil && item.JobFamilyID == nil && item.CareerLevelID == nil && item.Position == nil && item.ManagerEmployeeID == nil && item.ReportingKind == nil
+	case "job_assignment":
+		return item.StaffCode == nil && item.EmploymentKind == nil && item.LegalEntityID == nil && item.LocationCode == nil && item.EducationLevel == nil && item.Institution == nil && item.Field == nil && item.AwardDate == nil && item.ManagerEmployeeID == nil && item.ReportingKind == nil
+	case "reporting":
+		return item.StaffCode == nil && item.EmploymentKind == nil && item.LegalEntityID == nil && item.LocationCode == nil && item.EducationLevel == nil && item.Institution == nil && item.Field == nil && item.AwardDate == nil && item.DepartmentID == nil && item.JobFamilyID == nil && item.CareerLevelID == nil && item.Position == nil
+	case "employee_lifecycle":
+		return noWorkforcePayload(item)
 	}
 	return false
 }

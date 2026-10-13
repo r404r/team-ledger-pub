@@ -25,10 +25,11 @@ func TestWorkforceChangesAcceptOnlyFixedMasterDataShapes(t *testing.T) {
 	staff := "001 AbC"
 	location := LocationShanghai
 	level := EducationMaster
+	employmentKind := "hire"
 	administrative := "administrative"
 	for _, item := range []WorkforceChangeItem{
 		{Action: "add", Kind: "identifier", EmployeeID: workforceEmployee, StaffCode: &staff, ValidFrom: &date},
-		{Action: "add", Kind: "employment", EmployeeID: workforceEmployee, LegalEntityID: ptr(workforceEntity), LocationCode: &location, ValidFrom: &date},
+		{Action: "add", Kind: "employment", EmployeeID: workforceEmployee, LegalEntityID: ptr(workforceEntity), LocationCode: &location, EmploymentKind: &employmentKind, ValidFrom: &date},
 		{Action: "add", Kind: "education", EmployeeID: workforceEmployee, EducationLevel: &level, ValidFrom: &date},
 		{Action: "add", Kind: "job_assignment", EmployeeID: workforceEmployee, DepartmentID: ptr(workforceDept), JobFamilyID: ptr(workforceFamily), CareerLevelID: ptr(workforceLevel), Position: &PositionPayload{Title: "Engineer"}, ValidFrom: &date},
 		{Action: "add", Kind: "reporting", EmployeeID: workforceEmployee, ManagerEmployeeID: ptr(workforceManager), ReportingKind: &administrative, ValidFrom: &date},
@@ -50,6 +51,14 @@ func TestWorkforceChangesRejectHODSecondaryUnknownEmployeeAndPartialSets(t *test
 		if validWorkforceChange(workforceCommand(item)) {
 			t.Fatalf("forbidden workforce shape accepted: %#v", item)
 		}
+	}
+	missingEmploymentKind := workforceCommand(WorkforceChangeItem{Action: "add", Kind: "employment", EmployeeID: workforceEmployee, LegalEntityID: ptr(workforceEntity), LocationCode: ptr(LocationShanghai), ValidFrom: &date})
+	if validWorkforceChange(missingEmploymentKind) {
+		t.Fatal("employment without typed hire/rehire/transfer kind accepted")
+	}
+	endWithPayload := workforceCommand(WorkforceChangeItem{Action: "end", Kind: "education", EmployeeID: workforceEmployee, Ref: ptr(workforceEntity), EffectiveTo: &date, EducationLevel: ptr(EducationMaster)})
+	if validWorkforceChange(endWithPayload) {
+		t.Fatal("end command with replacement payload accepted")
 	}
 	unknown := workforceCommand(WorkforceChangeItem{Action: "add", Kind: "education", EmployeeID: workforceManager, EducationLevel: ptr(EducationMaster), ValidFrom: &date})
 	if validWorkforceChange(unknown) {
