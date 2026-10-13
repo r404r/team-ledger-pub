@@ -106,7 +106,13 @@ func (s *Service) releaseQuery(ctx context.Context, req Request, snap authz.Snap
 		if err := tx.LockSubjects(ctx, snap.OrgID, []string{snap.SubjectID}); err != nil {
 			return err
 		}
-		current, err := s.structureAuthority(ctx, tx, req, snap.OrgID, op, false)
+		var current authz.Snapshot
+		var err error
+		if len(employees) == 1 && (op == "OP-ORG-06" || op == "OP-ORG-07") {
+			current, err = s.authorize(ctx, tx, req, snap.OrgID, employees[0].ID, op)
+		} else {
+			current, err = s.structureAuthority(ctx, tx, req, snap.OrgID, op, false)
+		}
 		if err != nil {
 			return err
 		}

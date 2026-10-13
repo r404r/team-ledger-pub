@@ -75,7 +75,7 @@ func (r *Repository) backupManifest(ctx context.Context, q queryer, created time
 	if err = rows.Close(); err != nil {
 		return backup.Manifest{}, safeError(err)
 	}
-	queries := map[string]string{"pii": "SELECT DISTINCT kek_id,kek_version FROM encrypted_payload UNION SELECT DISTINCT kek_id,kek_version FROM organizational_payload", "interview": "SELECT DISTINCT kek_id,kek_version FROM interview_payload UNION SELECT DISTINCT kek_id,kek_version FROM assessment_payload", "financial": "SELECT DISTINCT kek_id,kek_version FROM compensation_payload UNION SELECT DISTINCT kek_id,kek_version FROM bonus_payload"}
+	queries := map[string]string{"pii": "SELECT DISTINCT kek_id,kek_version FROM encrypted_payload UNION SELECT DISTINCT kek_id,kek_version FROM workforce_payload", "interview": "SELECT DISTINCT kek_id,kek_version FROM interview_payload UNION SELECT DISTINCT kek_id,kek_version FROM assessment_payload", "financial": "SELECT DISTINCT kek_id,kek_version FROM compensation_payload UNION SELECT DISTINCT kek_id,kek_version FROM bonus_payload"}
 	for _, domain := range []string{"pii", "interview", "financial"} {
 		rows, err = q.QueryContext(ctx, queries[domain])
 		if err != nil {
@@ -231,7 +231,7 @@ type BackupKeySample struct {
 
 func (r *Repository) BackupKeySamples(ctx context.Context) ([]BackupKeySample, error) {
 	queries := map[string]string{
-		"pii":       "SELECT kek_id,kek_version,wrapped_dek FROM encrypted_payload UNION ALL SELECT kek_id,kek_version,wrapped_dek FROM organizational_payload ORDER BY 1,2",
+		"pii":       "SELECT kek_id,kek_version,wrapped_dek FROM encrypted_payload UNION ALL SELECT kek_id,kek_version,wrapped_dek FROM workforce_payload ORDER BY 1,2",
 		"interview": "SELECT kek_id,kek_version,wrapped_dek FROM interview_payload UNION ALL SELECT kek_id,kek_version,wrapped_dek FROM assessment_payload ORDER BY 1,2",
 		"financial": "SELECT kek_id,kek_version,wrapped_dek FROM compensation_payload UNION ALL SELECT kek_id,kek_version,wrapped_dek FROM bonus_payload ORDER BY 1,2",
 	}

@@ -14,7 +14,7 @@ import (
 )
 
 var _ maintenance.Store = (*Repository)(nil)
-var rewrapTables = map[string][]string{"pii": {"encrypted_payload", "organizational_payload"}, "interview": {"interview_payload", "assessment_payload"}, "financial": {"compensation_payload", "bonus_payload"}}
+var rewrapTables = map[string][]string{"pii": {"encrypted_payload", "workforce_payload"}, "interview": {"interview_payload", "assessment_payload"}, "financial": {"compensation_payload", "bonus_payload"}}
 
 func validRewrapTarget(target maintenance.Target) bool {
 	tables := rewrapTables[target.Domain]

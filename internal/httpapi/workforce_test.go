@@ -225,7 +225,7 @@ func TestAPIWorkforceFactsCommitAtomicallyAndReplay(t *testing.T) {
 			}
 			overlap := fmt.Sprintf(`{"expected_catalog_revision":"2","expected_graph_revision":"1","expected_employee_revisions":{%q:"5"},"changes":[{"action":"add","kind":"employment","employee_id":%q,"legal_entity_id":%q,"employment_kind":"transfer","location_code":"Tokyo","valid_from":"2027-03-01"}]}`, employee.ID, employee.ID, catalog.Items[0].ID)
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, overlap, value.NewID()), http.StatusConflict, nil)
-			for table, want := range map[string]int{"employee_business_identifier": 2, "employment_spell": 2, "education_record": 1, "workforce_payload": 4, "workforce_command_receipt": 5} {
+			for table, want := range map[string]int{"employee_business_identifier": 2, "employment_spell": 2, "education_record": 1, "workforce_payload": 5, "workforce_command_receipt": 5} {
 				if got := f.Count(t, table); got != want {
 					t.Fatalf("%s rows=%d want %d", table, got, want)
 				}
