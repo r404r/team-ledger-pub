@@ -65,15 +65,18 @@ func TestV12FreshInstallIsCleanWorkforceBaseline(t *testing.T) {
 			t.Fatalf("plaintext workforce column %s.%s exists", column.table, column.name)
 		}
 	}
-	var locations, education string
+	var locations, education, educationRanks string
 	if err = repo.DB.QueryRowContext(ctx, "SELECT group_concat(code,',') FROM (SELECT code FROM work_location ORDER BY code)").Scan(&locations); err != nil {
 		t.Fatal(err)
 	}
 	if err = repo.DB.QueryRowContext(ctx, "SELECT group_concat(code,',') FROM (SELECT code FROM education_level ORDER BY code)").Scan(&education); err != nil {
 		t.Fatal(err)
 	}
-	if locations != "Shanghai,Tokyo,Wuxi" || education != "Bachelor,Diploma,Master" {
-		t.Fatalf("fixed catalogs = locations %q education %q", locations, education)
+	if err = repo.DB.QueryRowContext(ctx, "SELECT group_concat(code||':'||rank,',') FROM (SELECT code,rank FROM education_level ORDER BY rank DESC)").Scan(&educationRanks); err != nil {
+		t.Fatal(err)
+	}
+	if locations != "Shanghai,Tokyo,Wuxi" || education != "Bachelor,Diploma,Master" || educationRanks != "Master:3,Bachelor:2,Diploma:1" {
+		t.Fatalf("fixed catalogs = locations %q education %q ranks %q", locations, education, educationRanks)
 	}
 }
 
@@ -107,14 +110,17 @@ func TestV12PostgresInstallHasNoTeamEraTables(t *testing.T) {
 			t.Fatalf("plaintext PostgreSQL workforce column %s.%s exists", column.table, column.name)
 		}
 	}
-	var locations, education string
+	var locations, education, educationRanks string
 	if err := f.Repo.DB.QueryRowContext(ctx, "SELECT string_agg(code,',' ORDER BY code) FROM work_location").Scan(&locations); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.Repo.DB.QueryRowContext(ctx, "SELECT string_agg(code,',' ORDER BY code) FROM education_level").Scan(&education); err != nil {
 		t.Fatal(err)
 	}
-	if locations != "Shanghai,Tokyo,Wuxi" || education != "Bachelor,Diploma,Master" {
-		t.Fatalf("fixed PostgreSQL catalogs = locations %q education %q", locations, education)
+	if err := f.Repo.DB.QueryRowContext(ctx, "SELECT string_agg(code||':'||rank,',' ORDER BY rank DESC) FROM education_level").Scan(&educationRanks); err != nil {
+		t.Fatal(err)
+	}
+	if locations != "Shanghai,Tokyo,Wuxi" || education != "Bachelor,Diploma,Master" || educationRanks != "Master:3,Bachelor:2,Diploma:1" {
+		t.Fatalf("fixed PostgreSQL catalogs = locations %q education %q ranks %q", locations, education, educationRanks)
 	}
 }

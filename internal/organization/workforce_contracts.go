@@ -59,15 +59,20 @@ type CareerLevelView struct {
 	Active bool   `json:"active"`
 }
 
+type EducationLevelView struct {
+	Code string `json:"code"`
+	Rank int    `json:"rank"`
+}
+
 type WorkforceCatalogs struct {
-	CatalogRevision string            `json:"catalog_revision"`
-	GraphRevision   string            `json:"graph_revision"`
-	LegalEntities   []LegalEntityView `json:"legal_entities"`
-	Locations       []string          `json:"locations"`
-	OrgUnits        []OrgUnitView     `json:"org_units"`
-	EducationLevels []string          `json:"education_levels"`
-	JobFamilies     []JobFamilyView   `json:"job_families"`
-	CareerLevels    []CareerLevelView `json:"career_levels"`
+	CatalogRevision string               `json:"catalog_revision"`
+	GraphRevision   string               `json:"graph_revision"`
+	LegalEntities   []LegalEntityView    `json:"legal_entities"`
+	Locations       []string             `json:"locations"`
+	OrgUnits        []OrgUnitView        `json:"org_units"`
+	EducationLevels []EducationLevelView `json:"education_levels"`
+	JobFamilies     []JobFamilyView      `json:"job_families"`
+	CareerLevels    []CareerLevelView    `json:"career_levels"`
 }
 
 type WorkforcePayload struct {

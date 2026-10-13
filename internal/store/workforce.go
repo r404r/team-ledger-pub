@@ -21,7 +21,7 @@ func (r *Repository) WorkforcePayload(ctx context.Context, org, id string) (orga
 func (r reader) WorkforceCatalogs(ctx context.Context, org string) (organization.WorkforceCatalogs, error) {
 	out := organization.WorkforceCatalogs{
 		LegalEntities: []organization.LegalEntityView{}, Locations: []string{}, OrgUnits: []organization.OrgUnitView{},
-		EducationLevels: []string{}, JobFamilies: []organization.JobFamilyView{}, CareerLevels: []organization.CareerLevelView{},
+		EducationLevels: []organization.EducationLevelView{}, JobFamilies: []organization.JobFamilyView{}, CareerLevels: []organization.CareerLevelView{},
 	}
 	var catalogRevision, graphRevision int64
 	if err := r.db.QueryRowContext(ctx, r.structureSQL("SELECT catalog_revision,graph_revision FROM organization WHERE id=?"), org).Scan(&catalogRevision, &graphRevision); errors.Is(err, sql.ErrNoRows) {
@@ -86,17 +86,17 @@ func (r reader) WorkforceCatalogs(ctx context.Context, org string) (organization
 	}
 	rows.Close()
 
-	rows, err = r.db.QueryContext(ctx, "SELECT code FROM education_level ORDER BY code")
+	rows, err = r.db.QueryContext(ctx, "SELECT code,rank FROM education_level ORDER BY rank DESC")
 	if err != nil {
 		return out, safeError(err)
 	}
 	for rows.Next() {
-		var code string
-		if err = rows.Scan(&code); err != nil {
+		var level organization.EducationLevelView
+		if err = rows.Scan(&level.Code, &level.Rank); err != nil {
 			rows.Close()
 			return out, safeError(err)
 		}
-		out.EducationLevels = append(out.EducationLevels, code)
+		out.EducationLevels = append(out.EducationLevels, level)
 	}
 	if err = rows.Err(); err != nil {
 		rows.Close()
