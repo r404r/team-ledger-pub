@@ -1,9 +1,12 @@
 package organization
 
 import (
+	"context"
 	"strings"
+	"time"
 	"unicode/utf8"
 
+	"github.com/r404r/team-ledger/internal/sensitive"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -25,31 +28,33 @@ type WorkforceProfile struct {
 }
 
 type LegalEntityView struct {
-	ID          string `json:"id"`
-	Code        string `json:"code"`
-	DisplayName string `json:"display_name,omitempty"`
-	Active      bool   `json:"active"`
+	ID             string `json:"id"`
+	Code           string `json:"code"`
+	DisplayName    string `json:"display_name,omitempty"`
+	LabelPayloadID string `json:"-"`
+	Active         bool   `json:"active"`
 }
 
 type OrgUnitView struct {
-	ID     string `json:"id"`
-	Code   string `json:"code"`
-	Label  string `json:"label,omitempty"`
-	Kind   string `json:"kind"`
-	Active bool   `json:"active"`
+	ID             string `json:"id"`
+	Code           string `json:"code"`
+	Label          string `json:"label,omitempty"`
+	LabelPayloadID string `json:"-"`
+	Kind           string `json:"kind"`
+	Active         bool   `json:"active"`
 }
 
 type JobFamilyView struct {
 	ID     string `json:"id"`
 	Code   string `json:"code"`
-	Label  string `json:"label,omitempty"`
+	Label  string `json:"label"`
 	Active bool   `json:"active"`
 }
 
 type CareerLevelView struct {
 	ID     string `json:"id"`
 	Code   string `json:"code"`
-	Label  string `json:"label,omitempty"`
+	Label  string `json:"label"`
 	Rank   int    `json:"rank"`
 	Active bool   `json:"active"`
 }
@@ -63,6 +68,17 @@ type WorkforceCatalogs struct {
 	EducationLevels []string          `json:"education_levels"`
 	JobFamilies     []JobFamilyView   `json:"job_families"`
 	CareerLevels    []CareerLevelView `json:"career_levels"`
+}
+
+type WorkforcePayload struct {
+	ID         string
+	Envelope   sensitive.Envelope
+	RecordedAt time.Time
+}
+
+type WorkforceReader interface {
+	WorkforceCatalogs(context.Context, string) (WorkforceCatalogs, error)
+	WorkforcePayload(context.Context, string, string) (WorkforcePayload, error)
 }
 
 // NormalizeStaffCode preserves case, internal whitespace and leading zeroes.

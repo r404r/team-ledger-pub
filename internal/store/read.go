@@ -125,10 +125,6 @@ func (r reader) Security(ctx context.Context, hash []byte, org, employee string)
 		return authz.Snapshot{}, safeError(err)
 	}
 	s.SubjectEmployeeID = actor.String
-	s.Memberships, err = r.securityMemberships(ctx, s.OrgID, s.SubjectID, employee)
-	if err != nil {
-		return authz.Snapshot{}, err
-	}
 	s.Relations, err = r.securityRelations(ctx, s.OrgID, s.SubjectID)
 	if err != nil {
 		return authz.Snapshot{}, err
@@ -203,11 +199,8 @@ func (r reader) securityMemberships(ctx context.Context, org, subject, employee 
 
 func (r reader) securityRelations(ctx context.Context, org, subject string) ([]authz.Tenure, error) {
 	var facts []authz.Tenure
-	for _, kind := range []string{"team_membership", "reporting_line"} {
-		column := "membership_id"
-		if kind == "reporting_line" {
-			column = "reporting_line_id"
-		}
+	for _, kind := range []string{"reporting_line"} {
+		column := "reporting_line_id"
 		q := "SELECT " + r.tenureColumns(kind) + tenureJoin(kind) + r.sql(
 			" WHERE m.org_id=? AND EXISTS(SELECT 1 FROM access_grant g WHERE g.org_id=m.org_id AND g.subject_id=? AND g.relation_kind='"+kind+"' AND g."+column+"=m.id)",
 			" WHERE m.org_id=$1 AND EXISTS(SELECT 1 FROM access_grant g WHERE g.org_id=m.org_id AND g.subject_id=$2 AND g.relation_kind='"+kind+"' AND g."+column+"=m.id)")

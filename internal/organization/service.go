@@ -247,6 +247,10 @@ func (s *Service) authorize(ctx context.Context, reader Reader, request Request,
 	metadata := snapshot.Allows("organization.read", "metadata", employee, request.Purpose, now)
 	pii := snapshot.Allows("pii.read", "pii", employee, request.Purpose, now)
 	switch operation {
+	case "OP-ORG-09":
+		if !metadata {
+			return snapshot, fault.NotFound
+		}
 	case "OP-ORG-06":
 		if !metadata {
 			return snapshot, fault.NotFound

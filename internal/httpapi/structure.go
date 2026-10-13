@@ -18,9 +18,10 @@ func (h *handler) structureRoute(w http.ResponseWriter, r *http.Request, req org
 	teamCreate := len(parts) == 3 && parts[0] == "orgs" && parts[2] == "teams" && r.Method == http.MethodPost
 	change := len(parts) == 3 && parts[0] == "orgs" && parts[2] == "structure-changes" && r.Method == http.MethodPost
 	tree := len(parts) == 3 && parts[0] == "orgs" && parts[2] == "tree" && r.Method == http.MethodGet
+	catalogs := len(parts) == 3 && parts[0] == "orgs" && parts[2] == "workforce-catalogs" && r.Method == http.MethodGet
 	directory := len(parts) == 4 && parts[0] == "orgs" && parts[2] == "employees" && parts[3] == "query" && r.Method == http.MethodPost
 	history := len(parts) == 3 && parts[0] == "employees" && parts[2] == "organization-history" && r.Method == http.MethodGet
-	if !strings.HasPrefix(r.URL.Path, "/api/v1/") || !(teamCreate || change || tree || directory || history) {
+	if !strings.HasPrefix(r.URL.Path, "/api/v1/") || !(teamCreate || change || tree || catalogs || directory || history) {
 		return false
 	}
 	if !value.ValidID(parts[1]) || req.Purpose != "organization_management" {
@@ -66,6 +67,20 @@ func (h *handler) structureRoute(w http.ResponseWriter, r *http.Request, req org
 			return true
 		}
 		result, err := h.service.Directory(r.Context(), req, parts[1], query)
+		if err != nil {
+			h.fail(w, err, req.RequestID)
+		} else {
+			h.reply(w, http.StatusOK, result)
+		}
+		return true
+	}
+	if catalogs {
+		q, err := url.ParseQuery(r.URL.RawQuery)
+		if err != nil || !singleQuery(q, []string{"include_labels"}) || (q.Has("include_labels") && q.Get("include_labels") != "true" && q.Get("include_labels") != "false") {
+			h.fail(w, fault.Invalid, req.RequestID)
+			return true
+		}
+		result, err := h.service.Catalogs(r.Context(), req, parts[1], q.Get("include_labels") == "true")
 		if err != nil {
 			h.fail(w, err, req.RequestID)
 		} else {

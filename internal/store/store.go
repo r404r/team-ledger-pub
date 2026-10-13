@@ -263,7 +263,7 @@ func (r reader) sql(s, p string) string {
 }
 func (r *Repository) read() reader { return reader{r.DB, r.Backend} }
 
-const currentSchemaVersion = 11
+const currentSchemaVersion = 12
 
 func (r *Repository) migration(version int) (string, string, error) {
 	if (r.Backend != "sqlite" && r.Backend != "postgres") || version < 1 || version > currentSchemaVersion {
@@ -300,6 +300,12 @@ func (r *Repository) Migrate(ctx context.Context) error {
 		version, err = r.ledgerVersion(ctx, tx)
 		if err != nil {
 			return err
+		}
+		// v12 is a clean development baseline. Existing schemas are never
+		// upgraded or cleared; operators must point the process at an empty
+		// database/schema.
+		if version != currentSchemaVersion {
+			return fault.Unavailable
 		}
 		if r.Backend == "sqlite" {
 			// Acquire the writer before validating the source or copying any rows.

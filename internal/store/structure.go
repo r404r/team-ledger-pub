@@ -152,7 +152,7 @@ func (r reader) structureEmployees(ctx context.Context, predicate string, args [
 
 func (r reader) structureRelations(ctx context.Context, org, employee, asOf string) ([]organization.Relation, error) {
 	result := make([]organization.Relation, 0)
-	for _, kind := range []string{"team_parent", "membership", "position", "reporting_line"} {
+	for _, kind := range []string{"reporting_line"} {
 		table, employeeColumn, teamColumn, parentColumn, managerColumn, reportingColumn, primaryColumn, payloadColumn := structureRelationColumns(kind)
 		if employee != "" && kind == "team_parent" {
 			continue

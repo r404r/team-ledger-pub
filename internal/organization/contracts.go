@@ -105,6 +105,7 @@ type ExportStore interface {
 
 type Reader interface {
 	StructureReader
+	WorkforceReader
 	Security(context.Context, []byte, string, string) (authz.Snapshot, error)
 	Employee(context.Context, string) (Employee, error)
 	Version(context.Context, string, string, string) (Version, error)
