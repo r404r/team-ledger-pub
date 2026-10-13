@@ -161,16 +161,17 @@ func NewFixture(ctx context.Context, backend, dsn string) (_ *Fixture, err error
 	}
 	// This explicit synthetic policy is fixture data, not a production approval.
 	f.Compensation = &compensation.Service{
-		Store: f.Repo, Cipher: sensitive.Cipher{Wrapper: financialWrapper},
+		Store: f.Repo, Batches: f.Repo, Cipher: sensitive.Cipher{Wrapper: financialWrapper},
 		DigestKey: f.DigestKey, CursorKey: f.CursorKey,
 		BonusHMACKeys: map[int64][]byte{1: f.BonusHMACKey}, BonusHMACKeyIDs: map[int64]string{1: "bonus-payment-v1"}, BonusHMACActive: 1,
 		Policy: compensation.Policy{
-			Enabled: true, Currencies: map[string]int{"USD": 2, "CNY": 2, "JPY": 0, "EUR": 2},
+			Enabled: true, Currencies: map[string]int{"USD": 2, "CNY": 0, "JPY": 0, "EUR": 2},
 			Units:                  []string{"month", "year", "hour"},
 			PaymentFrequencies:     []string{"monthly", "annual", "hourly"},
 			TaxBases:               []string{"gross", "net", "not_applicable"},
 			RoundingModes:          []string{"half_even", "half_up", "toward_zero"},
 			ControlledBonusSources: []string{"fixture_payroll"},
+			SpecialReasonCatalog:   map[string]string{"market_adjustment": "Market adjustment"},
 		},
 		Now: func() time.Time { return f.Now },
 	}

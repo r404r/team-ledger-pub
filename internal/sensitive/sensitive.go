@@ -328,6 +328,22 @@ func canonicalAAD(binding Context) ([]byte, error) {
 		}
 		purpose = "financial"
 		employeeOwned = true
+	case "salary_range":
+		if binding.SchemaType != "compensation.salary_range.v1" {
+			return nil, ErrInvalid
+		}
+		purpose = "financial"
+	case "compensation_batch_line":
+		if binding.SchemaType != "compensation.batch_line.v1" {
+			return nil, ErrInvalid
+		}
+		purpose = "financial"
+		employeeOwned = true
+	case "compensation_batch_import":
+		if binding.SchemaType != "compensation.batch_import.v1" {
+			return nil, ErrInvalid
+		}
+		purpose = "financial"
 	case "compensation_decision":
 		if binding.SchemaType != "compensation.decision.v1" {
 			return nil, ErrInvalid

@@ -42,14 +42,14 @@ func TestFinanceHTTPIndependentApprovalExactMoneyAndStrictNestedInput(t *testing
 				t.Fatal("unestablished compensation must not be zero salary")
 			}
 			amount := "9007199254740993"
-			command := compensation.ProposalCommand{Kind: "initial", EffectiveDate: "2026-01-01", CompRevision: current.CompRevision, After: &compensation.Terms{Currency: "CNY", Scale: 2, AmountMinor: &amount, Unit: "month", PaymentFrequency: "monthly", TaxBasis: "gross", Components: []compensation.Component{}}, Reason: "SYNTHETIC_FINANCE_HTTP_REASON", Members: []compensation.CorrectionMember{}}
+			command := compensation.ProposalCommand{Kind: "initial", EffectiveDate: "2026-01-01", CompRevision: current.CompRevision, After: &compensation.Terms{Currency: "CNY", Scale: 0, AmountMinor: &amount, Unit: "month", PaymentFrequency: "monthly", TaxBasis: "gross", Components: []compensation.Component{}}, Reason: "SYNTHETIC_FINANCE_HTTP_REASON", Members: []compensation.CorrectionMember{}}
 			body := structureJSON(t, command)
 			for _, bad := range []string{
 				strings.Replace(body, `"currency":"CNY"`, `"currency":"CNY","currency":"CNY"`, 1),
 				strings.Replace(body, `"currency":"CNY"`, `"currency":"CNY","unknown":true`, 1),
 				strings.Replace(body, `"components":[]`, `"components":null`, 1),
 				strings.Replace(body, `"amount_minor":"9007199254740993"`, `"amount_minor":9007199254740993`, 1),
-				strings.Replace(body, `"scale":2`, `"scale":null`, 1),
+				strings.Replace(body, `"scale":0`, `"scale":null`, 1),
 			} {
 				apiSend(t, f, financeHTTPRequest(t, f, f.CompW, "POST", base+"/proposals", bad, value.NewID()), 422, nil)
 			}

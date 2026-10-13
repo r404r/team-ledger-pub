@@ -64,6 +64,14 @@ func (p Policy) Validate() error {
 			}
 		}
 	}
+	if len(p.SpecialReasonCatalog) > 50 {
+		return invalid
+	}
+	for code, label := range p.SpecialReasonCatalog {
+		if !safeText(code, 64, true) || !safeText(label, 200, true) {
+			return invalid
+		}
+	}
 	return nil
 }
 func (p Policy) terms(t *Terms) error {

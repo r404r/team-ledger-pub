@@ -59,6 +59,12 @@ func currentCompensationPermissions(snapshot authz.Snapshot, employee, team stri
 }
 
 func (h *handler) compensationRoute(w http.ResponseWriter, r *http.Request, req compensation.Request) bool {
+	if h.salaryRangeRoute(w, r, req) {
+		return true
+	}
+	if h.compensationBatchRoute(w, r, req) {
+		return true
+	}
 	if h.bonusRoute(w, r, req) {
 		return true
 	}

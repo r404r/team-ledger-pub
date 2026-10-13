@@ -153,12 +153,17 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodGet {
-		if r.URL.RawQuery != "" || r.Header.Get("Origin") != h.origin || r.Header.Get("Sec-Fetch-Site") != "same-origin" || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(token)) != 1 {
+		workbookUpload := r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/v1/compensation-adjustment-batches/") && strings.HasSuffix(r.URL.Path, "/imports")
+		if r.URL.RawQuery != "" && !workbookUpload || r.Header.Get("Origin") != h.origin || r.Header.Get("Sec-Fetch-Site") != "same-origin" || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(token)) != 1 {
 			h.fail(w, fault.Forbidden, requestID)
 			return
 		}
 		media, params, e := mime.ParseMediaType(r.Header.Get("Content-Type"))
-		if e != nil || media != "application/json" || len(params) > 1 || (len(params) == 1 && strings.ToLower(params["charset"]) != "utf-8") {
+		validMedia := media == "application/json" && len(params) <= 1 && (len(params) == 0 || strings.ToLower(params["charset"]) == "utf-8")
+		if workbookUpload {
+			validMedia = media == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" && len(params) == 0
+		}
+		if e != nil || !validMedia {
 			h.fail(w, unsupportedMedia, requestID)
 			return
 		}
@@ -412,6 +417,10 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 		root = "export_command"
 	case *compensation.BonusTargetCommand, *compensation.BonusTargetTransition, *compensation.BonusAwardCommand, *compensation.BonusAwardEditCommand, *compensation.BonusAwardTransition, *compensation.BonusPaymentCommand, *compensation.BonusExtensionCommand:
 		root = "bonus_command"
+	case *compensation.CreateBatchCommand, *compensation.ReplaceBatchLinesCommand, *compensation.BatchTransitionCommand, *compensation.BatchCorrectionCommand:
+		root = "batch_command"
+	case *compensation.SalaryRangeChangeCommand:
+		root = "batch_command"
 	case *assessment.PolicyCommand, *assessment.AssessmentCommand, *assessment.ApproveCommand, *assessment.ResultCommand:
 		root = "assessment_command"
 	case *workerClaimCommand, *workerLeaseCommand, *workerHeartbeatCommand, *workerResultCommand, *workerFailCommand:
@@ -423,7 +432,7 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 	d.UseNumber()
 	if strings.HasPrefix(root, "finance_") {
 		e = walkFinancialJSON(d, 0, root, false)
-	} else if root == "bonus_command" || root == "assessment_command" || root == "assessment_worker" || root == "catalog_command" || root == "workforce_command" {
+	} else if root == "bonus_command" || root == "batch_command" || root == "assessment_command" || root == "assessment_worker" || root == "catalog_command" || root == "workforce_command" {
 		e = walkUniqueJSON(d, 0)
 	} else {
 		e = walkJSON(d, 0, root)

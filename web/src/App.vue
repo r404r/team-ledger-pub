@@ -7,6 +7,7 @@ import IdentityGate from './IdentityGate.vue'
 import OrganizationPage from './OrganizationPage.vue'
 import InterviewPage from './InterviewPage.vue'
 import CompensationPage from './CompensationPage.vue'
+import CompensationBatchPage from './CompensationBatchPage.vue'
 import BonusPage from './BonusPage.vue'
 import FollowupPage from './FollowupPage.vue'
 
@@ -19,6 +20,7 @@ const interviewRoute = computed(() => /^\/interviews(?:\/[0-9a-f-]+)?\/?$/.test(
   /^\/employees\/[0-9a-f-]+\/interviews\/?$/.test(pathname.value))
 const followupRoute = computed(() => /^\/employees\/[0-9a-f-]+\/followup\/?$/.test(pathname.value))
 const compensationRoute = computed(() => /^\/employees\/[0-9a-f-]+\/compensation\/?$/.test(pathname.value))
+const compensationBatchRoute = computed(() => /^\/orgs\/[0-9a-f-]+\/compensation-adjustments\/?$/.test(pathname.value))
 const bonusRoute = computed(() => /^\/employees\/[0-9a-f-]+\/bonuses\/?$/.test(pathname.value))
 
 function readRoute() {
@@ -44,12 +46,14 @@ onBeforeUnmount(() => window.removeEventListener('popstate', readRoute))
       <a :href="`/orgs/${orgID}/tree`" @click="navigate($event, `/orgs/${orgID}/tree`)">组织树</a>
       <a :href="`/orgs/${orgID}/employees`" @click="navigate($event, `/orgs/${orgID}/employees`)">员工目录</a>
       <a href="/interviews" @click="navigate($event, '/interviews')">面谈</a>
+      <a :href="`/orgs/${orgID}/compensation-adjustments`" @click="navigate($event, `/orgs/${orgID}/compensation-adjustments`)">调薪批次</a>
     </nav>
     <GrantPage v-if="grantsRoute" @session-expired="expireSession" />
     <AuditPage v-else-if="auditRoute" @session-expired="expireSession" />
     <InterviewPage v-else-if="interviewRoute" @session-expired="expireSession" />
     <FollowupPage v-else-if="followupRoute" @session-expired="expireSession" />
     <CompensationPage v-else-if="compensationRoute" @session-expired="expireSession" />
+    <CompensationBatchPage v-else-if="compensationBatchRoute" @session-expired="expireSession" />
     <BonusPage v-else-if="bonusRoute" @session-expired="expireSession" />
     <OrganizationPage v-else-if="organizationRoute" @session-expired="expireSession" />
     <ProfilePage v-else @session-expired="expireSession" />

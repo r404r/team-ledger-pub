@@ -479,6 +479,8 @@ describe('R4 financial MFA intents and strict safe return routes', () => {
     [`/employees/${EMPLOYEE}/compensation?as_of=${AS_OF}&reason=synthetic-financial-secret`, `/employees/${EMPLOYEE}/compensation`],
     [`/employees/${EMPLOYEE}/compensation?as_of=2026-02-30`, `/employees/${EMPLOYEE}/compensation`],
     [`/employees/not-a-uuid/compensation`, '/'],
+    [`/orgs/${ORG}/compensation-adjustments/`, `/orgs/${ORG}/compensation-adjustments`],
+    ['/orgs/not-a-uuid/compensation-adjustments', '/'],
   ])('retains only canonical financial route/date (%s)', async (route, expected) => {
     history.replaceState({}, '', route); api.reply('GET', '/api/v1/session', 401, { code: 'UNAUTHENTICATED' })
     const page = await open(); const login = page.get('a[href^="/api/v1/auth/login"]')

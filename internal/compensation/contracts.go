@@ -17,15 +17,17 @@ type Service struct {
 	BonusHMACActive      int64
 	Policy               Policy
 	Now                  func() time.Time
+	Batches              BatchStore
 }
 type Policy struct {
-	Enabled                bool           `json:"enabled"`
-	Currencies             map[string]int `json:"currencies"`
-	Units                  []string       `json:"units"`
-	PaymentFrequencies     []string       `json:"payment_frequencies"`
-	TaxBases               []string       `json:"tax_bases"`
-	RoundingModes          []string       `json:"rounding_modes"`
-	ControlledBonusSources []string       `json:"controlled_bonus_sources,omitempty"`
+	Enabled                bool              `json:"enabled"`
+	Currencies             map[string]int    `json:"currencies"`
+	Units                  []string          `json:"units"`
+	PaymentFrequencies     []string          `json:"payment_frequencies"`
+	TaxBases               []string          `json:"tax_bases"`
+	RoundingModes          []string          `json:"rounding_modes"`
+	ControlledBonusSources []string          `json:"controlled_bonus_sources,omitempty"`
+	SpecialReasonCatalog   map[string]string `json:"special_reason_catalog,omitempty"`
 }
 type Request struct {
 	TokenHash               []byte

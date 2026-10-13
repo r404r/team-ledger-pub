@@ -33,7 +33,7 @@ const identityAvailable = computed(() => session.value?.identity_available !== f
 const canLogout = computed(() => session.value !== null && !['logging-out', 'logout-failed', 'login-redirecting'].includes(phase.value))
 const interviewRoute = computed(() => /^\/interviews(?:\/|$)/.test(returnTo.value) || /^\/employees\/[^/]+\/interviews$/.test(returnTo.value))
 const followupRoute = computed(() => /^\/employees\/[^/]+\/followup$/.test(returnTo.value))
-const compensationRoute = computed(() => /^\/employees\/[^/]+\/(?:compensation|bonuses)(?:\?|$)/.test(returnTo.value))
+const compensationRoute = computed(() => /^\/employees\/[^/]+\/(?:compensation|bonuses)(?:\?|$)/.test(returnTo.value) || /^\/orgs\/[^/]+\/compensation-adjustments(?:\?|$)/.test(returnTo.value))
 const stepUpAction = computed(() => returnTo.value.split('?')[0] === '/security/grants' ? 'access_grant.manage' : compensationRoute.value ? compensationIntent.value : followupRoute.value ? 'interview_policy.manage' : interviewRoute.value ? interviewIntent.value : 'pii.write')
 
 function validDate(value: string) {
@@ -51,13 +51,14 @@ function knownReturnRoute() {
   const employeeInterviews = /^\/employees\/([0-9a-f-]+)\/interviews\/?$/.exec(url.pathname)
   const compensation = /^\/employees\/([0-9a-f-]+)\/(compensation|bonuses)\/?$/.exec(url.pathname)
   const followup = /^\/employees\/([0-9a-f-]+)\/followup\/?$/.exec(url.pathname)
+  const compensationBatches = /^\/orgs\/([0-9a-f-]+)\/compensation-adjustments\/?$/.exec(url.pathname)
   if (employee && uuid.test(employee[1]!)) path = `/employees/${employee[1]}`
   else if (history && uuid.test(history[1]!)) path = `/employees/${history[1]}/organization-history`
   else if (organization && uuid.test(organization[1]!)) path = `/orgs/${organization[1]}/${organization[2]}`
   else if (interview && uuid.test(interview[1]!)) path = `/interviews/${interview[1]}`
   else if (employeeInterviews && uuid.test(employeeInterviews[1]!)) path = `/employees/${employeeInterviews[1]}/interviews`
   else if (compensation && uuid.test(compensation[1]!)) path = `/employees/${compensation[1]}/${compensation[2]}`
-  else if (followup && uuid.test(followup[1]!)) path = `/employees/${followup[1]}/followup`
+  else if (compensationBatches && uuid.test(compensationBatches[1]!)) path = `/orgs/${compensationBatches[1]}/compensation-adjustments`
   else if (/^\/interviews\/?$/.test(url.pathname)) path = '/interviews'
   else if (/^\/security\/grants\/?$/.test(url.pathname)) path = '/security/grants'
   else if (url.pathname === '/') path = '/'
