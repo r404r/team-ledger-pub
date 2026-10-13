@@ -108,7 +108,7 @@ func (s *Service) releaseQuery(ctx context.Context, req Request, snap authz.Snap
 		}
 		var current authz.Snapshot
 		var err error
-		if len(employees) == 1 && (op == "OP-ORG-06" || op == "OP-ORG-07") {
+		if len(employees) == 1 && op == "OP-ORG-06" {
 			current, err = s.authorize(ctx, tx, req, snap.OrgID, employees[0].ID, op)
 		} else {
 			current, err = s.structureAuthority(ctx, tx, req, snap.OrgID, op, false)
