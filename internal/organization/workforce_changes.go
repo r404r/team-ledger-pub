@@ -2,6 +2,7 @@ package organization
 
 import (
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/r404r/team-ledger/internal/value"
@@ -58,6 +59,37 @@ type WorkforceChangeItem struct {
 	ValidFrom         *string          `json:"valid_from,omitempty"`
 	ValidTo           *string          `json:"valid_to,omitempty"`
 	EffectiveTo       *string          `json:"effective_to,omitempty"`
+}
+
+type CatalogChangeItemResult struct {
+	Kind      string `json:"kind"`
+	ID        string `json:"id"`
+	VersionID string `json:"version_id,omitempty"`
+}
+
+type CatalogChangeResult struct {
+	ID              string                    `json:"id"`
+	CatalogRevision string                    `json:"catalog_revision"`
+	GraphRevision   string                    `json:"graph_revision"`
+	Items           []CatalogChangeItemResult `json:"items"`
+}
+
+type CatalogPreparedItem struct {
+	Command   CatalogChangeItem
+	ID        string
+	VersionID string
+	Payload   *WorkforcePayload
+}
+
+type CatalogWrite struct {
+	ID, OrgID, SubjectID string
+	RecordedAt           time.Time
+	Items                []CatalogPreparedItem
+}
+
+type WorkforceCommandReceipt struct {
+	Digest []byte
+	Result CatalogChangeResult
 }
 
 func validCatalogChange(command CatalogChangeCommand) bool {

@@ -119,6 +119,9 @@ type Tx interface {
 	Replace(context.Context, Employee, Version, int64) error
 	SaveReceipt(context.Context, string, string, string, string, Receipt) error
 	Audit(context.Context, Audit) error
+	WorkforceReceipt(context.Context, string, string, string, string) (WorkforceCommandReceipt, bool, error)
+	CommitCatalogChange(context.Context, string, int64, int64, CatalogWrite) (int64, int64, error)
+	SaveWorkforceReceipt(context.Context, string, string, string, string, WorkforceCommandReceipt) error
 }
 type Store interface {
 	Reader

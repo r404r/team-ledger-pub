@@ -39,7 +39,8 @@ func apiSend(t *testing.T, f *testsupport.Fixture, r *http.Request, status int, 
 	}
 	defer res.Body.Close()
 	if res.StatusCode != status {
-		t.Fatalf("real API HTTP status=%d;want%d", res.StatusCode, status)
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+		t.Fatalf("real API HTTP status=%d;want%d body=%s", res.StatusCode, status, body)
 	}
 	if res.Header.Get("Cache-Control") != "no-store" {
 		t.Fatal("sensitive response must not be cached")

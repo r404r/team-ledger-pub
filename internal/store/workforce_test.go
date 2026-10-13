@@ -81,3 +81,32 @@ func statement(backend, sqlite, postgres string) string {
 	}
 	return sqlite
 }
+
+func TestCatalogCreateTransactionAdvancesOnlyCatalogRevision(t *testing.T) {
+	for _, backend := range []string{"sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) {
+			f := testsupport.NewHarness(t, backend)
+			ctx := context.Background()
+			code, label, from := "SYNTHETIC-ENGINEERING", "Synthetic Engineering", "2026-01-01"
+			write := organization.CatalogWrite{
+				ID: value.NewID(), OrgID: f.OrgID, SubjectID: f.Owner.SubjectID, RecordedAt: f.Now,
+				Items: []organization.CatalogPreparedItem{{Command: organization.CatalogChangeItem{Action: "create", Kind: "job_family", Code: &code, Label: &label, ValidFrom: &from}, ID: value.NewID(), VersionID: value.NewID()}},
+			}
+			var catalogRevision, graphRevision int64
+			err := f.Repo.WithTx(ctx, f.OrgID, func(tx organization.Tx) error {
+				if err := tx.LockGraph(ctx, f.OrgID); err != nil {
+					return err
+				}
+				var err error
+				catalogRevision, graphRevision, err = tx.CommitCatalogChange(ctx, f.OrgID, 1, 1, write)
+				return err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if catalogRevision != 2 || graphRevision != 1 || f.Count(t, "job_family") != 1 || f.Count(t, "job_family_version") != 1 {
+				t.Fatalf("catalog/graph revisions = %d/%d", catalogRevision, graphRevision)
+			}
+		})
+	}
+}

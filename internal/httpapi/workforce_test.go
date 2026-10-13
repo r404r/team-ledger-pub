@@ -7,6 +7,7 @@ import (
 
 	"github.com/r404r/team-ledger/internal/organization"
 	"github.com/r404r/team-ledger/internal/testsupport"
+	"github.com/r404r/team-ledger/internal/value"
 )
 
 func TestAPIWorkforceCatalogsExposeFixedSeedsWithoutPIIPayloads(t *testing.T) {
@@ -32,6 +33,23 @@ func TestAPIWorkforceCatalogsExposeFixedSeedsWithoutPIIPayloads(t *testing.T) {
 				t.Fatalf("filtered catalog response = %#v", filtered)
 			}
 			apiSend(t, f, apiRequest(t, f, f.Observer, http.MethodGet, path+"?include_labels=1", "", ""), http.StatusUnprocessableEntity, nil)
+		})
+	}
+}
+
+func TestAPIWorkforceCatalogCreateIsAtomicAndReplaySafe(t *testing.T) {
+	for _, backend := range []string{"sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) {
+			f := testsupport.NewHarness(t, backend)
+			path := "/api/v1/orgs/" + f.OrgID + "/workforce-catalog-changes"
+			body := `{"expected_catalog_revision":"1","expected_graph_revision":"1","changes":[{"action":"create","kind":"job_family","code":"ENG","label":"Engineering","valid_from":"2026-01-01"}]}`
+			key := value.NewID()
+			var first, replay organization.CatalogChangeResult
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, body, key), http.StatusCreated, &first)
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, body, key), http.StatusCreated, &replay)
+			if !reflect.DeepEqual(first, replay) || first.CatalogRevision != "2" || first.GraphRevision != "1" || f.Count(t, "job_family") != 1 || f.Count(t, "job_family_version") != 1 {
+				t.Fatalf("catalog create/replay = first %#v replay %#v", first, replay)
+			}
 		})
 	}
 }
