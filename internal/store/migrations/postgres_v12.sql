@@ -39,6 +39,7 @@ CREATE UNIQUE INDEX education_record_current ON education_record(org_id,employee
 CREATE UNIQUE INDEX job_assignment_current ON job_assignment(org_id,employee_id) WHERE valid_to IS NULL;
 ALTER TABLE audit_event DROP CONSTRAINT audit_event_operation_check;
 ALTER TABLE audit_event ADD CONSTRAINT audit_event_operation_check CHECK(operation IN('OP-ORG-01','OP-ORG-02','OP-ORG-03','OP-ORG-04','OP-ORG-05','OP-ORG-07','OP-ORG-06','OP-ORG-08','OP-ORG-09','OP-ORG-10','OP-SEC-01','OP-SEC-02','OP-SEC-03','OP-SEC-04','OP-SEC-06','AUTH-LOGIN','AUTH-STEP-UP','AUTH-LOGOUT','AUTH-BIND','AUTH-UNBIND','OP-INT-01','OP-INT-02','OP-INT-03','OP-INT-04','OP-INT-05','OP-INT-06','OP-INT-07','OP-INT-08','OP-SEC-05','OP-COMP-01','OP-COMP-02','OP-COMP-03','OP-COMP-04','OP-COMP-05','OP-BONUS-01','OP-BONUS-02','OP-BONUS-03','OP-BONUS-04','OP-BONUS-05','OP-BONUS-06','OP-BONUS-07','OP-BONUS-08','OP-AI-01','OP-AI-02','OP-AI-03','OP-AI-04','OP-AI-05','OP-AI-06','OP-AI-07','OP-AI-08'));
+ALTER TABLE audit_event ADD CONSTRAINT audit_event_retired_org_operation_check CHECK(operation NOT IN('OP-ORG-02','OP-ORG-03'));
 CREATE INDEX org_unit_parent_child_window ON org_unit_parent_history(org_id,child_unit_id,valid_from,valid_to);
 CREATE INDEX employment_legal_entity ON employment_spell(org_id,legal_entity_id);
 CREATE INDEX assignment_department ON job_assignment(org_id,department_id);

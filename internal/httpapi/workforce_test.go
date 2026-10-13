@@ -286,10 +286,20 @@ func TestAPIWorkforceChangeAuthorizesEveryEmployeeEndpoint(t *testing.T) {
 				}
 			}
 			path := "/api/v1/orgs/" + f.OrgID + "/workforce-changes"
+			extraRevisionBody := fmt.Sprintf(`{"expected_catalog_revision":"1","expected_graph_revision":"1","expected_employee_revisions":{%q:"1",%q:"1"},"changes":[{"action":"add","kind":"identifier","employee_id":%q,"staff_code":"SCOPE-0","valid_from":"2026-10-11"}]}`, allowed.ID, denied.ID, allowed.ID)
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, extraRevisionBody, value.NewID()), http.StatusUnprocessableEntity, nil)
 			allowedBody := fmt.Sprintf(`{"expected_catalog_revision":"1","expected_graph_revision":"1","expected_employee_revisions":{%q:"1"},"changes":[{"action":"add","kind":"identifier","employee_id":%q,"staff_code":"SCOPE-1","valid_from":"2026-10-11"}]}`, allowed.ID, allowed.ID)
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, allowedBody, value.NewID()), http.StatusCreated, nil)
 			deniedBody := fmt.Sprintf(`{"expected_catalog_revision":"1","expected_graph_revision":"2","expected_employee_revisions":{%q:"1"},"changes":[{"action":"add","kind":"identifier","employee_id":%q,"staff_code":"SCOPE-2","valid_from":"2026-10-11"}]}`, denied.ID, denied.ID)
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, deniedBody, value.NewID()), http.StatusForbidden, nil)
+			var deniedRevision int
+			query := "SELECT workforce_revision FROM employee WHERE id=?"
+			if backend == "postgres" {
+				query = "SELECT workforce_revision FROM employee WHERE id=$1"
+			}
+			if err := f.Repo.DB.QueryRowContext(ctx, query, denied.ID).Scan(&deniedRevision); err != nil || deniedRevision != 1 {
+				t.Fatalf("unrelated employee revision changed: revision=%d err=%v", deniedRevision, err)
+			}
 		})
 	}
 }

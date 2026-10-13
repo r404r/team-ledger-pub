@@ -180,6 +180,7 @@ func validWorkforceChange(command WorkforceChangeCommand) bool {
 	if command.Reason != nil && (!utf8.ValidString(*command.Reason) || strings.TrimSpace(*command.Reason) == "" || len(*command.Reason) > 4096) {
 		return false
 	}
+	affected := make(map[string]struct{}, len(command.ExpectedEmployeeRevision))
 	for employee, revision := range command.ExpectedEmployeeRevision {
 		if !value.ValidID(employee) || !validExpectedRevision(revision) {
 			return false
@@ -192,6 +193,10 @@ func validWorkforceChange(command WorkforceChangeCommand) bool {
 		if _, ok := command.ExpectedEmployeeRevision[item.EmployeeID]; !ok {
 			return false
 		}
+		affected[item.EmployeeID] = struct{}{}
+	}
+	if len(affected) != len(command.ExpectedEmployeeRevision) {
+		return false
 	}
 	return true
 }

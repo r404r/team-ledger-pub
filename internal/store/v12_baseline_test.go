@@ -4,9 +4,11 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/r404r/team-ledger/internal/store"
 	"github.com/r404r/team-ledger/internal/testsupport"
+	"github.com/r404r/team-ledger/internal/value"
 )
 
 func TestV12FreshInstallIsCleanWorkforceBaseline(t *testing.T) {
@@ -78,6 +80,9 @@ func TestV12FreshInstallIsCleanWorkforceBaseline(t *testing.T) {
 	if locations != "Shanghai,Tokyo,Wuxi" || education != "Bachelor,Diploma,Master" || educationRanks != "Master:3,Bachelor:2,Diploma:1" {
 		t.Fatalf("fixed catalogs = locations %q education %q ranks %q", locations, education, educationRanks)
 	}
+	if _, err = repo.DB.ExecContext(ctx, "INSERT INTO audit_event(id,operation,purpose,request_id,outcome,recorded_at,actor_kind) VALUES(?,'OP-ORG-02','',?,'allowed',?,'application')", value.NewID(), value.NewID(), repo.BindTime(time.Now())); err == nil {
+		t.Fatal("retired OP-ORG-02 accepted by SQLite v12 audit schema")
+	}
 }
 
 func TestV12PostgresInstallHasNoTeamEraTables(t *testing.T) {
@@ -122,5 +127,8 @@ func TestV12PostgresInstallHasNoTeamEraTables(t *testing.T) {
 	}
 	if locations != "Shanghai,Tokyo,Wuxi" || education != "Bachelor,Diploma,Master" || educationRanks != "Master:3,Bachelor:2,Diploma:1" {
 		t.Fatalf("fixed PostgreSQL catalogs = locations %q education %q ranks %q", locations, education, educationRanks)
+	}
+	if _, err := f.Repo.DB.ExecContext(ctx, "INSERT INTO audit_event(id,operation,purpose,request_id,outcome,recorded_at,actor_kind) VALUES($1,'OP-ORG-02','',$2,'allowed',$3,'application')", value.NewID(), value.NewID(), f.Repo.BindTime(time.Now())); err == nil {
+		t.Fatal("retired OP-ORG-02 accepted by PostgreSQL v12 audit schema")
 	}
 }

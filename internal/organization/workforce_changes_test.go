@@ -64,6 +64,11 @@ func TestWorkforceChangesRejectHODSecondaryUnknownEmployeeAndPartialSets(t *test
 	if validWorkforceChange(unknown) {
 		t.Fatal("change without expected employee revision accepted")
 	}
+	extra := workforceCommand(WorkforceChangeItem{Action: "add", Kind: "education", EmployeeID: workforceEmployee, EducationLevel: ptr(EducationMaster), ValidFrom: &date})
+	extra.ExpectedEmployeeRevision[workforceManager] = "1"
+	if validWorkforceChange(extra) {
+		t.Fatal("change with an unrelated employee revision accepted")
+	}
 	empty := workforceCommand(WorkforceChangeItem{})
 	empty.Changes = nil
 	if validWorkforceChange(empty) {
