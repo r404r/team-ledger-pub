@@ -28,6 +28,23 @@ func main() {
 	fmt.Fprintln(os.Stdout, "Identity maintenance committed")
 }
 func run(args []string) error {
+	if len(args) > 0 && args[0] == "local-bootstrap" {
+		return localRun(args)
+	}
+	if len(args) > 0 {
+		switch args[0] {
+		case "local-subject-create":
+			return localSubjectRun(args[1:])
+		case "local-account-create":
+			return localAccountRun("create", args[1:])
+		case "local-account-reset":
+			return localAccountRun("reset", args[1:])
+		case "local-account-disable":
+			return localAccountRun("disable", args[1:])
+		case "mode-switch":
+			return modeSwitchRun(args[1:])
+		}
+	}
 	if len(args) == 0 || args[0] != "bind" && args[0] != "unbind" {
 		return fault.Invalid
 	}

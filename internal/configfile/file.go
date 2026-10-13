@@ -22,7 +22,7 @@ func ReadRootTrust(path string, limit int) ([]byte, error) {
 }
 
 func read(path string, limit int, confidential, rootOnly bool) ([]byte, error) {
-	f, e := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	f, e := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 	if e != nil {
 		return nil, errors.New("invalid protected file")
 	}
@@ -33,7 +33,7 @@ func read(path string, limit int, confidential, rootOnly bool) ([]byte, error) {
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	mode := info.Mode().Perm()
-	if !ok {
+	if !ok || stat.Nlink != 1 {
 		return nil, errors.New("invalid protected file")
 	}
 	if rootOnly {

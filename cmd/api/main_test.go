@@ -20,6 +20,15 @@ import (
 	"github.com/r404r/team-ledger/internal/testsupport"
 )
 
+type fixedIdentityMode struct {
+	mode string
+	err  error
+}
+
+func (f fixedIdentityMode) IdentityMode(context.Context) (string, error) {
+	return f.mode, f.err
+}
+
 // Only the test executable dispatches this helper; the product has no test mode.
 func TestAPIStartupChildProcess(t *testing.T) {
 	if os.Getenv("TEAMLEDGER_TEST_API_CHILD") == "1" {
@@ -51,10 +60,32 @@ func TestValidListenerScopes(t *testing.T) {
 	}
 }
 
+func TestIdentityModeMatchesRuntimeDatabaseState(t *testing.T) {
+	ctx := context.Background()
+	if !identityModeMatches(ctx, fixedIdentityMode{mode: "local"}, "local") {
+		t.Fatal("matching runtime identity mode rejected")
+	}
+	if identityModeMatches(ctx, fixedIdentityMode{mode: "oidc"}, "local") {
+		t.Fatal("runtime identity mode drift accepted")
+	}
+	if identityModeMatches(ctx, fixedIdentityMode{err: context.Canceled}, "local") {
+		t.Fatal("identity mode read failure accepted")
+	}
+}
+
 func TestAPIStartupRequiresProtectedTLSAndLocalKeyd(t *testing.T) {
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			f := testsupport.NewHarness(t, backend)
+			modeTime := any(time.Now().UTC().UnixMicro())
+			modeSQL := "INSERT INTO identity_mode_state(id,mode,revision,updated_at) VALUES(1,'local',1,?)"
+			if backend == "postgres" {
+				modeTime = time.Now().UTC()
+				modeSQL = "INSERT INTO identity_mode_state(id,mode,revision,updated_at) VALUES(1,'local',1,$1)"
+			}
+			if _, err := f.Repo.DB.ExecContext(context.Background(), modeSQL, modeTime); err != nil {
+				t.Fatal("identity mode fixture failed", err)
+			}
 			home, err := os.UserHomeDir()
 			if err != nil {
 				t.Fatal(err)
@@ -137,7 +168,7 @@ func TestAPIStartupRequiresProtectedTLSAndLocalKeyd(t *testing.T) {
 					ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 					defer cancel()
 					command := exec.CommandContext(ctx, executable, "-test.run=^TestAPIStartupChildProcess$")
-					env := map[string]string{"BACKEND": backend, "DSN": f.DSN, "LISTEN": address, "PUBLIC_ORIGIN": origin, "TLS_CERT_FILE": filepath.Join(dir, "cert.pem"), "TLS_KEY_FILE": filepath.Join(dir, "api.key"), "KEYD_SOCKET": socket, "WEB_DIR": dir, "TEST_API_CHILD": "1", "COMPENSATION_POLICY_FILE": ""}
+					env := map[string]string{"BACKEND": backend, "DSN": f.DSN, "LISTEN": address, "PUBLIC_ORIGIN": origin, "TLS_CERT_FILE": filepath.Join(dir, "cert.pem"), "TLS_KEY_FILE": filepath.Join(dir, "api.key"), "KEYD_SOCKET": socket, "WEB_DIR": dir, "TEST_API_CHILD": "1", "COMPENSATION_POLICY_FILE": "", "IDENTITY_MODE": "local"}
 					command.Env = os.Environ()
 					for name, value := range env {
 						command.Env = append(command.Env, "TEAMLEDGER_"+name+"="+value)

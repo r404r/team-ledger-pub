@@ -101,6 +101,15 @@ func TestAuthCallbackMissingTrustedMFAKeepsSessionAndReturnsChallenge(t *testing
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			f := testsupport.NewHarness(t, backend)
+			modeAt := any(f.Now.UnixMicro())
+			modeSQL := "INSERT INTO identity_mode_state(id,mode,revision,updated_at) VALUES(1,'oidc',1,?)"
+			if backend == "postgres" {
+				modeAt = f.Now
+				modeSQL = "INSERT INTO identity_mode_state(id,mode,revision,updated_at) VALUES(1,'oidc',1,$1)"
+			}
+			if _, err := f.Repo.DB.ExecContext(context.Background(), modeSQL, modeAt); err != nil {
+				t.Fatal("set OIDC fixture mode:", err)
+			}
 			idp, err := testsupport.NewOIDCFixture()
 			if err != nil {
 				t.Fatal(err)

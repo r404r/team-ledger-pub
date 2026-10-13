@@ -24,7 +24,7 @@ type CryptoControl struct {
 }
 
 func canonicalActive(state sensitive.ReadyState) ([]byte, error) {
-	if state.MaterialGeneration == 0 || len(state.Digest) != 64 || len(state.Active) != 14 || len(state.ActiveKeys) != 14 {
+	if state.MaterialGeneration == 0 || len(state.Digest) != 64 || len(state.Active) != 16 || len(state.ActiveKeys) != 16 {
 		return nil, fault.Invalid
 	}
 	if _, err := hex.DecodeString(state.Digest); err != nil {
@@ -35,7 +35,8 @@ func canonicalActive(state sensitive.ReadyState) ([]byte, error) {
 		sensitive.DomainFinancialPayload, sensitive.DomainIdentityTransaction, sensitive.DomainIdentityMapping,
 		sensitive.DomainBackupArchive, sensitive.DomainStaffCodeLookup, sensitive.DomainBonusPaymentLookup,
 		sensitive.DomainIdentitySubjectLookup, sensitive.DomainCommandReceipt, sensitive.DomainAssessmentGeneration,
-		sensitive.DomainCSRFToken, sensitive.DomainCursorToken,
+		sensitive.DomainCSRFToken, sensitive.DomainCursorToken, sensitive.DomainLocalUsernameLookup,
+		sensitive.DomainLocalPasswordPepper,
 	} {
 		reference := state.ActiveKeys[domain]
 		if state.Active[domain] == 0 || reference.Version != state.Active[domain] || reference.KeyID == "" {

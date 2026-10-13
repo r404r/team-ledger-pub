@@ -7,9 +7,9 @@
 - 技术架构图、keyd协议及密钥生命周期：[技术规范 §1.1/§1.2、§7.3/§7.4](https://github.com/r404r/p-research-hr/blob/main/docs/TECHNICAL_SPEC.md)。
 ## Docker 启动
 
-`Dockerfile`生成Vue production资源、API、migration、`teamledger-keyd`、`keyctl-local`及运维命令。首次安装显式执行`key-bootstrap`；普通启动按`data-init → key-check → keyd/migrate → api`运行，缺少密钥材料时直接失败。数据库和密钥分别存放；API不挂载根密钥卷，只通过Unix socket调用本地keyd。
+`Dockerfile`生成Vue production资源、API、migration、`teamledger-keyd`、`keyctl-local`及运维命令。首次安装显式执行`key-bootstrap`；选择内置身份时还须执行一次`identity-bootstrap`。普通启动按`data-init → key-check → keyd/migrate → api`运行，缺少密钥材料、身份mode或bootstrap事实时直接失败。数据库和密钥分别存放；API不挂载根密钥卷，只通过Unix socket调用本地keyd。
 
-本地keyd随同一镜像交付，不依赖云KMS、Vault或网络密钥服务。隔离评估可使用`TEAMLEDGER_OIDC_MODE=disabled`；真实用户登录仍须配置受信OIDC，不能把disabled模式用于生产身份认证。
+本地keyd及`TEAMLEDGER_IDENTITY_MODE=local`内置账号/密码均随同一镜像交付，不依赖云KMS、Vault、外部IdP、邮件或短信。另一显式值`oidc`要求完整受信`TEAMLEDGER_OIDC_*`配置。两种模式互斥；没有`disabled`、自动fallback或账号自动合并。
 
 ### 1. 准备环境与TLS文件
 
@@ -31,6 +31,10 @@ install -d -o "$(id -u)" -g "$(id -g)" -m 0770 backups
 printf '%s\n' /var/lib/teamledger/teamledger.db > docker/maintenance/sqlite-dsn
 sudo chown 10002:"$(id -g)" docker/maintenance/sqlite-dsn # 10002须等于TEAMLEDGER_MAINTENANCE_UID
 sudo chmod 0600 docker/maintenance/sqlite-dsn
+install -m 0600 /dev/null docker/maintenance/local-bootstrap.json
+# 使用不会追加换行的受保护编辑器写入且仅写入：
+# {"timezone":"Asia/Shanghai","username":"admin.user","password":"至少12字节的初始密码"}
+sudo chown 10002:"$(id -g)" docker/maintenance/local-bootstrap.json
 ```
 
 在`.env.docker`中：
@@ -39,16 +43,27 @@ sudo chmod 0600 docker/maintenance/sqlite-dsn
 - `TEAMLEDGER_KEYD_UID`和`TEAMLEDGER_MAINTENANCE_UID`必须是两个不同于API UID、且彼此不同的专用数值UID；API、keyd、maintenance以共同`TEAMLEDGER_GID`访问socket，API和maintenance也以该组访问SQLite数据卷；keyd不挂载数据卷，API不挂载key卷；
 - `TEAMLEDGER_PUBLIC_ORIGIN`必须等于浏览器实际访问的HTTPS origin；
 - `TEAMLEDGER_DATA_VOLUME`和`TEAMLEDGER_KEY_VOLUME`使用部署唯一、长期稳定的volume名称；
-- 真实用户环境配置完整`TEAMLEDGER_OIDC_*`，不要保留disabled模式。
+- `TEAMLEDGER_IDENTITY_MODE`必须显式为`local`或`oidc`；`local`同时设置一个稳定的`TEAMLEDGER_BOOTSTRAP_REQUEST_ID`，`oidc`则配置完整`TEAMLEDGER_OIDC_*`；
 
-`.env.docker`已被Git忽略，不得提交。首次安装必须显式初始化一次密钥volume；命令在目标已存在时失败，不会覆盖材料：
+`.env.docker`已被Git忽略，不得提交。首次安装先显式初始化一次密钥volume；目标已存在时失败，不覆盖材料：
 
 ```bash
 docker compose --env-file .env.docker build
 docker compose --env-file .env.docker --profile bootstrap run --rm key-bootstrap
+docker compose --env-file .env.docker up --abort-on-container-exit --exit-code-from migrate migrate
+docker compose --env-file .env.docker up -d --wait keyd
 ```
 
-此后普通启动的`key-check`只检查三个必需文件存在；keyd启动再验证RAW32长度、认证keyring、持久锁及owner/mode/type。密钥volume为空、挂载错误或材料校验失败时启动失败，绝不在启动路径中创建或修复密钥。
+`local`模式随后在**空数据库**执行一次身份bootstrap。输入文件必须是maintenance UID拥有的regular、非symlink/非hardlink、`0600` canonical JSON，不能有BOM、空白或末尾换行；密码不得进入argv/env/stdin/log。命令原子创建org、首个subject/account、固定`bootstrap_policy.v1`的OrgR/OrgW/PIIR/PIIW及审计/outbox。相同request UUID和相同文件可安全重试并返回原IDs；不同输入或已有业务事实拒绝：
+
+```bash
+docker compose --env-file .env.docker --profile bootstrap run --rm --no-deps identity-bootstrap
+```
+`key-bootstrap`已先完成data volume初始化；受Compose管理的`migrate`服务随后完成schema并以其退出码作为门禁，`up --wait keyd`再确认共享socket已对后续容器可用；`identity-bootstrap --no-deps`只执行身份事务，不让`compose run`并发重启已完成的one-shot依赖。
+
+保存命令输出的`org_id`和`subject_id`。后续主体与账号使用maintenance profile中的`/app/teamledger-identity local-subject-create`、`local-account-create`、`local-account-reset`、`local-account-disable`；mode切换仅用`mode-switch`，它会撤销全部会话并推进auth epoch，之后必须以匹配的新mode重启。各账号输入同样使用canonical `{"username":"…","password":"…"}`受保护文件。
+
+此后普通启动的`key-check`只检查三个必需文件存在；keyd启动再验证RAW32长度、认证keyring、16个domain、持久锁及owner/mode/type。密钥volume为空、身份bootstrap缺失、挂载错误或材料校验失败时启动失败，绝不在启动路径中创建或修复密钥。
 
 ### 2. 构建、启动与健康检查
 

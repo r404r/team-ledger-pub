@@ -22,6 +22,15 @@ func cleanupFixture(t *testing.T, backend string) *testsupport.Fixture {
 	t.Helper()
 	f := testsupport.NewHarness(t, backend)
 	f.Now = time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
+	at := any(f.Now.UnixMicro())
+	statement := "INSERT INTO identity_mode_state(id,mode,revision,updated_at) VALUES(1,'oidc',1,?)"
+	if backend == "postgres" {
+		at = f.Now
+		statement = "INSERT INTO identity_mode_state(id,mode,revision,updated_at) VALUES(1,'oidc',1,$1)"
+	}
+	if _, err := f.Repo.DB.ExecContext(context.Background(), statement, at); err != nil {
+		t.Fatal("set OIDC fixture mode:", err)
+	}
 	return f
 }
 
@@ -179,6 +188,22 @@ func TestOIDCTransactionCleanupExactExpiryPreservesConsumedProofAndIssuance(t *t
 			}
 			if _, err = f.Repo.IdentitySession(ctx, bytes.Repeat([]byte{74}, 32), live.ExpiresAt); err != nil {
 				t.Fatal("cleaning expired proof must not revoke its valid issued session:", err)
+			}
+			drifted := cleanupProof(7, f.Now, f.Now.Add(10*time.Minute))
+			cleanupSave(t, f, drifted)
+			drifted, err = f.Repo.ConsumeOIDCTransaction(ctx, drifted.StateHash, drifted.BindingHash, f.Now)
+			if err != nil {
+				t.Fatal("consume pre-switch OIDC proof:", err)
+			}
+			if err = f.Repo.SwitchIdentityMode(ctx, "local", value.NewID(), f.Now.Add(time.Second)); err != nil {
+				t.Fatal("switch identity mode:", err)
+			}
+			driftedIssue := issue
+			driftedIssue.Transaction = drifted
+			driftedIssue.TokenHash = bytes.Repeat([]byte{77}, 32)
+			driftedIssue.RequestID = value.NewID()
+			if err = f.Repo.IssueSession(ctx, driftedIssue); !errors.Is(err, fault.Unauthenticated) {
+				t.Fatal("old-mode OIDC callback issued a session after mode switch:", err)
 			}
 		})
 	}

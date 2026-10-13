@@ -40,6 +40,10 @@ func domainNumber(domain KeyDomain) (uint16, bool) {
 		return 13, true
 	case DomainCursorToken:
 		return 14, true
+	case DomainLocalUsernameLookup:
+		return 15, true
+	case DomainLocalPasswordPepper:
+		return 16, true
 	default:
 		return 0, false
 	}
@@ -55,7 +59,7 @@ func domainFromNumber(number uint16) (KeyDomain, bool) {
 }
 
 func allKeyDomains() []KeyDomain {
-	return []KeyDomain{DomainPIIPayload, DomainInterviewPayload, DomainAssessmentPayload, DomainFinancialPayload, DomainIdentityTransaction, DomainIdentityMapping, DomainBackupArchive, DomainStaffCodeLookup, DomainBonusPaymentLookup, DomainIdentitySubjectLookup, DomainCommandReceipt, DomainAssessmentGeneration, DomainCSRFToken, DomainCursorToken}
+	return []KeyDomain{DomainPIIPayload, DomainInterviewPayload, DomainAssessmentPayload, DomainFinancialPayload, DomainIdentityTransaction, DomainIdentityMapping, DomainBackupArchive, DomainStaffCodeLookup, DomainBonusPaymentLookup, DomainIdentitySubjectLookup, DomainCommandReceipt, DomainAssessmentGeneration, DomainCSRFToken, DomainCursorToken, DomainLocalUsernameLookup, DomainLocalPasswordPepper}
 }
 
 func wrapperDomain(domain KeyDomain) bool { n, ok := domainNumber(domain); return ok && n <= 7 }

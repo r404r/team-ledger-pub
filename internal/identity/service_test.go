@@ -32,6 +32,15 @@ type harness struct {
 func newIdentityHarness(t *testing.T, backend string) *harness {
 	t.Helper()
 	f := testsupport.NewHarness(t, backend)
+	modeAt := any(f.Now.UnixMicro())
+	modeSQL := "INSERT INTO identity_mode_state(id,mode,revision,updated_at) VALUES(1,'oidc',1,?)"
+	if backend == "postgres" {
+		modeAt = f.Now
+		modeSQL = "INSERT INTO identity_mode_state(id,mode,revision,updated_at) VALUES(1,'oidc',1,$1)"
+	}
+	if _, err := f.Repo.DB.ExecContext(context.Background(), modeSQL, modeAt); err != nil {
+		t.Fatal("set OIDC fixture mode:", err)
+	}
 	idp, err := testsupport.NewOIDCFixture()
 	if err != nil {
 		t.Fatal(err)

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/r404r/team-ledger/internal/sensitive"
 )
@@ -49,6 +50,21 @@ func run() error {
 }
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "healthcheck" {
+		socket, err := required("KEYD_SOCKET")
+		if err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_, err = (&sensitive.KeydClient{Socket: socket, Timeout: time.Second}).Ready(ctx)
+		}
+		if err != nil {
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) != 1 {
+		os.Exit(1)
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "teamledger-keyd failed")
 		os.Exit(1)

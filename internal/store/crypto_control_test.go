@@ -18,7 +18,8 @@ func cryptoState(generation uint64, digest byte, pii uint32, pending *sensitive.
 		sensitive.DomainFinancialPayload, sensitive.DomainIdentityTransaction, sensitive.DomainIdentityMapping,
 		sensitive.DomainBackupArchive, sensitive.DomainStaffCodeLookup, sensitive.DomainBonusPaymentLookup,
 		sensitive.DomainIdentitySubjectLookup, sensitive.DomainCommandReceipt, sensitive.DomainAssessmentGeneration,
-		sensitive.DomainCSRFToken, sensitive.DomainCursorToken,
+		sensitive.DomainCSRFToken, sensitive.DomainCursorToken, sensitive.DomainLocalUsernameLookup,
+		sensitive.DomainLocalPasswordPepper,
 	} {
 		active[domain] = 1
 		activeKeys[domain] = sensitive.KeyReference{KeyID: "00000000-0000-4000-8000-000000000001", Version: 1}

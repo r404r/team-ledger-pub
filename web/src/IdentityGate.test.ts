@@ -31,9 +31,9 @@ function profile(name = SAVED_NAME, org = ORG) {
     identifiers: [], employment: [], education: [], job_assignments: [], reporting_lines: [],
   }
 }
-function response(status: number, body?: unknown) {
+function response(status: number, body?: unknown, headers?: Record<string, string>) {
   return new Response(status === 204 ? null : JSON.stringify(body), {
-    status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...headers },
   })
 }
 function deferred() {
@@ -414,6 +414,38 @@ describe('shared protected identity interaction', () => {
     expect(target.href).not.toContain('synthetic-private-name')
     expect(api.requests).toHaveLength(1)
   })
+  it('renders local credentials after a mode-bound denial and submits only to the local login endpoint', async () => {
+    api.replies.push({ method: 'GET', path: '/api/v1/session', promise: Promise.resolve(response(401, { code: 'UNAUTHENTICATED' }, { 'X-TeamLedger-Identity-Mode': 'local' })) })
+    api.reply('POST', '/api/v1/auth/local/login', 200, { return_to: `/employees/${EMPLOYEE}` })
+    const page = await open()
+    expect(identityState(page)).toBe('expired')
+    await page.get('#local-username').setValue('admin.user')
+    await page.get('#local-password').setValue('correct horse battery staple')
+    await page.get('form').trigger('submit')
+    await settled()
+    const request = api.matching('POST', '/api/v1/auth/local/login')[0]!
+    expect(JSON.parse(request.body!)).toEqual({ username: 'admin.user', password: 'correct horse battery staple', return_to: `/employees/${EMPLOYEE}?as_of=${AS_OF}` })
+    expect(providerNavigation).toHaveBeenCalledWith(`/employees/${EMPLOYEE}`)
+  })
+
+  it('changes a local password with session CSRF and closes the protected surface after server revocation', async () => {
+    api.session = { ...api.session, identity_mode: 'local', identity_available: false } as typeof api.session
+    api.reply('GET', PROFILE_PATH, 200, profile())
+    api.reply('POST', '/api/v1/auth/local/password', 204)
+    const page = await open()
+    await page.get('#current-password').setValue('correct horse battery staple')
+    await page.get('#new-password').setValue('replacement horse battery staple')
+    await page.get('form').trigger('submit')
+    await settled()
+    const request = api.matching('POST', '/api/v1/auth/local/password')[0]!
+    expect(request.headers.get('X-CSRF-Token')).toBe(initialSession.csrf_token)
+    expect(JSON.parse(request.body!)).toEqual({ current_password: 'correct horse battery staple', new_password: 'replacement horse battery staple' })
+    expect(identityState(page)).toBe('logged-out')
+    expect(page.find('nav').exists()).toBe(false)
+    expect(page.findComponent(ProfilePage).exists()).toBe(false)
+    expect(page.text()).not.toContain(SAVED_NAME)
+  })
+
 })
 
 describe('R3 session-wide interview MFA intents', () => {

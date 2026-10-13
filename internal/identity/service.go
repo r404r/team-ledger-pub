@@ -37,8 +37,9 @@ type Service struct {
 	oauth                oauth2.Config
 	verifier             *oidc.IDTokenVerifier
 	client               *http.Client
-	issuer, mfaACR       string
+	issuer, mfaACR, mode string
 	mfaAMR               []string
+	local                *localAuthenticator
 }
 
 type httpsTransport struct{ base http.RoundTripper }
@@ -127,7 +128,7 @@ func New(ctx context.Context, store Store, csrfKey []byte, cfg *OIDCConfig) (*Se
 	s.oauth = oauth2.Config{ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret, RedirectURL: cfg.RedirectURI, Endpoint: endpoint, Scopes: []string{oidc.ScopeOpenID}}
 	s.verifier = provider.Verifier(&oidc.Config{ClientID: cfg.ClientID, SupportedSigningAlgs: []string{oidc.RS256}, Now: s.now})
 	s.identityKey = bytes.Clone(cfg.IdentityKey)
-	s.issuer, s.mfaACR, s.mfaAMR = cfg.Issuer, cfg.MFAACR, append([]string(nil), cfg.MFAAMR...)
+	s.issuer, s.mfaACR, s.mfaAMR, s.mode = cfg.Issuer, cfg.MFAACR, append([]string(nil), cfg.MFAAMR...), "oidc"
 	block, err := aes.NewCipher(cfg.TransactionKey)
 	if err != nil {
 		return nil, fault.Unavailable
@@ -145,6 +146,12 @@ func (s *Service) now() time.Time {
 	return s.Now().UTC().Truncate(time.Microsecond)
 }
 func (s *Service) Available() bool { return s != nil && s.verifier != nil }
+func (s *Service) Mode() string {
+	if s == nil {
+		return ""
+	}
+	return s.mode
+}
 
 // AllowedReturn accepts canonical registered pages and safe business dates only.
 func AllowedReturn(raw string) bool {
@@ -217,6 +224,9 @@ func transactionAAD(t Transaction) []byte {
 }
 func (s *Service) Begin(ctx context.Context, request BeginRequest) (Authorization, error) {
 	if !s.Available() {
+		if s != nil && s.mode == "local" && request.Mode == "step_up" {
+			return Authorization{}, MFARequired
+		}
 		return Authorization{}, fault.Unavailable
 	}
 	if !value.ValidID(request.RequestID) || !AllowedReturn(request.ReturnTo) || (request.Mode != "login" && request.Mode != "step_up") || request.Mode == "login" && request.Action != "" || request.Mode == "step_up" && !AllowedStepUpAction(request.Action) {

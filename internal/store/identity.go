@@ -27,6 +27,12 @@ type identityOwner struct{ org, subject string }
 // then each subject guard in (org,subject) order. This is the same authorization
 // barrier used by business writers and sensitive release; no I/O occurs inside.
 func (r *Repository) withIdentityTx(ctx context.Context, owners []identityOwner, fn func(reader) error) error {
+	return r.withIdentityModeTx(ctx, "", owners, fn)
+}
+
+// Identity mode is always locked before authorization guards and subjects.
+// Mode switches take the same mode lock before revoking sessions.
+func (r *Repository) withIdentityModeTx(ctx context.Context, expectedMode string, owners []identityOwner, fn func(reader) error) error {
 	tx, err := r.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return safeError(err)
@@ -45,6 +51,12 @@ func (r *Repository) withIdentityTx(ctx context.Context, owners []identityOwner,
 		}
 		if _, err = tx.ExecContext(ctx, "SET LOCAL lock_timeout='2s'"); err != nil {
 			return safeError(err)
+		}
+	}
+	if expectedMode != "" {
+		var mode string
+		if err = tx.QueryRowContext(ctx, q.sql("SELECT mode FROM identity_mode_state WHERE id=1", "SELECT mode FROM identity_mode_state WHERE id=1 FOR UPDATE")).Scan(&mode); err != nil || mode != expectedMode {
+			return fault.Unauthenticated
 		}
 	}
 	previous := ""
@@ -246,7 +258,7 @@ func (r *Repository) IssueSession(ctx context.Context, issue identity.SessionIss
 	if t.ExpectedOrg != "" {
 		owners = append(owners, identityOwner{t.ExpectedOrg, t.ExpectedSubject})
 	}
-	return r.withIdentityTx(ctx, owners, func(q reader) error {
+	return r.withIdentityModeTx(ctx, "oidc", owners, func(q reader) error {
 		current, err := q.identityMapping(ctx, issue.IdentityDigest)
 		if err != nil {
 			return err

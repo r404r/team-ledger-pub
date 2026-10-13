@@ -8,10 +8,11 @@ type SessionHint = {
   csrf_token: string
   mfa_recent: boolean
   identity_available?: boolean
+  identity_mode?: 'local' | 'oidc'
   sensitivity_valid_until?: string
 }
 type Phase = 'checking' | 'authenticated' | 'logged-out' | 'expired' | 'changed' | 'unavailable' |
-  'logging-out' | 'logout-failed' | 'mfa-starting' | 'mfa-redirecting' | 'mfa-failed' | 'login-redirecting'
+  'logging-out' | 'logout-failed' | 'mfa-starting' | 'mfa-redirecting' | 'mfa-failed' | 'login-redirecting' | 'login-failed'
 type Operation = { generation: number; controller: AbortController }
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -21,6 +22,11 @@ const session = shallowRef<SessionHint | null>(null)
 const returnTo = ref(knownReturnRoute())
 const interviewIntent = ref<'note.publish' | 'sensitive.export'>('note.publish')
 const compensationIntent = ref<'compensation.read' | 'compensation.propose' | 'compensation.approve' | 'bonus.target.manage' | 'bonus.propose' | 'bonus.approve' | 'bonus.payment.record' | 'compensation.extension.manage' | 'sensitive.export'>('compensation.read')
+const identityMode = ref<'local' | 'oidc' | null>(null)
+const username = ref('')
+const password = ref('')
+const currentPassword = ref('')
+const newPassword = ref('')
 const protectedGeneration = ref(0)
 let alive = false
 let generation = 0
@@ -96,7 +102,8 @@ function sessionHint(value: unknown): SessionHint | null {
       next.auth_epoch.length > 19 || BigInt(next.auth_epoch) > 9223372036854775807n ||
       typeof next.csrf_token !== 'string' || !next.csrf_token ||
       typeof next.mfa_recent !== 'boolean' ||
-      (next.identity_available !== undefined && typeof next.identity_available !== 'boolean')) return null
+      (next.identity_available !== undefined && typeof next.identity_available !== 'boolean') ||
+      (next.identity_mode !== undefined && next.identity_mode !== 'local' && next.identity_mode !== 'oidc')) return null
   if (next.sensitivity_valid_until !== undefined) {
     if (typeof next.sensitivity_valid_until !== 'string') return null
     const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d{1,6})?Z$/.exec(next.sensitivity_valid_until)
@@ -106,7 +113,7 @@ function sessionHint(value: unknown): SessionHint | null {
   return {
     subject_id: next.subject_id, org_id: next.org_id, auth_epoch: next.auth_epoch,
     csrf_token: next.csrf_token, mfa_recent: next.mfa_recent, identity_available: next.identity_available,
-    sensitivity_valid_until: next.sensitivity_valid_until,
+    identity_mode: next.identity_mode, sensitivity_valid_until: next.sensitivity_valid_until,
   }
 }
 function sameIdentity(left: SessionHint, right: SessionHint) {
@@ -131,7 +138,11 @@ async function checkSession() {
       headers: compensationRoute.value ? { 'X-Access-Purpose': 'compensation_management' } : undefined,
     })
     if (!isCurrent(operation)) return
-    if (response.status === 401) { expireSession(); return }
+    if (response.status === 401) {
+      identityMode.value = response.headers.get('X-TeamLedger-Identity-Mode') === 'local' ? 'local' : 'oidc'
+      expireSession()
+      return
+    }
     if (!response.ok) throw new Error('Session unavailable')
     const next = sessionHint(await response.json())
     if (!isCurrent(operation)) return
@@ -142,6 +153,7 @@ async function checkSession() {
       return
     }
     session.value = next
+    if (next.identity_mode) identityMode.value = next.identity_mode
     phase.value = 'authenticated'
   } catch {
     if (!isCurrent(operation)) return
@@ -216,6 +228,53 @@ function login() {
   logoutCSRF = null
   phase.value = 'login-redirecting'
 }
+async function localLogin() {
+  if (identityMode.value !== 'local' || phase.value === 'login-redirecting') return
+  const operation = beginOperation('login-redirecting')
+  try {
+    const response = await fetch('/api/v1/auth/local/login', {
+      method: 'POST', credentials: 'same-origin', cache: 'no-store', signal: operation.controller.signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: username.value, password: password.value, return_to: returnTo.value }),
+    })
+    password.value = ''
+    if (!isCurrent(operation)) return
+    if (!response.ok) { phase.value = 'login-failed'; return }
+    const body: unknown = await response.json()
+    if (!body || typeof body !== 'object' || !('return_to' in body) || typeof body.return_to !== 'string') {
+      phase.value = 'login-failed'; return
+    }
+    window.location.assign(body.return_to)
+  } catch {
+    password.value = ''
+    if (isCurrent(operation)) phase.value = 'login-failed'
+  } finally {
+    if (isCurrent(operation)) controller = null
+  }
+}
+async function changePassword() {
+  if (identityMode.value !== 'local' || !session.value) return
+  const csrf = session.value.csrf_token
+  const operation = beginOperation('logging-out')
+  await nextTick()
+  try {
+    const response = await fetch('/api/v1/auth/local/password', {
+      method: 'POST', credentials: 'same-origin', cache: 'no-store', signal: operation.controller.signal,
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+      body: JSON.stringify({ current_password: currentPassword.value, new_password: newPassword.value }),
+    })
+    currentPassword.value = ''; newPassword.value = ''
+    if (!isCurrent(operation)) return
+    if (response.status !== 204) { phase.value = 'login-failed'; return }
+    session.value = null
+    phase.value = 'logged-out'
+  } catch {
+    currentPassword.value = ''; newPassword.value = ''
+    if (isCurrent(operation)) phase.value = 'login-failed'
+  } finally {
+    if (isCurrent(operation)) controller = null
+  }
+}
 function routeChanged() {
   returnTo.value = knownReturnRoute()
   if (phase.value === 'authenticated' || phase.value === 'checking') void checkSession()
@@ -269,6 +328,13 @@ onBeforeUnmount(() => {
       <button v-if="identityAvailable" type="button" @click="stepUp">{{ compensationRoute ? '重新验证财务 MFA' : stepUpAction === 'access_grant.manage' ? '重新验证授权管理 MFA' : stepUpAction === 'interview_policy.manage' ? '重新验证跟进策略 MFA' : stepUpAction === 'note.publish' ? '重新验证笔记发布 MFA' : stepUpAction === 'sensitive.export' ? '重新验证敏感导出 MFA' : '重新验证资料写入 MFA' }}</button>
       <p v-if="interviewRoute || compensationRoute || followupRoute">MFA 是会话级近期认证；认证后重载并明确重新确认，不自动提交、审批、生成结论或导出。</p>
       <p v-if="!identityAvailable">可信登录与 MFA 设施未启用，不能在本地完成验证。</p>
+      <form v-if="identityMode === 'local'" @submit.prevent="changePassword">
+        <label for="current-password">当前密码</label>
+        <input id="current-password" v-model="currentPassword" type="password" autocomplete="current-password" required minlength="12" maxlength="256">
+        <label for="new-password">新密码</label>
+        <input id="new-password" v-model="newPassword" type="password" autocomplete="new-password" required minlength="12" maxlength="256">
+        <button type="submit">修改密码并注销全部会话</button>
+      </form>
     </template>
     <p v-else-if="phase === 'checking'" role="status">正在核对服务端会话；受保护页面尚未开放。</p>
     <p v-else-if="phase === 'logged-out'" role="status">服务端已确认撤销本会话，当前页面资料已清空。未请求外部身份站点的全局登出。</p>
@@ -280,10 +346,18 @@ onBeforeUnmount(() => {
     <p v-else-if="phase === 'mfa-starting' || phase === 'mfa-redirecting'" role="status">正在前往可信身份设施重新验证 MFA。返回后将重新读取会话，不自动提交业务操作。</p>
     <p v-else-if="phase === 'mfa-failed'" role="alert">未能开始可信 MFA 验证，未获得新的认证证明。页面保持关闭；可重新核对会话后再尝试。</p>
     <p v-else-if="phase === 'login-redirecting'" role="status">正在前往可信身份设施登录。</p>
+    <p v-else-if="phase === 'login-failed'" role="alert">账号、密码或登录状态无效；请稍后重试。</p>
     <button v-if="canLogout" type="button" @click="logout">注销本会话</button>
     <button v-if="phase === 'logout-failed'" type="button" @click="logout">重试注销本会话</button>
     <button v-if="['expired', 'changed', 'unavailable', 'mfa-failed'].includes(phase)" type="button" @click="checkSession">重新核对会话</button>
-    <a v-if="['logged-out', 'expired', 'changed', 'unavailable', 'logout-failed', 'mfa-failed'].includes(phase)" :href="loginURL" @click="login">通过可信身份设施登录</a>
+    <form v-if="identityMode === 'local' && ['logged-out', 'expired', 'changed', 'unavailable', 'logout-failed', 'mfa-failed', 'login-failed'].includes(phase)" @submit.prevent="localLogin">
+      <label for="local-username">账号</label>
+      <input id="local-username" v-model="username" name="username" autocomplete="username" required minlength="3" maxlength="64">
+      <label for="local-password">密码</label>
+      <input id="local-password" v-model="password" name="password" type="password" autocomplete="current-password" required minlength="12" maxlength="256">
+      <button type="submit">登录</button>
+    </form>
+    <a v-else-if="identityMode === 'oidc' && ['logged-out', 'expired', 'changed', 'unavailable', 'logout-failed', 'mfa-failed'].includes(phase)" :href="loginURL" @click="login">通过可信身份设施登录</a>
   </section>
   <div v-if="phase === 'authenticated'" :key="protectedGeneration">
     <slot :expireSession="expireSession" :orgID="session?.org_id" />

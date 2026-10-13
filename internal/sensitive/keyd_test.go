@@ -91,7 +91,7 @@ func TestKeydInitLockSocketWrapMACAndRestart(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if err != nil || ready.MaterialGeneration != 1 || len(ready.Active) != 14 {
+	if err != nil || ready.MaterialGeneration != 1 || len(ready.Active) != 16 {
 		cancel()
 		<-done
 		t.Fatal("keyd not ready", ready, err)

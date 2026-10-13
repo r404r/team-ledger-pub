@@ -18,6 +18,15 @@ type authStepUpCommand struct {
 	ReturnTo string `json:"return_to"`
 }
 type authLogoutCommand struct{}
+type authLocalLoginCommand struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	ReturnTo string `json:"return_to"`
+}
+type authPasswordChangeCommand struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
 
 func protectedCookie(name, value string, expires time.Time) *http.Cookie {
 	return &http.Cookie{Name: name, Value: value, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, Expires: expires}
@@ -44,12 +53,45 @@ func bindingCookie(r *http.Request) (string, error) {
 }
 
 func (h *handler) publicIdentityRoute(w http.ResponseWriter, r *http.Request, requestID string) bool {
+	modeRoute := r.URL.Path == "/api/v1/auth/mode"
+	localLogin := r.URL.Path == "/api/v1/auth/local/login"
 	login := r.URL.Path == "/api/v1/auth/login"
 	callback := r.URL.Path == "/api/v1/auth/callback"
-	if !login && !callback {
+	if !login && !callback && !localLogin && !modeRoute {
 		return false
 	}
 	w.Header().Set("Referrer-Policy", "no-referrer")
+	if modeRoute {
+		if r.Method != http.MethodGet || r.URL.RawQuery != "" {
+			h.fail(w, fault.NotFound, requestID)
+			return true
+		}
+		h.reply(w, http.StatusOK, struct {
+			Mode string `json:"mode"`
+		}{h.identities.Mode()})
+		return true
+	}
+	if localLogin {
+		if r.Method != http.MethodPost || r.URL.RawQuery != "" || r.Header.Get("Origin") != h.origin || r.Header.Get("Sec-Fetch-Site") != "same-origin" || r.Header.Get("Content-Type") != "application/json" {
+			h.fail(w, fault.Forbidden, requestID)
+			return true
+		}
+		var command authLocalLoginCommand
+		if e := strictBody(w, r, &command); e != nil {
+			h.fail(w, e, requestID)
+			return true
+		}
+		result, e := h.identities.LocalLogin(r.Context(), identity.LocalLoginRequest{Username: command.Username, Password: command.Password, ReturnTo: command.ReturnTo, RequestID: requestID})
+		if e != nil {
+			h.fail(w, e, requestID)
+			return true
+		}
+		http.SetCookie(w, protectedCookie("__Host-teamledger_session", result.SessionCookie, result.ExpiresAt))
+		h.reply(w, http.StatusOK, struct {
+			ReturnTo string `json:"return_to"`
+		}{result.ReturnTo})
+		return true
+	}
 	if r.Method != http.MethodGet {
 		h.fail(w, fault.NotFound, requestID)
 		return true
@@ -119,9 +161,10 @@ func (h *handler) publicIdentityRoute(w http.ResponseWriter, r *http.Request, re
 }
 
 func (h *handler) authenticatedIdentityRoute(w http.ResponseWriter, r *http.Request, hash []byte, requestID string) bool {
+	passwordChange := r.URL.Path == "/api/v1/auth/local/password"
 	logout := r.URL.Path == "/api/v1/auth/logout"
 	stepUp := r.URL.Path == "/api/v1/auth/step-up"
-	if !logout && !stepUp {
+	if !logout && !stepUp && !passwordChange {
 		return false
 	}
 	if r.Method != http.MethodPost {
@@ -140,6 +183,20 @@ func (h *handler) authenticatedIdentityRoute(w http.ResponseWriter, r *http.Requ
 		}
 		clearProtectedCookie(w, "__Host-teamledger_session")
 		clearProtectedCookie(w, bindingCookieName)
+		w.WriteHeader(http.StatusNoContent)
+		return true
+	}
+	if passwordChange {
+		var command authPasswordChangeCommand
+		if e := strictBody(w, r, &command); e != nil {
+			h.fail(w, e, requestID)
+			return true
+		}
+		if e := h.identities.ChangeLocalPassword(r.Context(), identity.LocalPasswordChangeRequest{SessionHash: hash, CurrentPassword: command.CurrentPassword, NewPassword: command.NewPassword, RequestID: requestID}); e != nil {
+			h.fail(w, e, requestID)
+			return true
+		}
+		clearProtectedCookie(w, "__Host-teamledger_session")
 		w.WriteHeader(http.StatusNoContent)
 		return true
 	}

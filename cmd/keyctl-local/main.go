@@ -24,6 +24,7 @@ func keyDomain(value string) (sensitive.KeyDomain, bool) {
 		"bonus_payment_lookup": sensitive.DomainBonusPaymentLookup, "identity_subject_lookup": sensitive.DomainIdentitySubjectLookup,
 		"command_receipt": sensitive.DomainCommandReceipt, "assessment_generation": sensitive.DomainAssessmentGeneration,
 		"csrf_token": sensitive.DomainCSRFToken, "cursor_token": sensitive.DomainCursorToken,
+		"local_username_lookup": sensitive.DomainLocalUsernameLookup, "local_password_pepper": sensitive.DomainLocalPasswordPepper,
 	}
 	domain, ok := domains[value]
 	return domain, ok

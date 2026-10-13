@@ -450,10 +450,12 @@ func payloadRegistry(binding Context) (object, purpose, schemaVersion uint16, em
 		object, purpose, schemaVersion, employeeOwned, expected = 15, 2, 1, true, "interview.reason.v1"
 	case "backup_archive":
 		object, purpose, schemaVersion, expected = 16, 8, 1, "backup.archive.v1"
+	case "local_username":
+		object, purpose, schemaVersion, expected = 17, 9, 1, "identity.local_username.v1"
 	default:
 		return 0, 0, 0, false, ErrInvalid
 	}
-	expectedPurpose := map[uint16]string{1: "pii", 2: "interview", 3: "interview", 4: "interview", 5: "financial", 6: "interview", 8: "backup"}[purpose]
+	expectedPurpose := map[uint16]string{1: "pii", 2: "interview", 3: "interview", 4: "interview", 5: "financial", 6: "interview", 8: "backup", 9: "identity"}[purpose]
 	if binding.SchemaType != expected || binding.Purpose != expectedPurpose || (!employeeOwned && binding.EmployeeID != "") {
 		return 0, 0, 0, false, ErrInvalid
 	}

@@ -125,7 +125,7 @@ func readExactFD(fd int, size int) ([]byte, error) {
 }
 
 func makeInitialKeyring(root []byte) ([]byte, error) {
-	entries := make([]keyEntry, 0, 14)
+	entries := make([]keyEntry, 0, 16)
 	for _, domain := range allKeyDomains() {
 		id, err := newDEKID()
 		if err != nil {
@@ -153,7 +153,7 @@ func makeInitialKeyring(root []byte) ([]byte, error) {
 }
 
 func sealKeyring(root []byte, ring keyring, previous [32]byte) ([]byte, error) {
-	if len(root) != 32 || ring.Generation == 0 || len(ring.Entries) < 14 || len(ring.Entries) > 28 {
+	if len(root) != 32 || ring.Generation == 0 || len(ring.Entries) < 16 || len(ring.Entries) > 32 {
 		return nil, ErrInvalid
 	}
 	sort.Slice(ring.Entries, func(i, j int) bool {
@@ -225,7 +225,7 @@ func openKeyring(root, raw []byte) (keyring, error) {
 		Generation uint64     `json:"generation"`
 		Entries    []keyEntry `json:"entries"`
 	}
-	if decoder.Decode(&body) != nil || decoder.Decode(&struct{}{}) != io.EOF || body.Generation != generation || len(body.Entries) < 14 || len(body.Entries) > 28 {
+	if decoder.Decode(&body) != nil || decoder.Decode(&struct{}{}) != io.EOF || body.Generation != generation || len(body.Entries) < 16 || len(body.Entries) > 32 {
 		return empty, ErrInvalid
 	}
 	type domainState struct {

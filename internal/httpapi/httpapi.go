@@ -70,6 +70,7 @@ func New(service *organization.Service, interviews *interview.Service, assessmen
 }
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-TeamLedger-Identity-Mode", h.identities.Mode())
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	requestID := value.NewID()
 	w.Header().Set("X-Request-ID", requestID)
@@ -261,10 +262,11 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			MFAUntil                time.Time                 `json:"mfa_valid_until"`
 			Authorities             []authz.AuthorityHint     `json:"grant_authorities"`
 			IdentityAvailable       bool                      `json:"identity_available"`
+			IdentityMode            string                    `json:"identity_mode"`
 			InterviewPermissions    []interview.Permission    `json:"interview_permissions"`
 			CompensationPermissions []compensation.Permission `json:"compensation_permissions"`
 			SensitivityUntil        time.Time                 `json:"sensitivity_valid_until"`
-		}{snap.SubjectID, snap.OrgID, strconv.FormatInt(snap.AuthEpoch, 10), caps, token, scopeKind, scopeID, now.Before(snap.MFAUntil), snap.MFAUntil, authorities, h.identities.Available(), interviewPermissions, compensationPermissions, sensitivityUntil})
+		}{snap.SubjectID, snap.OrgID, strconv.FormatInt(snap.AuthEpoch, 10), caps, token, scopeKind, scopeID, now.Before(snap.MFAUntil), snap.MFAUntil, authorities, h.identities.Available(), h.identities.Mode(), interviewPermissions, compensationPermissions, sensitivityUntil})
 		return
 	}
 	if r.URL.Path == "/api/v1/access-grants" || strings.HasPrefix(r.URL.Path, "/api/v1/access-grants/") {
@@ -425,6 +427,10 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 		root = "assessment_command"
 	case *workerClaimCommand, *workerLeaseCommand, *workerHeartbeatCommand, *workerResultCommand, *workerFailCommand:
 		root = "assessment_worker"
+	case *authLocalLoginCommand:
+		root = "local_login"
+	case *authPasswordChangeCommand:
+		root = "local_password_change"
 	default:
 		return fault.Invalid
 	}
@@ -432,7 +438,7 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 	d.UseNumber()
 	if strings.HasPrefix(root, "finance_") {
 		e = walkFinancialJSON(d, 0, root, false)
-	} else if root == "bonus_command" || root == "batch_command" || root == "assessment_command" || root == "assessment_worker" || root == "catalog_command" || root == "workforce_command" {
+	} else if root == "local_login" || root == "local_password_change" || root == "bonus_command" || root == "batch_command" || root == "assessment_command" || root == "assessment_worker" || root == "catalog_command" || root == "workforce_command" {
 		e = walkUniqueJSON(d, 0)
 	} else {
 		e = walkJSON(d, 0, root)

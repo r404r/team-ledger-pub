@@ -31,6 +31,8 @@ const (
 	DomainAssessmentGeneration  KeyDomain = "assessment_generation"
 	DomainCSRFToken             KeyDomain = "csrf_token"
 	DomainCursorToken           KeyDomain = "cursor_token"
+	DomainLocalUsernameLookup   KeyDomain = "local_username_lookup"
+	DomainLocalPasswordPepper   KeyDomain = "local_password_pepper"
 )
 
 type KeyReference struct {
@@ -155,7 +157,7 @@ func (r *exactReader) Read(p []byte) (int, error) {
 
 func (c *KeydClient) Ready(ctx context.Context) (ReadyState, error) {
 	response, err := c.call(ctx, keydRequest{Operation: "ready"})
-	if err != nil || response.Ready == nil || response.Ready.MaterialGeneration == 0 || len(response.Ready.Active) != 14 || len(response.Ready.ActiveKeys) != 14 {
+	if err != nil || response.Ready == nil || response.Ready.MaterialGeneration == 0 || len(response.Ready.Active) != 16 || len(response.Ready.ActiveKeys) != 16 {
 		return ReadyState{}, ErrUnavailable
 	}
 	return *response.Ready, nil

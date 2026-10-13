@@ -72,6 +72,15 @@ func secret(name string, size int) ([]byte, error) {
 	return b, nil
 }
 
+type identityModeReader interface {
+	IdentityMode(context.Context) (string, error)
+}
+
+func identityModeMatches(ctx context.Context, reader identityModeReader, configured string) bool {
+	current, err := reader.IdentityMode(ctx)
+	return err == nil && current == configured
+}
+
 func run() error {
 	names := []string{"BACKEND", "DSN", "LISTEN", "PUBLIC_ORIGIN", "TLS_CERT_FILE", "TLS_KEY_FILE", "KEYD_SOCKET", "WEB_DIR"}
 	cfg := map[string]string{}
@@ -201,14 +210,22 @@ func run() error {
 	}()
 	finance := &compensation.Service{Store: repo, Batches: repo, Cipher: sensitive.Cipher{Wrapper: financialWrapper}, DigestKey: digest, CursorKey: cursor, BonusHMACKeys: bonusHMACKeys, BonusHMACKeyIDs: bonusHMACKeyIDs, BonusHMACActive: bonusHMACActive, Policy: policy, Now: time.Now}
 	grants := &authz.Service{Store: repo, DigestKey: digest, CursorKey: cursor, Now: time.Now}
-	oidcConfig, closeIdentity, e := identityConfiguration(cfg["PUBLIC_ORIGIN"], csrf, digest, cursor, identityKey, transactionKey)
+	identityMode, oidcConfig, closeIdentity, e := identityConfiguration(cfg["PUBLIC_ORIGIN"], csrf, digest, cursor, identityKey, transactionKey)
 	if e != nil {
 		return e
+	}
+	if repo.EnsureIdentityMode(startup, identityMode, time.Now().UTC()) != nil {
+		return errors.New("identity mode does not match database")
 	}
 	if closeIdentity != nil {
 		defer closeIdentity()
 	}
-	identities, e := identity.New(startup, repo, csrf, oidcConfig)
+	var identities *identity.Service
+	if identityMode == "local" {
+		identities, e = identity.NewLocal(startup, repo, repo, csrf, keys)
+	} else {
+		identities, e = identity.New(startup, repo, csrf, oidcConfig)
+	}
 	if e != nil {
 		return errors.New("identity unavailable")
 	}
@@ -222,7 +239,7 @@ func run() error {
 			return
 		}
 		state, err := keys.Ready(r.Context())
-		if err != nil || repo.VerifyCryptoState(r.Context(), state) != nil {
+		if err != nil || repo.VerifyCryptoState(r.Context(), state) != nil || !identityModeMatches(r.Context(), repo, identityMode) {
 			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 			return
 		}
