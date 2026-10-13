@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"reflect"
 	"strings"
 
@@ -25,59 +26,67 @@ func (r *Repository) checkStructure(ctx context.Context, db queryer, version int
 	if r.Backend == "postgres" {
 		return r.checkPostgresStructure(ctx, db, version)
 	}
-	expected := map[string]string{}
-	for v := 1; v <= version; v++ {
-		ddl, _, err := r.migration(v)
-		if err != nil {
-			return err
-		}
-		for _, statement := range migrationStatements(ddl) {
-			if !strings.HasPrefix(statement, "CREATE TABLE ") && !strings.HasPrefix(statement, "CREATE INDEX ") && !strings.HasPrefix(statement, "CREATE UNIQUE INDEX ") && !strings.HasPrefix(statement, "CREATE TRIGGER ") {
-				continue
-			}
-			nameIndex := 2
-			if strings.HasPrefix(statement, "CREATE UNIQUE INDEX ") {
-				nameIndex = 3
-			}
-			name := strings.Split(strings.Fields(statement)[nameIndex], "(")[0]
-			for _, suffix := range []string{"_v2", "_v3", "_v4", "_v5", "_v6", "_v7", "_v8", "_v9", "_v10", "_v11"} {
-				if strings.HasSuffix(name, suffix) {
-					finalName := strings.TrimSuffix(name, suffix)
-					statement = strings.Replace(statement, "CREATE TABLE "+name+"(", "CREATE TABLE "+finalName+"(", 1)
-					name = finalName
-				}
-			}
-			// Authorization table rebuilds rename their declarations and every
-			// mutual reference, preserving the complete existing foreign-key graph.
-			for _, table := range []string{"delegation_authority", "access_grant", "grant_command_receipt", "audit_event"} {
-				statement = strings.ReplaceAll(statement, table+"_v5", table)
-				statement = strings.ReplaceAll(statement, table+"_v6", table)
-				statement = strings.ReplaceAll(statement, table+"_v7", table)
-				statement = strings.ReplaceAll(statement, table+"_v8", table)
-				statement = strings.ReplaceAll(statement, table+"_v9", table)
-				statement = strings.ReplaceAll(statement, table+"_v10", table)
-				statement = strings.ReplaceAll(statement, table+"_v11", table)
-			}
-			expected[name] = compactSQL(statement)
-		}
-	}
-	rows, err := db.QueryContext(ctx, "SELECT name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL ORDER BY name")
+	reference, err := sql.Open("sqlite", "file:teamledger_schema_reference?mode=memory&cache=private&_pragma=foreign_keys(1)")
 	if err != nil {
 		return fault.Unavailable
 	}
-	defer rows.Close()
-	found := 0
-	for rows.Next() {
-		var name, ddl string
-		if err = rows.Scan(&name, &ddl); err != nil || expected[name] == "" || expected[name] != compactSQL(ddl) {
-			return fault.Unavailable
-		}
-		found++
+	reference.SetMaxOpenConns(1)
+	defer reference.Close()
+	tx, err := reference.BeginTx(ctx, nil)
+	if err != nil {
+		return fault.Unavailable
 	}
-	if rows.Err() != nil || found != len(expected) {
+	defer tx.Rollback()
+	for current := 1; current <= version; current++ {
+		ddl, checksum, e := r.migration(current)
+		if e != nil {
+			return e
+		}
+		for _, statement := range migrationStatements(ddl) {
+			if _, e = tx.ExecContext(ctx, statement); e != nil {
+				return safeError(e)
+			}
+		}
+		if _, e = tx.ExecContext(ctx, "INSERT INTO schema_version(version,backend,checksum) VALUES(?,?,?)", current, "sqlite", checksum); e != nil {
+			return safeError(e)
+		}
+	}
+	expected, err := sqliteCatalog(ctx, tx)
+	if err != nil {
+		return err
+	}
+	actual, err := sqliteCatalog(ctx, db)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(actual, expected) {
 		return fault.Unavailable
 	}
 	return nil
+}
+
+func sqliteCatalog(ctx context.Context, db queryer) (map[string]string, error) {
+	rows, err := db.QueryContext(ctx, "SELECT type,name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL ORDER BY type,name")
+	if err != nil {
+		return nil, fault.Unavailable
+	}
+	defer rows.Close()
+	result := map[string]string{}
+	for rows.Next() {
+		var kind, name, ddl string
+		if err = rows.Scan(&kind, &name, &ddl); err != nil {
+			return nil, fault.Unavailable
+		}
+		key := kind + ":" + name
+		if _, exists := result[key]; exists {
+			return nil, fault.Unavailable
+		}
+		result[key] = compactSQL(ddl)
+	}
+	if rows.Err() != nil {
+		return nil, fault.Unavailable
+	}
+	return result, nil
 }
 
 // Normalize layout and quoted identifiers, never string literal contents. In
