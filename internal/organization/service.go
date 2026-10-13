@@ -251,7 +251,7 @@ func (s *Service) authorize(ctx context.Context, reader Reader, request Request,
 		if !metadata {
 			return snapshot, fault.NotFound
 		}
-	case "OP-ORG-06":
+	case "OP-ORG-06", "OP-ORG-07":
 		if !metadata {
 			return snapshot, fault.NotFound
 		}

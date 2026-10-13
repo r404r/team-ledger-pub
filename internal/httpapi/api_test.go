@@ -218,6 +218,11 @@ func TestEmployeeScopedSessionCanReadAndCorrectOnlyGrantedEmployee(t *testing.T)
 			if view.Profile == nil || view.Profile.LocalName != "SYNTHETIC_API_PROFILE" {
 				t.Fatal("employee scope cannot read approved profile")
 			}
+			var history organization.HistoryPage
+			apiSend(t, f, apiRequest(t, f, f.Owner, "GET", "/api/v1/employees/"+first.ID+"/organization-history?from=2026-10-01&to=2026-11-01&limit=10", "", ""), 200, &history)
+			if len(history.Items) != 0 {
+				t.Fatalf("employee-scoped empty organization history = %#v", history)
+			}
 			body := `{"expected_profile_revision":"1","profile":{"local_name":"SYNTHETIC_SCOPED_CORRECTION"},"edit_reason":"synthetic scoped correction"}`
 			apiSend(t, f, apiRequest(t, f, f.Owner, "PATCH", "/api/v1/employees/"+first.ID+"/profile", body, value.NewID()), 200, nil)
 			apiSend(t, f, apiRequest(t, f, f.Owner, "GET", get, "", ""), 200, &view)
