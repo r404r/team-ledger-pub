@@ -32,7 +32,11 @@ func (s *Service) Catalogs(ctx context.Context, request Request, org string, inc
 	if includeLabels && !snapshot.Allows("pii.read", "pii", "", request.Purpose, s.clock()) {
 		return WorkforceCatalogs{}, s.denied(ctx, request, snapshot, "OP-ORG-09", fault.Forbidden)
 	}
-	catalogs, err := s.Store.WorkforceCatalogs(ctx, org)
+	day, err := s.authorizationDay(snapshot)
+	if err != nil {
+		return WorkforceCatalogs{}, err
+	}
+	catalogs, err := s.Store.WorkforceCatalogs(ctx, org, day)
 	if err != nil {
 		return WorkforceCatalogs{}, err
 	}

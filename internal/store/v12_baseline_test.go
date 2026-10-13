@@ -41,9 +41,9 @@ func TestV12FreshInstallIsCleanWorkforceBaseline(t *testing.T) {
 		}
 	}
 	for _, name := range []string{
-		"legal_entity", "work_location", "org_unit", "org_unit_parent_history",
+		"legal_entity", "legal_entity_version", "work_location", "org_unit", "org_unit_version", "org_unit_parent_history",
 		"workforce_payload", "employee_business_identifier", "employee_identifier_owner", "employment_spell",
-		"education_level", "education_record", "job_family", "career_level",
+		"education_level", "education_record", "job_family", "job_family_version", "career_level", "career_level_version",
 		"job_assignment", "reporting_line", "structure_change", "structure_change_item",
 	} {
 		var count int

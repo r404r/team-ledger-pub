@@ -82,7 +82,7 @@ type WorkforcePayload struct {
 }
 
 type WorkforceReader interface {
-	WorkforceCatalogs(context.Context, string) (WorkforceCatalogs, error)
+	WorkforceCatalogs(context.Context, string, string) (WorkforceCatalogs, error)
 	WorkforcePayload(context.Context, string, string) (WorkforcePayload, error)
 }
 

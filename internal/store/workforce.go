@@ -10,15 +10,15 @@ import (
 	"github.com/r404r/team-ledger/internal/organization"
 )
 
-func (r *Repository) WorkforceCatalogs(ctx context.Context, org string) (organization.WorkforceCatalogs, error) {
-	return r.read().WorkforceCatalogs(ctx, org)
+func (r *Repository) WorkforceCatalogs(ctx context.Context, org, asOf string) (organization.WorkforceCatalogs, error) {
+	return r.read().WorkforceCatalogs(ctx, org, asOf)
 }
 
 func (r *Repository) WorkforcePayload(ctx context.Context, org, id string) (organization.WorkforcePayload, error) {
 	return r.read().WorkforcePayload(ctx, org, id)
 }
 
-func (r reader) WorkforceCatalogs(ctx context.Context, org string) (organization.WorkforceCatalogs, error) {
+func (r reader) WorkforceCatalogs(ctx context.Context, org, asOf string) (organization.WorkforceCatalogs, error) {
 	out := organization.WorkforceCatalogs{
 		LegalEntities: []organization.LegalEntityView{}, Locations: []string{}, OrgUnits: []organization.OrgUnitView{},
 		EducationLevels: []organization.EducationLevelView{}, JobFamilies: []organization.JobFamilyView{}, CareerLevels: []organization.CareerLevelView{},
@@ -32,7 +32,7 @@ func (r reader) WorkforceCatalogs(ctx context.Context, org string) (organization
 	out.CatalogRevision = strconv.FormatInt(catalogRevision, 10)
 	out.GraphRevision = strconv.FormatInt(graphRevision, 10)
 
-	rows, err := r.db.QueryContext(ctx, r.structureSQL("SELECT id,code,label_payload_id,active FROM legal_entity WHERE org_id=? ORDER BY code,id"), org)
+	rows, err := r.db.QueryContext(ctx, r.structureSQL("SELECT e.id,e.code,v.label_payload_id,TRUE FROM legal_entity e JOIN legal_entity_version v ON v.org_id=e.org_id AND v.legal_entity_id=e.id WHERE e.org_id=? AND v.valid_from<=? AND (v.valid_to IS NULL OR v.valid_to>?) ORDER BY e.code,e.id"), org, asOf, asOf)
 	if err != nil {
 		return out, safeError(err)
 	}
@@ -68,7 +68,7 @@ func (r reader) WorkforceCatalogs(ctx context.Context, org string) (organization
 	}
 	rows.Close()
 
-	rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT id,code,label_payload_id,kind,active FROM org_unit WHERE org_id=? ORDER BY kind,code,id"), org)
+	rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT u.id,u.code,v.label_payload_id,u.kind,TRUE FROM org_unit u JOIN org_unit_version v ON v.org_id=u.org_id AND v.org_unit_id=u.id WHERE u.org_id=? AND v.valid_from<=? AND (v.valid_to IS NULL OR v.valid_to>?) ORDER BY u.kind,u.code,u.id"), org, asOf, asOf)
 	if err != nil {
 		return out, safeError(err)
 	}
@@ -104,7 +104,7 @@ func (r reader) WorkforceCatalogs(ctx context.Context, org string) (organization
 	}
 	rows.Close()
 
-	rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT id,code,name,active FROM job_family WHERE org_id=? ORDER BY code,id"), org)
+	rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT f.id,f.code,v.label,TRUE FROM job_family f JOIN job_family_version v ON v.org_id=f.org_id AND v.job_family_id=f.id WHERE f.org_id=? AND v.valid_from<=? AND (v.valid_to IS NULL OR v.valid_to>?) ORDER BY f.code,f.id"), org, asOf, asOf)
 	if err != nil {
 		return out, safeError(err)
 	}
@@ -122,7 +122,7 @@ func (r reader) WorkforceCatalogs(ctx context.Context, org string) (organization
 	}
 	rows.Close()
 
-	rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT id,code,name,rank,active FROM career_level WHERE org_id=? ORDER BY rank,code,id"), org)
+	rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT c.id,c.code,v.label,v.rank,TRUE FROM career_level c JOIN career_level_version v ON v.org_id=c.org_id AND v.career_level_id=c.id WHERE c.org_id=? AND v.valid_from<=? AND (v.valid_to IS NULL OR v.valid_to>?) ORDER BY v.rank,c.code,c.id"), org, asOf, asOf)
 	if err != nil {
 		return out, safeError(err)
 	}
