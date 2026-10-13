@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/json"
 	"io"
 	"strconv"
@@ -172,6 +173,158 @@ func (s *Service) ChangeCatalogs(ctx context.Context, request Request, org strin
 		return CatalogChangeResult{}, s.denied(ctx, request, snapshot, operation, err)
 	}
 	return result, nil
+}
+
+func (s *Service) ChangeWorkforce(ctx context.Context, request Request, org string, command WorkforceChangeCommand) (WorkforceChangeResult, error) {
+	const operation = "OP-ORG-10"
+	if !value.ValidID(org) || !value.ValidID(request.Key) || request.Purpose != "organization_management" || !validWorkforceChange(command) {
+		return WorkforceChangeResult{}, fault.Invalid
+	}
+	snapshot, err := s.authorize(ctx, s.Store, request, org, "", operation)
+	if err != nil {
+		return WorkforceChangeResult{}, s.denied(ctx, request, snapshot, operation, err)
+	}
+	needsPII := workforceChangesNeedPII(command)
+	if !snapshot.Allows("organization.write", "metadata", "", request.Purpose, s.clock()) ||
+		needsPII && (!snapshot.Allows("pii.read", "pii", "", request.Purpose, s.clock()) || !snapshot.Allows("pii.write", "pii", "", request.Purpose, s.clock())) {
+		return WorkforceChangeResult{}, s.denied(ctx, request, snapshot, operation, fault.Forbidden)
+	}
+	expectedCatalog, _ := value.Revision(command.ExpectedCatalogRevision)
+	expectedGraph, _ := value.Revision(command.ExpectedGraphRevision)
+	expectedEmployees := make(map[string]int64, len(command.ExpectedEmployeeRevision))
+	for employee, revision := range command.ExpectedEmployeeRevision {
+		expectedEmployees[employee], _ = value.Revision(revision)
+	}
+	digest, err := s.digest(request, snapshot, operation, org, command)
+	if err != nil {
+		return WorkforceChangeResult{}, err
+	}
+	write := WorkforceWrite{ID: value.NewID(), OrgID: org, SubjectID: snapshot.SubjectID, RecordedAt: s.clock(), Items: make([]WorkforcePreparedItem, len(command.Changes))}
+	if command.Reason != nil {
+		payload, sealErr := s.sealOrganization(ctx, org, "", write.ID, "structure_change", "org.structure.reason.v1", struct {
+			Reason string `json:"reason"`
+		}{Reason: *command.Reason})
+		if sealErr != nil {
+			return WorkforceChangeResult{}, sealErr
+		}
+		write.ReasonPayload = &payload
+	}
+	for i, item := range command.Changes {
+		prepared := WorkforcePreparedItem{Command: item, ID: value.NewID()}
+		if item.Action == "end" {
+			prepared.ID = *item.Ref
+		}
+		switch item.Kind {
+		case "identifier":
+			if item.Action != "end" {
+				normalized, _ := NormalizeStaffCode(*item.StaffCode)
+				mac := hmac.New(sha256.New, s.DigestKey)
+				_, _ = mac.Write([]byte("staff-code\x00" + org + "\x00" + normalized))
+				prepared.Digest = mac.Sum(nil)
+				payload, sealErr := s.sealWorkforceFact(ctx, org, item.EmployeeID, prepared.ID, "employee_identifier", "pii.employee_identifier.v1", struct {
+					StaffCode string `json:"staff_code"`
+				}{StaffCode: normalized})
+				if sealErr != nil {
+					return WorkforceChangeResult{}, sealErr
+				}
+				prepared.Payload = &payload
+			}
+		case "education":
+			if item.Action != "end" {
+				payload, sealErr := s.sealWorkforceFact(ctx, org, item.EmployeeID, prepared.ID, "education_record", "pii.education.v1", struct {
+					Institution *string `json:"institution,omitempty"`
+					Field       *string `json:"field,omitempty"`
+					AwardDate   *string `json:"award_date,omitempty"`
+				}{item.Institution, item.Field, item.AwardDate})
+				if sealErr != nil {
+					return WorkforceChangeResult{}, sealErr
+				}
+				prepared.Payload = &payload
+			}
+		case "job_assignment":
+			if item.Action != "end" && item.Position != nil {
+				payload, sealErr := s.sealWorkforceFact(ctx, org, item.EmployeeID, prepared.ID, "job_assignment", "pii.job_assignment_position.v1", *item.Position)
+				if sealErr != nil {
+					return WorkforceChangeResult{}, sealErr
+				}
+				prepared.Payload = &payload
+			}
+		}
+		write.Items[i] = prepared
+	}
+	var result WorkforceChangeResult
+	err = s.Store.WithTx(ctx, org, func(tx Tx) error {
+		if err := tx.LockGraph(ctx, org); err != nil {
+			return err
+		}
+		if err := tx.LockSubjects(ctx, org, []string{snapshot.SubjectID}); err != nil {
+			return err
+		}
+		current, err := s.authorize(ctx, tx, request, org, "", operation)
+		if err != nil {
+			return err
+		}
+		if !current.Allows("organization.write", "metadata", "", request.Purpose, s.clock()) ||
+			needsPII && (!current.Allows("pii.read", "pii", "", request.Purpose, s.clock()) || !current.Allows("pii.write", "pii", "", request.Purpose, s.clock())) {
+			return fault.Forbidden
+		}
+		if receipt, found, err := tx.WorkforceReceipt(ctx, org, current.SubjectID, operation, request.Key); err != nil {
+			return err
+		} else if found {
+			if !hmac.Equal(receipt.Digest, digest) {
+				return fault.Conflict
+			}
+			result = receipt.Result
+			return nil
+		}
+		catalogRevision, graphRevision, employeeRevisions, err := tx.CommitWorkforceChange(ctx, org, expectedCatalog, expectedGraph, expectedEmployees, write)
+		if err != nil {
+			return err
+		}
+		result = WorkforceChangeResult{ID: write.ID, CatalogRevision: strconv.FormatInt(catalogRevision, 10), GraphRevision: strconv.FormatInt(graphRevision, 10), EmployeeRevisions: make(map[string]string, len(employeeRevisions)), Items: make([]CatalogChangeItemResult, len(write.Items))}
+		for employee, revision := range employeeRevisions {
+			result.EmployeeRevisions[employee] = strconv.FormatInt(revision, 10)
+		}
+		for i, item := range write.Items {
+			result.Items[i] = CatalogChangeItemResult{Kind: item.Command.Kind, ID: item.ID}
+		}
+		if err = tx.SaveWorkforceReceipt(ctx, org, current.SubjectID, operation, request.Key, WorkforceCommandReceipt{Digest: digest, Result: result}); err != nil {
+			return err
+		}
+		return tx.Audit(ctx, s.audit(request, current, "", operation, "allowed"))
+	})
+	if err != nil {
+		return WorkforceChangeResult{}, s.denied(ctx, request, snapshot, operation, err)
+	}
+	return result, nil
+}
+
+func workforceChangesNeedPII(command WorkforceChangeCommand) bool {
+	if command.Reason != nil {
+		return true
+	}
+	for _, item := range command.Changes {
+		if item.Kind == "identifier" || item.Kind == "education" || item.Kind == "job_assignment" && item.Position != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) sealWorkforceFact(ctx context.Context, org, employee, owner, kind, schema string, body any) (WorkforcePayload, error) {
+	plain, err := json.Marshal(body)
+	if err != nil || len(plain) > 16<<10 {
+		clear(plain)
+		return WorkforcePayload{}, fault.Invalid
+	}
+	defer clear(plain)
+	payload := WorkforcePayload{ID: value.NewID(), RecordedAt: s.clock()}
+	binding := sensitive.Context{OrgID: org, EmployeeID: employee, RecordID: owner, VersionID: payload.ID, ObjectKind: kind, Purpose: "pii", SchemaType: schema, SchemaVersion: 1}
+	payload.Envelope, err = s.Cipher.Seal(ctx, binding, plain)
+	if err != nil {
+		return WorkforcePayload{}, fault.Unavailable
+	}
+	return payload, nil
 }
 
 func catalogChangesNeedPII(items []CatalogChangeItem) bool {

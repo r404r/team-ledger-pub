@@ -380,6 +380,8 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 		root = "structure_command"
 	case *organization.CatalogChangeCommand:
 		root = "catalog_command"
+	case *organization.WorkforceChangeCommand:
+		root = "workforce_command"
 	case *organization.DirectoryQuery:
 		root = "directory_query"
 	case *authz.IssueCommand:
@@ -425,7 +427,7 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 	d.UseNumber()
 	if strings.HasPrefix(root, "finance_") {
 		e = walkFinancialJSON(d, 0, root, false)
-	} else if root == "bonus_command" || root == "assessment_command" || root == "assessment_worker" || root == "catalog_command" {
+	} else if root == "bonus_command" || root == "assessment_command" || root == "assessment_worker" || root == "catalog_command" || root == "workforce_command" {
 		e = walkUniqueJSON(d, 0)
 	} else {
 		e = walkJSON(d, 0, root)

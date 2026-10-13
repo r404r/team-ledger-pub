@@ -20,16 +20,17 @@ func (h *handler) structureRoute(w http.ResponseWriter, r *http.Request, req org
 	tree := len(parts) == 3 && parts[0] == "orgs" && parts[2] == "tree" && r.Method == http.MethodGet
 	catalogs := len(parts) == 3 && parts[0] == "orgs" && parts[2] == "workforce-catalogs" && r.Method == http.MethodGet
 	catalogChange := len(parts) == 3 && parts[0] == "orgs" && parts[2] == "workforce-catalog-changes" && r.Method == http.MethodPost
+	workforceChange := len(parts) == 3 && parts[0] == "orgs" && parts[2] == "workforce-changes" && r.Method == http.MethodPost
 	directory := len(parts) == 4 && parts[0] == "orgs" && parts[2] == "employees" && parts[3] == "query" && r.Method == http.MethodPost
 	history := len(parts) == 3 && parts[0] == "employees" && parts[2] == "organization-history" && r.Method == http.MethodGet
-	if !strings.HasPrefix(r.URL.Path, "/api/v1/") || !(teamCreate || change || tree || catalogs || catalogChange || directory || history) {
+	if !strings.HasPrefix(r.URL.Path, "/api/v1/") || !(teamCreate || change || tree || catalogs || catalogChange || workforceChange || directory || history) {
 		return false
 	}
 	if !value.ValidID(parts[1]) || req.Purpose != "organization_management" {
 		h.fail(w, fault.Invalid, req.RequestID)
 		return true
 	}
-	if teamCreate || change || catalogChange {
+	if teamCreate || change || catalogChange || workforceChange {
 		if !validCommandKey(req.Key) {
 			h.fail(w, fault.Invalid, req.RequestID)
 			return true
@@ -55,6 +56,20 @@ func (h *handler) structureRoute(w http.ResponseWriter, r *http.Request, req org
 				return true
 			}
 			result, err := h.service.ChangeCatalogs(r.Context(), req, parts[1], cmd)
+			if err != nil {
+				h.fail(w, err, req.RequestID)
+			} else {
+				h.reply(w, http.StatusCreated, result)
+			}
+			return true
+		}
+		if workforceChange {
+			var cmd organization.WorkforceChangeCommand
+			if err := strictBody(w, r, &cmd); err != nil {
+				h.fail(w, err, req.RequestID)
+				return true
+			}
+			result, err := h.service.ChangeWorkforce(r.Context(), req, parts[1], cmd)
 			if err != nil {
 				h.fail(w, err, req.RequestID)
 			} else {

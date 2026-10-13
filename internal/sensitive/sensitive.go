@@ -256,6 +256,29 @@ func canonicalAAD(binding Context) ([]byte, error) {
 			return nil, ErrInvalid
 		}
 		employeeOwned = true
+	case "legal_entity":
+		if binding.SchemaType != "pii.legal_entity_label.v1" {
+			return nil, ErrInvalid
+		}
+	case "org_unit":
+		if binding.SchemaType != "pii.org_unit_label.v1" {
+			return nil, ErrInvalid
+		}
+	case "employee_identifier":
+		if binding.SchemaType != "pii.employee_identifier.v1" {
+			return nil, ErrInvalid
+		}
+		employeeOwned = true
+	case "education_record":
+		if binding.SchemaType != "pii.education.v1" {
+			return nil, ErrInvalid
+		}
+		employeeOwned = true
+	case "job_assignment":
+		if binding.SchemaType != "pii.job_assignment_position.v1" {
+			return nil, ErrInvalid
+		}
+		employeeOwned = true
 	case "team_label":
 		if binding.SchemaType != "org.team.label.v1" {
 			return nil, ErrInvalid

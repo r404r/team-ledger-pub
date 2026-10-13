@@ -67,12 +67,15 @@ type CatalogChangeItemResult struct {
 	VersionID string `json:"version_id,omitempty"`
 }
 
-type CatalogChangeResult struct {
-	ID              string                    `json:"id"`
-	CatalogRevision string                    `json:"catalog_revision"`
-	GraphRevision   string                    `json:"graph_revision"`
-	Items           []CatalogChangeItemResult `json:"items"`
+type WorkforceChangeResult struct {
+	ID                string                    `json:"id"`
+	CatalogRevision   string                    `json:"catalog_revision"`
+	GraphRevision     string                    `json:"graph_revision"`
+	EmployeeRevisions map[string]string         `json:"employee_revisions,omitempty"`
+	Items             []CatalogChangeItemResult `json:"items"`
 }
+
+type CatalogChangeResult = WorkforceChangeResult
 
 type CatalogPreparedItem struct {
 	Command   CatalogChangeItem
@@ -90,6 +93,20 @@ type CatalogWrite struct {
 type WorkforceCommandReceipt struct {
 	Digest []byte
 	Result CatalogChangeResult
+}
+
+type WorkforcePreparedItem struct {
+	Command WorkforceChangeItem
+	ID      string
+	Payload *WorkforcePayload
+	Digest  []byte
+}
+
+type WorkforceWrite struct {
+	ID, OrgID, SubjectID string
+	RecordedAt           time.Time
+	ReasonPayload        *OrganizationPayload
+	Items                []WorkforcePreparedItem
 }
 
 func validCatalogChange(command CatalogChangeCommand) bool {
@@ -186,10 +203,13 @@ func validWorkforceChangeItem(item WorkforceChangeItem) bool {
 	if item.Ref != nil && !value.ValidID(*item.Ref) || item.ValidFrom != nil && !value.ValidDate(*item.ValidFrom) || item.ValidTo != nil && !value.ValidDate(*item.ValidTo) || item.EffectiveTo != nil && !value.ValidDate(*item.EffectiveTo) {
 		return false
 	}
+	if item.ValidFrom != nil && item.ValidTo != nil && *item.ValidFrom >= *item.ValidTo {
+		return false
+	}
 	if item.Action == "end" {
 		return item.Ref != nil && item.EffectiveTo != nil && item.ValidFrom == nil && item.ValidTo == nil && noWorkforcePayload(item)
 	}
-	if item.ValidFrom == nil || item.EffectiveTo != nil || item.Action == "add" && item.Ref != nil || item.Action == "replace" && item.Ref == nil {
+	if item.ValidFrom == nil || item.Action == "add" && (item.Ref != nil || item.EffectiveTo != nil) || item.Action == "replace" && (item.Ref == nil || item.EffectiveTo == nil || *item.ValidFrom != *item.EffectiveTo) {
 		return false
 	}
 	switch item.Kind {

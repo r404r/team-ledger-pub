@@ -79,3 +79,46 @@ func TestAPIWorkforceCatalogCreateReplaceEndIsAtomicAndReplaySafe(t *testing.T) 
 		})
 	}
 }
+
+func TestAPIWorkforceFactsCommitAtomicallyAndReplay(t *testing.T) {
+	for _, backend := range []string{"sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) {
+			f := testsupport.NewHarness(t, backend)
+			var employee organization.Result
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/employees", createJSON, value.NewID()), http.StatusCreated, &employee)
+
+			catalogPath := "/api/v1/orgs/" + f.OrgID + "/workforce-catalog-changes"
+			catalogBody := `{"expected_catalog_revision":"1","expected_graph_revision":"1","changes":[{"action":"create","kind":"legal_entity","code":"CN01","label":"China Branch","valid_from":"2026-01-01"}]}`
+			var catalog organization.CatalogChangeResult
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, catalogPath, catalogBody, value.NewID()), http.StatusCreated, &catalog)
+
+			path := "/api/v1/orgs/" + f.OrgID + "/workforce-changes"
+			body := fmt.Sprintf(`{"expected_catalog_revision":"2","expected_graph_revision":"1","expected_employee_revisions":{%q:"1"},"reason":"initial workforce facts","changes":[{"action":"add","kind":"identifier","employee_id":%q,"staff_code":"0007","valid_from":"2026-10-11"},{"action":"add","kind":"employment","employee_id":%q,"legal_entity_id":%q,"employment_kind":"hire","location_code":"Shanghai","valid_from":"2026-10-11"},{"action":"add","kind":"education","employee_id":%q,"education_level":"Master","institution":"Example University","field":"Engineering","award_date":"2024-06-30","valid_from":"2026-10-11"}]}`, employee.ID, employee.ID, employee.ID, catalog.Items[0].ID, employee.ID)
+			key := value.NewID()
+			var first, replay organization.WorkforceChangeResult
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, body, key), http.StatusCreated, &first)
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, body, key), http.StatusCreated, &replay)
+			if !reflect.DeepEqual(first, replay) || first.CatalogRevision != "2" || first.GraphRevision != "1" || first.EmployeeRevisions[employee.ID] != "2" {
+				t.Fatalf("workforce write/replay first=%#v replay=%#v", first, replay)
+			}
+			identifierID := first.Items[0].ID
+			replace := fmt.Sprintf(`{"expected_catalog_revision":"2","expected_graph_revision":"1","expected_employee_revisions":{%q:"2"},"changes":[{"action":"replace","kind":"identifier","ref":%q,"employee_id":%q,"staff_code":"0008","valid_from":"2027-01-01","effective_to":"2027-01-01"}]}`, employee.ID, identifierID, employee.ID)
+			var replaced organization.WorkforceChangeResult
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, replace, value.NewID()), http.StatusCreated, &replaced)
+			if replaced.EmployeeRevisions[employee.ID] != "3" {
+				t.Fatalf("identifier replacement = %#v", replaced)
+			}
+			end := fmt.Sprintf(`{"expected_catalog_revision":"2","expected_graph_revision":"1","expected_employee_revisions":{%q:"3"},"changes":[{"action":"end","kind":"identifier","ref":%q,"employee_id":%q,"effective_to":"2028-01-01"}]}`, employee.ID, replaced.Items[0].ID, employee.ID)
+			var ended organization.WorkforceChangeResult
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, end, value.NewID()), http.StatusCreated, &ended)
+			if ended.EmployeeRevisions[employee.ID] != "4" {
+				t.Fatalf("identifier end = %#v", ended)
+			}
+			for table, want := range map[string]int{"employee_business_identifier": 2, "employment_spell": 1, "education_record": 1, "workforce_payload": 4, "workforce_command_receipt": 4} {
+				if got := f.Count(t, table); got != want {
+					t.Fatalf("%s rows=%d want %d", table, got, want)
+				}
+			}
+		})
+	}
+}

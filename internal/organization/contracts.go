@@ -121,6 +121,7 @@ type Tx interface {
 	Audit(context.Context, Audit) error
 	WorkforceReceipt(context.Context, string, string, string, string) (WorkforceCommandReceipt, bool, error)
 	CommitCatalogChange(context.Context, string, int64, int64, CatalogWrite) (int64, int64, error)
+	CommitWorkforceChange(context.Context, string, int64, int64, map[string]int64, WorkforceWrite) (int64, int64, map[string]int64, error)
 	SaveWorkforceReceipt(context.Context, string, string, string, string, WorkforceCommandReceipt) error
 }
 type Store interface {

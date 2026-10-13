@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"time"
 
 	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/organization"
@@ -99,6 +100,183 @@ func (t *transaction) CommitCatalogChange(ctx context.Context, org string, expec
 		}
 	}
 	return expectedCatalog + 1, nextGraph, nil
+}
+
+func (t *transaction) CommitWorkforceChange(ctx context.Context, org string, expectedCatalog, expectedGraph int64, expectedEmployees map[string]int64, write organization.WorkforceWrite) (int64, int64, map[string]int64, error) {
+	if org != t.org || write.OrgID != org || !value.ValidID(write.ID) || !value.ValidID(write.SubjectID) || expectedCatalog < 1 || expectedGraph < 1 || len(expectedEmployees) == 0 || len(write.Items) < 1 || len(write.Items) > 100 {
+		return 0, 0, nil, fault.Invalid
+	}
+	var catalogRevision, graphRevision int64
+	if err := t.tx.QueryRowContext(ctx, t.structureSQL("SELECT catalog_revision,graph_revision FROM organization WHERE id=?"), org).Scan(&catalogRevision, &graphRevision); err != nil {
+		return 0, 0, nil, safeError(err)
+	}
+	if catalogRevision != expectedCatalog || graphRevision != expectedGraph {
+		return 0, 0, nil, fault.Conflict
+	}
+	nextEmployees := make(map[string]int64, len(expectedEmployees))
+	for employee, expected := range expectedEmployees {
+		if !value.ValidID(employee) || expected < 1 || expected == math.MaxInt64 {
+			return 0, 0, nil, fault.Invalid
+		}
+		var current int64
+		if err := t.tx.QueryRowContext(ctx, t.structureSQL("SELECT workforce_revision FROM employee WHERE org_id=? AND id=?"), org, employee).Scan(&current); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return 0, 0, nil, fault.Conflict
+			}
+			return 0, 0, nil, safeError(err)
+		}
+		if current != expected {
+			return 0, 0, nil, fault.Conflict
+		}
+		nextEmployees[employee] = expected + 1
+	}
+	advancesGraph := false
+	for _, item := range write.Items {
+		if _, ok := expectedEmployees[item.Command.EmployeeID]; !ok {
+			return 0, 0, nil, fault.Invalid
+		}
+		if item.Command.Kind == "reporting" || item.Command.Kind == "job_assignment" || item.Command.Kind == "employee_lifecycle" {
+			advancesGraph = true
+		}
+	}
+	nextGraph := expectedGraph
+	if advancesGraph {
+		nextGraph++
+	}
+	reasonID := any(nil)
+	if write.ReasonPayload != nil {
+		if err := t.insertOrganizationPayload(ctx, *write.ReasonPayload); err != nil {
+			return 0, 0, nil, err
+		}
+		reasonID = write.ReasonPayload.ID
+	}
+	if _, err := t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO structure_change(org_id,id,subject_id,recorded_at,graph_before,graph_after,catalog_before,catalog_after,reason_payload_id) VALUES(?,?,?,?,?,?,?,?,?)"), org, write.ID, write.SubjectID, t.bindTime(write.RecordedAt), expectedGraph, nextGraph, expectedCatalog, expectedCatalog, reasonID); err != nil {
+		return 0, 0, nil, safeError(err)
+	}
+	for ordinal, item := range write.Items {
+		if item.Payload != nil {
+			if err := t.insertWorkforcePayload(ctx, *item.Payload); err != nil {
+				return 0, 0, nil, err
+			}
+		}
+		if err := t.applyWorkforceItem(ctx, org, write.ID, write.RecordedAt, item); err != nil {
+			return 0, 0, nil, err
+		}
+		if _, err := t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO structure_change_item(org_id,change_id,ordinal,action,kind,fact_id,employee_id,owner_id,valid_from,valid_to,effective_to,supersedes_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)"), org, write.ID, ordinal, item.Command.Action, item.Command.Kind, item.ID, item.Command.EmployeeID, item.Command.EmployeeID, nullablePointer(item.Command.ValidFrom), nullablePointer(item.Command.ValidTo), nullablePointer(item.Command.EffectiveTo), nullablePointer(item.Command.Ref)); err != nil {
+			return 0, 0, nil, safeError(err)
+		}
+	}
+	for employee, expected := range expectedEmployees {
+		result, err := t.tx.ExecContext(ctx, t.structureSQL("UPDATE employee SET workforce_revision=workforce_revision+1 WHERE org_id=? AND id=? AND workforce_revision=?"), org, employee, expected)
+		if err = structureAffected(result, err, fault.Conflict); err != nil {
+			return 0, 0, nil, err
+		}
+	}
+	if advancesGraph {
+		result, err := t.tx.ExecContext(ctx, t.structureSQL("UPDATE organization SET graph_revision=? WHERE id=? AND catalog_revision=? AND graph_revision=?"), nextGraph, org, expectedCatalog, expectedGraph)
+		if err = structureAffected(result, err, fault.Conflict); err != nil {
+			return 0, 0, nil, err
+		}
+		result, err = t.tx.ExecContext(ctx, t.structureSQL("UPDATE authorization_guard SET auth_epoch=auth_epoch+1 WHERE org_id=? AND auth_epoch<?"), org, int64(math.MaxInt64))
+		if err = structureAffected(result, err, fault.Conflict); err != nil {
+			return 0, 0, nil, err
+		}
+	}
+	return expectedCatalog, nextGraph, nextEmployees, nil
+}
+
+func (t *transaction) applyWorkforceItem(ctx context.Context, org, changeID string, recordedAt time.Time, item organization.WorkforcePreparedItem) error {
+	command := item.Command
+	if command.Action == "end" {
+		return t.endWorkforceItem(ctx, org, changeID, item)
+	}
+	revision, supersedes, err := int64(1), any(nil), error(nil)
+	if command.Action == "replace" {
+		if command.Ref == nil || command.EffectiveTo == nil {
+			return fault.Invalid
+		}
+		revision, err = t.closeWorkforceItem(ctx, org, changeID, item)
+		if err != nil {
+			return err
+		}
+		revision++
+		supersedes = *command.Ref
+	}
+	switch command.Kind {
+	case "identifier":
+		result, insertErr := t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO employee_identifier_owner(org_id,kind,key_version,digest,employee_id,claimed_at) VALUES(?,'staff_code',1,?,?,?) ON CONFLICT(org_id,kind,key_version,digest) DO NOTHING"), org, item.Digest, command.EmployeeID, t.bindTime(recordedAt))
+		if insertErr != nil {
+			return safeError(insertErr)
+		}
+		if n, _ := result.RowsAffected(); n == 0 {
+			var owner string
+			if err = t.tx.QueryRowContext(ctx, t.structureSQL("SELECT employee_id FROM employee_identifier_owner WHERE org_id=? AND kind='staff_code' AND key_version=1 AND digest=?"), org, item.Digest).Scan(&owner); err != nil || owner != command.EmployeeID {
+				return fault.Conflict
+			}
+		}
+		_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO employee_business_identifier(org_id,id,employee_id,kind,lookup_key_version,lookup_digest,payload_id,valid_from,valid_to,recorded_at,change_id,revision,supersedes_id) VALUES(?,?,?,'staff_code',1,?,?,?,?,?,?,?,?)"), org, item.ID, command.EmployeeID, item.Digest, item.Payload.ID, *command.ValidFrom, nullablePointer(command.ValidTo), t.bindTime(recordedAt), changeID, revision, supersedes)
+	case "employment":
+		_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO employment_spell(org_id,id,employee_id,legal_entity_id,location_code,kind,valid_from,valid_to,recorded_at,change_id,revision,supersedes_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)"), org, item.ID, command.EmployeeID, *command.LegalEntityID, *command.LocationCode, *command.EmploymentKind, *command.ValidFrom, nullablePointer(command.ValidTo), t.bindTime(recordedAt), changeID, revision, supersedes)
+	case "education":
+		_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO education_record(org_id,id,employee_id,level_code,payload_id,valid_from,valid_to,recorded_at,change_id,revision,supersedes_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)"), org, item.ID, command.EmployeeID, *command.EducationLevel, item.Payload.ID, *command.ValidFrom, nullablePointer(command.ValidTo), t.bindTime(recordedAt), changeID, revision, supersedes)
+	case "job_assignment":
+		var payloadID any
+		if item.Payload != nil {
+			payloadID = item.Payload.ID
+		}
+		_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO job_assignment(org_id,id,employee_id,department_id,job_family_id,career_level_id,payload_kind,position_payload_id,is_primary,valid_from,valid_to,recorded_at,change_id,revision,supersedes_id) VALUES(?,?,?,?,?,?,CASE WHEN ? IS NULL THEN NULL ELSE 'job_assignment' END,?,1,?,?,?,?,?,?)"), org, item.ID, command.EmployeeID, *command.DepartmentID, nullablePointer(command.JobFamilyID), nullablePointer(command.CareerLevelID), payloadID, payloadID, *command.ValidFrom, nullablePointer(command.ValidTo), t.bindTime(recordedAt), changeID, revision, supersedes)
+	case "reporting":
+		_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO reporting_line(org_id,id,employee_id,manager_employee_id,kind,valid_from,valid_to,effective_to,superseded,change_id,end_change_id,supersedes_id) VALUES(?,?,?,?,?,?,?,NULL,?,?,NULL,?)"), org, item.ID, command.EmployeeID, *command.ManagerEmployeeID, *command.ReportingKind, *command.ValidFrom, nullablePointer(command.ValidTo), false, changeID, supersedes)
+	case "employee_lifecycle":
+		_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO employee_lifecycle_history(org_id,id,employee_id,valid_from,valid_to,change_id,supersedes_id) VALUES(?,?,?,?,?,?,?)"), org, item.ID, command.EmployeeID, *command.ValidFrom, nullablePointer(command.ValidTo), changeID, supersedes)
+		if err == nil {
+			_, err = t.tx.ExecContext(ctx, t.structureSQL("UPDATE employee SET valid_from=?,valid_to=? WHERE org_id=? AND id=?"), *command.ValidFrom, nullablePointer(command.ValidTo), org, command.EmployeeID)
+		}
+	default:
+		return fault.Invalid
+	}
+	return safeError(err)
+}
+
+func (t *transaction) endWorkforceItem(ctx context.Context, org, changeID string, item organization.WorkforcePreparedItem) error {
+	if item.Command.Ref == nil || item.Command.EffectiveTo == nil {
+		return fault.Invalid
+	}
+	_, err := t.closeWorkforceItem(ctx, org, changeID, item)
+	return err
+}
+
+func (t *transaction) closeWorkforceItem(ctx context.Context, org, changeID string, item organization.WorkforcePreparedItem) (int64, error) {
+	command := item.Command
+	table := map[string]string{"identifier": "employee_business_identifier", "employment": "employment_spell", "education": "education_record", "job_assignment": "job_assignment", "reporting": "reporting_line", "employee_lifecycle": "employee_lifecycle_history"}[command.Kind]
+	if table == "" || command.Ref == nil || command.EffectiveTo == nil {
+		return 0, fault.Invalid
+	}
+	var validFrom string
+	var revision int64
+	revisionColumn := "revision"
+	if command.Kind == "reporting" || command.Kind == "employee_lifecycle" {
+		revisionColumn = "1"
+	}
+	if err := t.tx.QueryRowContext(ctx, t.structureSQL("SELECT valid_from,"+revisionColumn+" FROM "+table+" WHERE org_id=? AND id=? AND employee_id=? AND valid_to IS NULL"), org, *command.Ref, command.EmployeeID).Scan(&validFrom, &revision); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, fault.Conflict
+		}
+		return 0, safeError(err)
+	}
+	if validFrom >= *command.EffectiveTo {
+		return 0, fault.Conflict
+	}
+	query := "UPDATE " + table + " SET valid_to=? WHERE org_id=? AND id=? AND employee_id=? AND valid_to IS NULL"
+	if command.Kind == "reporting" {
+		result, err := t.tx.ExecContext(ctx, t.structureSQL("UPDATE reporting_line SET effective_to=?,superseded=true,end_change_id=? WHERE org_id=? AND id=? AND employee_id=? AND effective_to IS NULL"), *command.EffectiveTo, changeID, org, *command.Ref, command.EmployeeID)
+		return revision, structureAffected(result, err, fault.Conflict)
+	}
+	result, err := t.tx.ExecContext(ctx, t.structureSQL(query), *command.EffectiveTo, org, *command.Ref, command.EmployeeID)
+	if err = structureAffected(result, err, fault.Conflict); err == nil && command.Kind == "employee_lifecycle" {
+		_, err = t.tx.ExecContext(ctx, t.structureSQL("UPDATE employee SET valid_to=? WHERE org_id=? AND id=?"), *command.EffectiveTo, org, command.EmployeeID)
+	}
+	return revision, safeError(err)
 }
 
 func (t *transaction) insertCatalogCreate(ctx context.Context, org, changeID string, item organization.CatalogPreparedItem) error {
