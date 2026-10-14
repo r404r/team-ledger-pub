@@ -5,16 +5,112 @@
 - [开发与交付规则](https://github.com/r404r/p-research-hr/blob/main/AGENTS.md)
 - [DEV-018 本地 keyd、受保护根密钥与无外部KMS切换 PLAN](https://github.com/r404r/p-research-hr/blob/main/plans/DEV-018.md)
 - 技术架构图、keyd协议及密钥生命周期：[技术规范 §1.1/§1.2、§7.3/§7.4](https://github.com/r404r/p-research-hr/blob/main/docs/TECHNICAL_SPEC.md)。
-## Docker 启动
+- 本初装指南的执行与验证记录：[DEV-023 PLAN](https://github.com/r404r/p-research-hr/blob/main/plans/DEV-023.md)。
 
-`Dockerfile`生成Vue production资源、API、migration、`teamledger-keyd`、`audit-receiver`、`audit-forwarder`及运维命令。首次安装显式执行`key-bootstrap`和`audit-bootstrap`；选择内置身份时还须执行一次`identity-bootstrap`。普通启动按`data-init → key-check/migrate → keyd/audit-receiver → audit-forwarder/api`运行，缺少密钥、audit PKI/signer、identity mode或bootstrap事实时直接失败。业务数据库、keyd材料和audit材料使用三个持久volume；API不挂载任何密钥volume。
+## Docker 安装与运维
 
-本地keyd、内置账号/密码、mTLS audit receiver均随同一镜像交付，不依赖云KMS、Vault、外部IdP、外部审计服务、邮件或短信。audit receiver使用现有数据库的专属append-only ledger，不启动第二个数据库。SQLite只能提供独立UID/进程、mTLS和trigger约束，不能抵御API UID、数据库文件持有人或host root篡改；PostgreSQL按`docker/postgres/audit_roles.sql`分离最小角色。另一显式身份值`oidc`要求完整受信`TEAMLEDGER_OIDC_*`配置。
+### 1. 首次安装：Linux / Windows 初学者路线
 
-### 1. 准备环境与TLS文件
+本节从一台尚未安装TeamLedger的电脑开始，最终得到：
+
+- 浏览器可访问的 `https://localhost:8443`；
+- 一个内置管理员账号；
+- 保存在Docker named volume中的SQLite业务数据、本地keyd材料和audit材料；
+- 不依赖外部KMS、Vault、OIDC IdP或审计服务的本机部署。
+
+此路线只适合操作者所在电脑的本机安装。默认只监听`127.0.0.1`，TLS证书也只覆盖`localhost`/`127.0.0.1`，其他内网设备不能访问。内网多机或公网部署必须另行配置受信证书、实际hostname、监听/防火墙和`TEAMLEDGER_PUBLIC_ORIGIN`，不能直接照搬本节的自签名证书。初次安装先不要改用OIDC、PostgreSQL、反向代理或自定义域名；完成本节并确认服务正常后，再按后续高级章节调整。
+
+#### 1.1 选择操作系统路径
+
+**Linux**
+
+1. 安装Docker Engine、Docker Compose plugin、Git、OpenSSL和curl。Docker安装以[官方Docker Engine文档](https://docs.docker.com/engine/install/)为准。
+2. 确保当前用户能运行Docker。若必须在每条Docker命令前使用`sudo`，可以照做，但后续创建文件的普通命令仍以当前用户执行。
+3. 打开Terminal，执行：
+
+```bash
+docker --version
+docker compose version
+git --version
+openssl version
+curl --version
+docker run --rm hello-world
+```
+
+五条版本命令和`hello-world`都成功后继续。必须使用带空格的`docker compose`（Compose v2），不是旧的`docker-compose`。
+
+**Windows 10/11**
+
+1. 在BIOS/UEFI启用CPU virtualization。以管理员身份打开Windows Terminal或PowerShell，按[Microsoft WSL安装文档](https://learn.microsoft.com/windows/wsl/install)执行：
+
+```powershell
+wsl --install -d Ubuntu
+```
+
+2. 按提示重启Windows；从开始菜单打开Ubuntu，等待初始化并创建Linux用户名和密码。该密码用于后续`sudo`。
+3. 安装[Docker Desktop for Windows](https://docs.docker.com/desktop/setup/install/windows-install/)，选择WSL 2 backend和Linux containers。
+4. 打开Docker Desktop的 **Settings → Resources → WSL Integration**，启用Ubuntu并点击 **Apply & restart**。
+5. 打开Windows Terminal中的Ubuntu窗口；不要在PowerShell/CMD执行后续Linux命令。安装工具并验证Docker Desktop连接：
+
+```bash
+sudo apt update
+sudo apt install -y git openssl curl
+docker --version
+docker compose version
+git --version
+openssl version
+curl --version
+docker run --rm hello-world
+```
+
+6. 上述命令全部成功后继续。后续**全部命令都在同一个Ubuntu WSL窗口执行**。仓库必须位于例如`~/team-ledger`的WSL Linux filesystem；不要放在`C:\...`、`/mnt/c/...`、OneDrive或Windows网络盘。TeamLedger会严格检查密钥及bootstrap文件的Linux owner/mode，Windows filesystem bind mount不能可靠提供这些属性。
+
+#### 1.2 下载TeamLedger
+
+在Linux Terminal或Windows的Ubuntu WSL窗口执行：
+
+```bash
+cd ~
+git clone https://github.com/r404r/team-ledger.git
+cd team-ledger
+```
+
+若已经clone，进入该目录即可。以下所有命令都必须在包含`compose.yaml`的`team-ledger`目录执行。确认位置和文件：
+
+```bash
+pwd
+test -f compose.yaml && test -f .env.docker.example && echo "source OK"
+```
+
+看到`source OK`才继续。
+
+#### 1.3 生成本机配置、TLS证书和初始管理员文件
+
+复制配置，并自动写入当前Linux/WSL用户的UID、GID和一次性bootstrap request ID：
 
 ```bash
 cp .env.docker.example .env.docker
+sed -i \
+  -e "s/^TEAMLEDGER_UID=.*/TEAMLEDGER_UID=$(id -u)/" \
+  -e "s/^TEAMLEDGER_GID=.*/TEAMLEDGER_GID=$(id -g)/" \
+  -e "s/^TEAMLEDGER_BOOTSTRAP_REQUEST_ID=.*/TEAMLEDGER_BOOTSTRAP_REQUEST_ID=$(cat /proc/sys/kernel/random/uuid)/" \
+  .env.docker
+. ./.env.docker
+```
+
+默认配置使用：
+
+- 身份模式：`local`；
+- 地址：`https://localhost:8443`；
+- 数据卷：`team-ledger-data`；
+- key卷：`team-ledger-keys`；
+- audit卷：`team-ledger-audit`。
+
+这些volume名称和`TEAMLEDGER_DEPLOYMENT_ID`在安装后必须保持稳定。多套安装必须为每套使用不同名称和端口。
+
+生成localhost自签名证书和受保护目录：
+
+```bash
 install -d -m 0700 docker/secrets
 umask 077
 openssl req -x509 -newkey rsa:3072 -nodes \
@@ -30,42 +126,159 @@ install -d -o "$(id -u)" -g "$(id -g)" -m 0750 docker/maintenance
 sudo install -d -o root -g root -m 0700 docker/audit-maintenance
 install -d -o "$(id -u)" -g "$(id -g)" -m 0770 backups
 printf '%s\n' /var/lib/teamledger/teamledger.db > docker/maintenance/sqlite-dsn
-sudo chown 10002:"$(id -g)" docker/maintenance/sqlite-dsn # 10002须等于TEAMLEDGER_MAINTENANCE_UID
+sudo chown "$TEAMLEDGER_MAINTENANCE_UID:$TEAMLEDGER_GID" docker/maintenance/sqlite-dsn
 sudo chmod 0600 docker/maintenance/sqlite-dsn
-install -m 0600 /dev/null docker/maintenance/local-bootstrap.json
-# 使用不会追加换行的受保护编辑器写入且仅写入：
-# {"timezone":"Asia/Shanghai","username":"admin.user","password":"至少12字节的初始密码"}
-sudo chown 10002:"$(id -g)" docker/maintenance/local-bootstrap.json
 ```
 
-在`.env.docker`中：
-
-- `TEAMLEDGER_UID` / `TEAMLEDGER_GID`填写API使用的主机`id -u` / `id -g`；
-- `TEAMLEDGER_KEYD_UID`、`TEAMLEDGER_MAINTENANCE_UID`、`TEAMLEDGER_AUDIT_RECEIVER_UID`、`TEAMLEDGER_AUDIT_FORWARDER_UID`与API UID必须两两不同；五个进程以共同`TEAMLEDGER_GID`访问获准的socket/SQLite路径，但keyd、API和两个audit进程只挂载各自所需volume；
-- `TEAMLEDGER_PUBLIC_ORIGIN`必须等于浏览器实际访问的HTTPS origin；
-- `TEAMLEDGER_DATA_VOLUME`、`TEAMLEDGER_KEY_VOLUME`、`TEAMLEDGER_AUDIT_VOLUME`和`TEAMLEDGER_DEPLOYMENT_ID`使用部署唯一、长期稳定的值；
-- `TEAMLEDGER_IDENTITY_MODE`必须显式为`local`或`oidc`；`local`同时设置一个稳定的`TEAMLEDGER_BOOTSTRAP_REQUEST_ID`，`oidc`则配置完整`TEAMLEDGER_OIDC_*`；
-
-`.env.docker`已被Git忽略，不得提交。首次安装显式初始化keyd与audit两个材料volume；目标已存在时失败，不覆盖材料。三个one-shot串行执行，避免`compose run`并发重启已完成依赖：
+生成初始管理员`admin.user`的随机密码和严格canonical JSON。命令会显示密码一次；立即保存到密码管理器，不要截图、发送或提交到Git：
 
 ```bash
+bootstrap_password="$(openssl rand -base64 24 | tr -d '\n')"
+printf '%s' \
+  "{\"timezone\":\"Asia/Shanghai\",\"username\":\"admin.user\",\"password\":\"$bootstrap_password\"}" \
+  > docker/maintenance/local-bootstrap.json
+sudo chown "$TEAMLEDGER_MAINTENANCE_UID:$TEAMLEDGER_GID" \
+  docker/maintenance/local-bootstrap.json
+sudo chmod 0600 docker/maintenance/local-bootstrap.json
+printf 'Initial username: admin.user\nInitial password: %s\n' "$bootstrap_password"
+unset bootstrap_password
+```
+
+`local-bootstrap.json`不能有BOM、前后空白或末尾换行，也不能是symlink/hardlink。上述命令已满足这些要求。`.env.docker`、证书私钥和bootstrap文件已由`.gitignore`排除，但仍属于敏感文件。
+
+#### 1.4 只在首次安装执行bootstrap
+
+严格按顺序逐条执行；上一条成功退出后再执行下一条：
+
+```bash
+docker compose --env-file .env.docker config --quiet
 docker compose --env-file .env.docker build
 docker compose --env-file .env.docker --profile bootstrap run --rm key-bootstrap
 docker compose --env-file .env.docker --profile bootstrap run --rm audit-bootstrap
-docker compose --env-file .env.docker up --abort-on-container-exit --exit-code-from migrate migrate
+docker compose --env-file .env.docker up \
+  --abort-on-container-exit --exit-code-from migrate migrate
 docker compose --env-file .env.docker up -d --wait keyd audit-receiver
+docker compose --env-file .env.docker --profile bootstrap run \
+  --rm --no-deps identity-bootstrap
 ```
 
-`local`模式随后在**空数据库**执行一次身份bootstrap。输入文件必须是maintenance UID拥有的regular、非symlink/非hardlink、`0600` canonical JSON，不能有BOM、空白或末尾换行；密码不得进入argv/env/stdin/log。命令原子创建org、首个subject/account、固定`bootstrap_policy.v1`的OrgR/OrgW/PIIR/PIIW及审计/outbox。相同request UUID和相同文件可安全重试并返回原IDs；不同输入或已有业务事实拒绝：
+成功标准：
+
+1. `config --quiet`没有输出且exit code为0；
+2. image build结束时没有`ERROR`；
+3. key bootstrap显示`key directory initialized`；
+4. audit bootstrap成功退出；
+5. migrate成功退出；
+6. keyd和audit receiver显示healthy；
+7. identity bootstrap显示包含`org_id`和`subject_id`的结果。
+
+保存`org_id`和`subject_id`，用于后续账号及权限维护；确认密码已保存后删除含明文初始密码的bootstrap输入：
 
 ```bash
-docker compose --env-file .env.docker --profile bootstrap run --rm --no-deps identity-bootstrap
+rm -f docker/maintenance/local-bootstrap.json
 ```
-`key-bootstrap`已先完成data volume初始化；`audit-bootstrap`一次性生成本地CA、receiver/health/forwarder leaf和Ed25519 receipt signer，分别放入受保护子目录。受Compose管理的`migrate`随后完成schema；`up --wait keyd audit-receiver`确认Unix socket和真实mTLS/schema rollback/signer ready。`identity-bootstrap --no-deps`只执行身份事务。
 
-保存命令输出的`org_id`和`subject_id`。后续主体与账号使用maintenance profile中的`/app/teamledger-identity local-subject-create`、`local-account-create`、`local-account-reset`、`local-account-disable`；mode切换仅用`mode-switch`，它会撤销全部会话并推进auth epoch，之后必须以匹配的新mode重启。各账号输入同样使用canonical `{"username":"…","password":"…"}`受保护文件。
+三个bootstrap命令是初始化命令，不是普通启动命令；成功后不要再次执行。某一步失败时先诊断该步骤，只从失败步骤继续，不要重跑此前成功的key/audit bootstrap。相同identity request和相同输入可以安全重试，但不同输入或已有业务事实会被拒绝。
 
-此后普通启动的`key-check`只检查三个keyd必需文件存在；keyd启动再验证RAW32长度、认证keyring、16个domain、持久锁及owner/mode/type。audit receiver/forwarder分别验证受保护TLS/signer/trust文件；缺文件、错误owner/mode/type、数据库schema不符或签名能力失败均fail closed，绝不自动生成替代身份。
+#### 1.5 启动全部服务并确认可用
+
+```bash
+docker compose --env-file .env.docker up -d --wait
+docker compose --env-file .env.docker ps
+curl --fail --cacert docker/secrets/tls-cert.pem \
+  https://localhost:8443/health/live
+curl --fail --cacert docker/secrets/tls-cert.pem \
+  https://localhost:8443/health/ready
+```
+
+`ps`中长期服务应为`Up`/`healthy`，两个curl命令都应成功。浏览器打开：
+
+```text
+https://localhost:8443
+```
+
+使用`admin.user`及刚才保存的密码登录。因为是本机自签名证书，浏览器会提示证书不受公开CA信任；核对地址确实是`https://localhost:8443`后，仅在该本机安装中继续访问。不要把这个做法用于公网生产环境。
+
+#### 1.6 日常停止、重启和更新
+
+普通停止不会删除数据：
+
+```bash
+docker compose --env-file .env.docker down
+```
+
+以后开机或重启服务只执行：
+
+```bash
+cd ~/team-ledger
+docker compose --env-file .env.docker up -d --wait
+```
+
+获取新版本：
+
+```bash
+cd ~/team-ledger
+docker compose --env-file .env.docker down
+git pull --ff-only
+docker compose --env-file .env.docker build
+docker compose --env-file .env.docker up -d --wait
+```
+
+不要重跑key、audit或identity bootstrap。普通启动会运行必要的database migration并复用既有named volumes。
+
+#### 1.7 数据不会放在哪里、哪些命令不能用
+
+业务数据库、keyd材料和audit材料不在容器临时层，而在三个Docker named volumes。`down`、重建image和电脑重启不会删除它们。查看实际名称：
+
+```bash
+docker volume inspect "$TEAMLEDGER_DATA_VOLUME"
+docker volume inspect "$TEAMLEDGER_KEY_VOLUME"
+docker volume inspect "$TEAMLEDGER_AUDIT_VOLUME"
+```
+
+**有任何需要保留的数据时，禁止执行：**
+
+```text
+docker compose down -v
+docker volume prune
+docker system prune --volumes
+```
+
+Named volume不是备份。正式使用前必须按§5建立业务数据库加密备份，并按§3.1把root/keyring保存到两个不同离线介质；数据库备份、key材料和audit材料必须分开保管。
+
+#### 1.8 常见问题
+
+长期服务或migration失败时运行：
+
+```bash
+docker compose --env-file .env.docker ps -a
+docker compose --env-file .env.docker logs --tail=200 \
+  data-init key-check migrate keyd audit-receiver audit-forwarder api
+```
+
+`key-bootstrap`、`audit-bootstrap`和`identity-bootstrap`使用`run --rm`，container退出后不会保留；它们的错误只显示在执行该命令的当前Terminal。失败时不要关闭Terminal，先保存不含密码/密钥的错误文本，修正后只重跑该条失败命令。
+
+| 现象 | 检查和处理 |
+|---|---|
+| `docker: command not found` | Docker未安装或Windows Docker Desktop未启动。回到§1.1，直到`hello-world`成功。 |
+| `docker compose`不可用 | 安装Compose v2 plugin；不要改用旧`docker-compose`。 |
+| Windows出现owner、mode、`unsafe ... ancestry`错误 | 在Ubuntu WSL中执行`pwd`；路径必须在`/home/...`，不能是`/mnt/c/...`。重新clone到`~`，不要关闭安全检查。 |
+| `permission denied`访问Docker socket | Linux按Docker官方post-install配置当前用户，重新登录；或仅给Docker命令加`sudo`。 |
+| `address already in use` / 8443被占用 | 编辑`.env.docker`，同时修改`TEAMLEDGER_DOCKER_PORT`和`TEAMLEDGER_PUBLIC_ORIGIN`，例如改为`9443`和`https://localhost:9443`；然后关闭当前Terminal，打开新的Linux/Ubuntu Terminal，回到仓库再启动并访问新端口。新Terminal避免先前导出的环境变量覆盖`.env.docker`。 |
+| container为`unhealthy`或`Exited` | 用上面的`ps -a`和长期服务`logs`找第一个失败服务；不要只反复重启API。若失败的是bootstrap one-shot，使用当前Terminal中的直接输出，修正后只重跑该条失败命令。 |
+| 重跑bootstrap时报“已存在”或`key control failed` | 先回看第一次执行结果：只有明确看到`key directory initialized`或对应bootstrap成功退出才可视为已完成并继续下一步。首次失败不得猜测成功、删除volume或覆盖key；保存错误并按上段只重试失败命令。 |
+| 忘记初始密码 | 不要重做安装；使用后文maintenance profile的`local-account-reset`受控重置账号。 |
+| curl报告证书错误 | 必须保留`--cacert docker/secrets/tls-cert.pem`，URL必须是证书覆盖的`localhost`或`127.0.0.1`。 |
+
+只有在**确认是全新测试安装且所有数据都可以永久删除**时，才能彻底重置：
+
+```bash
+docker compose --env-file .env.docker down -v
+sudo rm -rf docker/secrets docker/maintenance docker/audit-maintenance backups
+rm -f .env.docker
+```
+
+然后从§1.3重新开始。该操作不可恢复，不适用于任何重要环境。
 
 ### 2. 构建、启动与健康检查
 
