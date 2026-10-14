@@ -48,6 +48,7 @@ type Snapshot struct {
 	SessionEpoch, SubjectEpoch, AuthEpoch int64
 	ExpiresAt, IdleExpiresAt, MFAUntil    time.Time
 	CSRFHash                              []byte
+	CSRFKeyID                             string
 	CSRFVersion                           uint32
 	Assignments                           []Assignment
 	Grants                                []Grant

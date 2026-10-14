@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"bytes"
-	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -41,13 +40,13 @@ type handler struct {
 	compensation               *compensation.Service
 	audit                      *audit.Service
 	identities                 *identity.Service
-	key                        []byte
+	keys                       identity.MACKeyService
 	origin, static, deployment string
 }
 
-func New(service *organization.Service, interviews *interview.Service, assessmentService *assessment.Service, compensation *compensation.Service, grants *authz.Service, identities *identity.Service, csrfKey []byte, origin, staticDir, deployment string) (http.Handler, error) {
+func New(service *organization.Service, interviews *interview.Service, assessmentService *assessment.Service, compensation *compensation.Service, grants *authz.Service, identities *identity.Service, keys identity.MACKeyService, origin, staticDir, deployment string) (http.Handler, error) {
 	u, err := url.Parse(origin)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.RawPath != "" || service == nil || interviews == nil || assessmentService == nil || compensation == nil || grants == nil || identities == nil || len(csrfKey) != 32 || !audit.ValidDeploymentID(deployment) {
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.RawPath != "" || service == nil || interviews == nil || assessmentService == nil || compensation == nil || grants == nil || identities == nil || keys == nil || !audit.ValidDeploymentID(deployment) {
 		return nil, errors.New("invalid HTTP configuration")
 	}
 	root, err := filepath.EvalSymlinks(staticDir)
@@ -64,9 +63,9 @@ func New(service *organization.Service, interviews *interview.Service, assessmen
 	}
 	var auditService *audit.Service
 	if auditStore, ok := grants.Store.(audit.Store); ok {
-		auditService = &audit.Service{Store: auditStore, CursorKey: grants.CursorKey, Now: grants.Now}
+		auditService = &audit.Service{Store: auditStore, CursorKey: grants.CursorKey, CursorMAC: grants.CursorMAC, Now: grants.Now}
 	}
-	return &handler{service: service, interviews: interviews, assessment: assessmentService, compensation: compensation, grants: grants, audit: auditService, identities: identities, key: bytes.Clone(csrfKey), origin: strings.TrimSuffix(origin, "/"), static: root, deployment: deployment}, nil
+	return &handler{service: service, interviews: interviews, assessment: assessmentService, compensation: compensation, grants: grants, audit: auditService, identities: identities, keys: keys, origin: strings.TrimSuffix(origin, "/"), static: root, deployment: deployment}, nil
 }
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -144,12 +143,13 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			snap = scoped
 		}
 	}
-	mac := hmac.New(sha256.New, h.key)
-	mac.Write([]byte("TEAMLEDGER-CSRF\x00"))
-	mac.Write(raw)
-	token := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	token, csrfKey, err := identity.CSRFToken(r.Context(), h.keys, raw)
+	if err != nil {
+		h.fail(w, fault.Unavailable, requestID)
+		return
+	}
 	tokenHash := sha256.Sum256([]byte(token))
-	if snap.CSRFVersion != 1 || subtle.ConstantTimeCompare(snap.CSRFHash, tokenHash[:]) != 1 {
+	if snap.CSRFVersion != csrfKey.Version || snap.CSRFKeyID != csrfKey.KeyID || subtle.ConstantTimeCompare(snap.CSRFHash, tokenHash[:]) != 1 {
 		h.fail(w, fault.Unauthenticated, requestID)
 		return
 	}

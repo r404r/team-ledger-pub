@@ -202,7 +202,7 @@ func (s *keydServer) dispatch(uid uint32, request keydRequest) keydResponse {
 		}
 		return s.readyResponse()
 	}
-	if request.Operation != "retire" && request.Operation != "stage" && request.KeyID != "" {
+	if request.Operation != "retire" && request.Operation != "stage" && request.Operation != "verify" && request.KeyID != "" {
 		return keydResponse{Code: "invalid"}
 	}
 	if !s.api[uid] && !s.maintenance[uid] {
@@ -231,6 +231,8 @@ func (s *keydServer) dispatch(uid uint32, request keydRequest) keydResponse {
 		return s.rewrap(request)
 	case "mac":
 		return s.mac(request)
+	case "derive":
+		return s.derive(request)
 	case "verify":
 		return s.verify(request)
 	case "stage":
@@ -378,12 +380,27 @@ func (s *keydServer) mac(r keydRequest) keydResponse {
 	value := MACValue{KeyID: entry.KeyID, Version: entry.Version, Digest: mac.Sum(nil)}
 	return keydResponse{OK: true, MAC: &value}
 }
-func (s *keydServer) verify(r keydRequest) keydResponse {
-	if !macDomain(r.Domain) || r.Context != nil || r.DEKID != "" || len(r.Data) != 0 || r.Key != nil || r.Version == 0 || len(r.MAC) != 32 || len(r.Message) > 32<<10 {
+func (s *keydServer) derive(r keydRequest) keydResponse {
+	if !s.writeEnabled() || r.Domain != DomainIdentityTransaction || r.Context != nil || r.DEKID != "" || len(r.Data) != 0 || r.Key != nil || r.Version != 0 || len(r.MAC) != 0 || len(r.Message) == 0 || len(r.Message) > 256 {
 		return keydResponse{Code: "invalid"}
 	}
-	entry, ok := s.entry(r.Domain, "", r.Version, false)
-	if !ok || entry.Version != r.Version {
+	entry, ok := s.entry(r.Domain, "", 0, true)
+	if !ok {
+		return keydResponse{Code: "unavailable"}
+	}
+	mac := hmac.New(sha256.New, entry.Material)
+	_, _ = mac.Write([]byte("TEAMLEDGER-KEYD-DERIVE\x00V1\x00"))
+	_, _ = mac.Write(r.Message)
+	value := MACValue{KeyID: entry.KeyID, Version: entry.Version, Digest: mac.Sum(nil)}
+	return keydResponse{OK: true, MAC: &value}
+}
+
+func (s *keydServer) verify(r keydRequest) keydResponse {
+	if !macDomain(r.Domain) || r.KeyID == "" || r.Context != nil || r.DEKID != "" || len(r.Data) != 0 || r.Key != nil || r.Version == 0 || len(r.MAC) != 32 || len(r.Message) > 32<<10 {
+		return keydResponse{Code: "invalid"}
+	}
+	entry, ok := s.entry(r.Domain, r.KeyID, r.Version, false)
+	if !ok || entry.KeyID != r.KeyID || entry.Version != r.Version {
 		return keydResponse{Code: "unavailable"}
 	}
 	input := macInput(r.Domain, r.Message)

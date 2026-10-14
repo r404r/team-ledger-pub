@@ -51,7 +51,7 @@ func (t *transaction) RecordAdjustmentBatchCorrection(ctx context.Context, batch
 		return compensation.BatchCorrectionRecord{}, safeError(err)
 	}
 	receipt.BatchID, receipt.ResultRevision, receipt.RecordedAt = batch.ID, batch.Revision, now
-	if err = insertBatchReceipt(ctx, t.tx, reader{db: t.tx, backend: t.backend}, batch.OrgID, receipt); err != nil {
+	if err = insertBatchReceipt(ctx, t.tx, reader{db: t.tx, backend: t.backend}, batch.OrgID, t.commandMACKey, receipt); err != nil {
 		return compensation.BatchCorrectionRecord{}, err
 	}
 	return compensation.BatchCorrectionRecord{OrgID: batch.OrgID, ID: id, BusinessCode: code, CorrectsBatchID: batch.ID, CycleYear: batch.CycleYear, AdjustmentType: batch.AdjustmentType, ManifestDigest: digest, SubjectID: subject, ActivatedAt: now}, nil

@@ -23,6 +23,7 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/r404r/team-ledger/internal/authz"
 	"github.com/r404r/team-ledger/internal/fault"
+	"github.com/r404r/team-ledger/internal/sensitive"
 	"github.com/r404r/team-ledger/internal/value"
 	"golang.org/x/oauth2"
 )
@@ -32,7 +33,7 @@ const transactionTTL = 10 * time.Minute
 type Service struct {
 	Store                Store
 	Now                  func() time.Time
-	csrfKey, identityKey []byte
+	keys                 MACKeyService
 	seal                 cipher.AEAD
 	oauth                oauth2.Config
 	verifier             *oidc.IDTokenVerifier
@@ -54,15 +55,15 @@ func validHTTPS(raw string) bool {
 	u, err := url.Parse(raw)
 	return err == nil && u.Scheme == "https" && u.Host != "" && u.User == nil && u.Fragment == "" && u.Opaque == ""
 }
-func New(ctx context.Context, store Store, csrfKey []byte, cfg *OIDCConfig) (*Service, error) {
-	if store == nil || len(csrfKey) != 32 {
+func New(ctx context.Context, store Store, keys MACKeyService, cfg *OIDCConfig) (*Service, error) {
+	if store == nil || keys == nil {
 		return nil, fault.Unavailable
 	}
-	s := &Service{Store: store, csrfKey: bytes.Clone(csrfKey), Now: time.Now}
+	s := &Service{Store: store, keys: keys, Now: time.Now}
 	if cfg == nil {
 		return s, nil
 	}
-	if !validHTTPS(cfg.Issuer) || !validHTTPS(cfg.RedirectURI) || cfg.ClientID == "" || cfg.ClientSecret == "" || len(cfg.IdentityKey) != 32 || len(cfg.TransactionKey) != 32 || bytes.Equal(cfg.IdentityKey, cfg.TransactionKey) || bytes.Equal(cfg.IdentityKey, csrfKey) || bytes.Equal(cfg.TransactionKey, csrfKey) {
+	if !validHTTPS(cfg.Issuer) || !validHTTPS(cfg.RedirectURI) || cfg.ClientID == "" || cfg.ClientSecret == "" || len(cfg.TransactionKey) != 32 {
 		return nil, fault.Unavailable
 	}
 	issuerURL, _ := url.Parse(cfg.Issuer)
@@ -127,7 +128,6 @@ func New(ctx context.Context, store Store, csrfKey []byte, cfg *OIDCConfig) (*Se
 	endpoint.AuthStyle = oauth2.AuthStyleInHeader
 	s.oauth = oauth2.Config{ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret, RedirectURL: cfg.RedirectURI, Endpoint: endpoint, Scopes: []string{oidc.ScopeOpenID}}
 	s.verifier = provider.Verifier(&oidc.Config{ClientID: cfg.ClientID, SupportedSigningAlgs: []string{oidc.RS256}, Now: s.now})
-	s.identityKey = bytes.Clone(cfg.IdentityKey)
 	s.issuer, s.mfaACR, s.mfaAMR, s.mode = cfg.Issuer, cfg.MFAACR, append([]string(nil), cfg.MFAAMR...), "oidc"
 	block, err := aes.NewCipher(cfg.TransactionKey)
 	if err != nil {
@@ -374,10 +374,11 @@ func (s *Service) Complete(ctx context.Context, request CallbackRequest) (LoginR
 		}
 		trustedMFA = trustedMFA && found
 	}
-	digest, err := IdentityDigest(s.identityKey, s.issuer, id.Subject)
+	digestValue, err := IdentityMAC(ctx, s.keys, s.issuer, id.Subject)
 	if err != nil {
 		return s.denial(ctx, operation, request.RequestID, fault.Unauthenticated)
 	}
+	digest := digestValue.Digest
 	if t.Mode == "step_up" && (!trustedMFA || !bytes.Equal(digest, t.ExpectedIdentity)) {
 		return s.denial(ctx, operation, request.RequestID, MFARequired)
 	}
@@ -387,15 +388,16 @@ func (s *Service) Complete(ctx context.Context, request CallbackRequest) (LoginR
 	}
 	defer clear(raw)
 	hash := sha256.Sum256(raw)
-	mac := hmac.New(sha256.New, s.csrfKey)
-	mac.Write([]byte("TEAMLEDGER-CSRF\x00"))
-	mac.Write(raw)
-	csrfHash := sha256.Sum256([]byte(base64.RawURLEncoding.EncodeToString(mac.Sum(nil))))
+	csrf, csrfKey, err := CSRFToken(ctx, s.keys, raw)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	csrfHash := sha256.Sum256([]byte(csrf))
 	mfaUntil := time.Unix(0, 0).UTC()
 	if trustedMFA {
 		mfaUntil = authTime.Add(transactionTTL)
 	}
-	issue := SessionIssue{Transaction: t, IdentityDigest: digest, TokenHash: hash[:], CSRFHash: csrfHash[:], Now: now, ExpiresAt: now.Add(8 * time.Hour), IdleExpiresAt: now.Add(30 * time.Minute), MFAUntil: mfaUntil, AuthTime: authTime, RequestID: request.RequestID}
+	issue := SessionIssue{Transaction: t, IdentityDigest: digest, IdentityKeyID: digestValue.KeyID, IdentityVersion: digestValue.Version, TokenHash: hash[:], CSRFHash: csrfHash[:], CSRFKeyID: csrfKey.KeyID, CSRFVersion: csrfKey.Version, Now: now, ExpiresAt: now.Add(8 * time.Hour), IdleExpiresAt: now.Add(30 * time.Minute), MFAUntil: mfaUntil, AuthTime: authTime, RequestID: request.RequestID}
 	// Persist only deployment-approved authentication labels, never arbitrary IdP claims.
 	if trustedMFA {
 		issue.ACR, issue.AMR = s.mfaACR, append([]string(nil), s.mfaAMR...)
@@ -440,4 +442,37 @@ func IdentityDigest(key []byte, issuer, subject string) ([]byte, error) {
 		mac.Write([]byte(text))
 	}
 	return mac.Sum(nil), nil
+}
+
+func IdentityLookupFrame(issuer, subject string) ([]byte, error) {
+	if !validHTTPS(issuer) || subject == "" || len(subject) > 4096 || !utf8.ValidString(subject) {
+		return nil, fault.Invalid
+	}
+	u, _ := url.Parse(issuer)
+	if u.RawQuery != "" {
+		return nil, fault.Invalid
+	}
+	frame := make([]byte, 0, len(issuer)+len(subject)+32)
+	frame = append(frame, "TEAMLEDGER-IDENTITY\x00\x01"...)
+	frame = binary.BigEndian.AppendUint32(frame, uint32(len(issuer)))
+	frame = append(frame, issuer...)
+	frame = binary.BigEndian.AppendUint32(frame, uint32(len(subject)))
+	return append(frame, subject...), nil
+}
+
+func IdentityMAC(ctx context.Context, keys MACKeyService, issuer, subject string) (sensitive.MACValue, error) {
+	if keys == nil {
+		return sensitive.MACValue{}, fault.Invalid
+	}
+	frame, err := IdentityLookupFrame(issuer, subject)
+	if err != nil {
+		return sensitive.MACValue{}, err
+	}
+	defer clear(frame)
+	value, err := keys.MAC(ctx, sensitive.DomainIdentitySubjectLookup, frame)
+	if err != nil || value.Version == 0 || value.KeyID == "" || len(value.Digest) != sha256.Size {
+		clear(value.Digest)
+		return sensitive.MACValue{}, fault.Unavailable
+	}
+	return value, nil
 }

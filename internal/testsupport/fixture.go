@@ -329,13 +329,13 @@ func NewHarness(t testing.TB, backend string) *Fixture {
 		t.Fatal(err)
 	}
 	server := httptest.NewUnstartedServer(nil)
-	identities, err := identity.New(ctx, f.Repo, f.CSRFKey, nil)
+	identities, err := identity.New(ctx, f.Repo, MACKeys{Key: f.CSRFKey}, nil)
 	if err != nil {
 		server.Close()
 		t.Fatal(err)
 	}
 	identities.Now = f.Service.Now
-	handler, err := httpapi.New(f.Service, f.Interviews, f.Assessment, f.Compensation, f.Authz, identities, f.CSRFKey, "https://"+server.Listener.Addr().String(), dir, "synthetic-deployment")
+	handler, err := httpapi.New(f.Service, f.Interviews, f.Assessment, f.Compensation, f.Authz, identities, MACKeys{Key: f.CSRFKey}, "https://"+server.Listener.Addr().String(), dir, "synthetic-deployment")
 	if err != nil {
 		server.Close()
 		t.Fatal(err)

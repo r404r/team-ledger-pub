@@ -15,6 +15,7 @@ import (
 	"github.com/r404r/team-ledger/internal/httpapi"
 	"github.com/r404r/team-ledger/internal/identity"
 	"github.com/r404r/team-ledger/internal/organization"
+	"github.com/r404r/team-ledger/internal/sensitive"
 	"github.com/r404r/team-ledger/internal/testsupport"
 	"github.com/r404r/team-ledger/internal/value"
 )
@@ -129,7 +130,7 @@ func TestAuthCallbackMissingTrustedMFAKeepsSessionAndReturnsChallenge(t *testing
 			if err := f.Repo.BindIdentity(ctx, identity.Identity{Digest: digest, KeyVersion: 1, OrgID: f.OrgID, SubjectID: f.Manager.SubjectID}, value.NewID(), f.Now); err != nil {
 				t.Fatal(err)
 			}
-			service, err := identity.New(ctx, f.Repo, f.CSRFKey, &identity.OIDCConfig{
+			service, err := identity.New(ctx, f.Repo, testsupport.MACKeys{Key: f.CSRFKey, DomainKeys: map[sensitive.KeyDomain][]byte{sensitive.DomainIdentitySubjectLookup: lookup}}, &identity.OIDCConfig{
 				Issuer: idp.Server.URL, ClientID: idp.ClientID, ClientSecret: idp.ClientSecret,
 				RedirectURI: origin + "/api/v1/auth/callback", HTTPClient: idp.Client(),
 				IdentityKey: lookup, TransactionKey: seal, MFAACR: "urn:synthetic:mfa", MFAAMR: []string{"pwd", "otp"},
@@ -142,7 +143,7 @@ func TestAuthCallbackMissingTrustedMFAKeepsSessionAndReturnsChallenge(t *testing
 			if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<!doctype html><title>Synthetic identity consumer</title>"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			handler, err := httpapi.New(f.Service, f.Interviews, f.Assessment, f.Compensation, f.Authz, service, f.CSRFKey, origin, dir, "synthetic-deployment")
+			handler, err := httpapi.New(f.Service, f.Interviews, f.Assessment, f.Compensation, f.Authz, service, testsupport.MACKeys{Key: f.CSRFKey}, origin, dir, "synthetic-deployment")
 			if err != nil {
 				t.Fatal(err)
 			}

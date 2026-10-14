@@ -300,3 +300,34 @@ docker compose --env-file .env.docker --profile maintenance run --rm maintenance
 ```
 
 approval的`target_kek_id`、`target_version`必须分别等于stage参数；`keyctl-local`和`key-rewrap`对同一文件计算SHA-256 manifest。未完成DB ack时API除`/health/live`外返回503，keyd拒绝新wrap/MAC。命令可用同一approval重复执行以恢复stage、rewrap、activate、ack或retire之间的中断；任一数据库仍引用旧包装key时不会退役。
+
+### 7. MAC索引与CSRF轮换
+
+MAC domain必须先用上节同一`keyctl-local stage`及批准manifest建立唯一staged generation。之后按domain运行唯一维护入口；命令从加密canonical source重算全部行，核对集合数量，在keyd activate后以旧digest CAS切换索引，再完成A2/DB/keyd ack。维护期间keyd关闭新MAC写；命令可用同一manifest安全重跑。不得用通用`activate`跳过数据库重建。
+
+```bash
+# Staff Code 全量索引
+docker compose --env-file .env.docker --profile maintenance run --rm maintenance \
+  /app/teamledger-staff-reindex \
+  -backend sqlite -dsn-file /run/teamledger-maintenance/sqlite-dsn \
+  -keyd-socket /run/teamledger-keyd/keyd.sock \
+  -manifest-file /run/teamledger-maintenance/staff-code-rotation.json
+
+# OIDC issuer/sub；local username 使用 -domain local_username
+docker compose --env-file .env.docker --profile maintenance run --rm maintenance \
+  /app/teamledger-identity reindex \
+  -domain oidc -backend sqlite \
+  -dsn-file /run/teamledger-maintenance/sqlite-dsn \
+  -keyd-socket /run/teamledger-keyd/keyd.sock \
+  -manifest-file /run/teamledger-maintenance/identity-rotation.json
+
+# CSRF：先在一个事务撤销旧version全部live session并推进epoch，再activate
+docker compose --env-file .env.docker --profile maintenance run --rm maintenance \
+  /app/teamledger-keyctl-local csrf-activate \
+  -backend sqlite -dsn-file /run/teamledger-maintenance/sqlite-dsn \
+  -socket /run/teamledger-keyd/keyd.sock \
+  -manifest-file /run/teamledger-maintenance/csrf-rotation.json \
+  -request-id 01234567-89ab-4cde-8f01-23456789abcd
+```
+
+`identity_subject_lookup`、`local_username_lookup`、`staff_code_lookup`和`csrf_token`须分别stage，不得共用manifest或目标key。OIDC source是AAD绑定mapping/org/subject的`identity.mapping.v1`密文；local username和Staff Code也只从各自受保护source重建。source缺失、集合漂移、错误manifest、目标key/version不一致或任一CAS失败均保持不可写，不做部分切换。所有持久MAC事实保存exact key ID/version。`command_receipt`、`assessment_generation`当前没有安全到期/全量重建policy，`local_password_pepper`当前没有credential dependency maintenance入口；`teamledger-keyctl-local`拒绝这三个domain的generic stage/activate，不能以通用命令绕过。cursor最长15分钟；cursor key变化只令旧cursor安全失效。历史password pepper仍按credential的exact reference验证，成功登录后惰性升级。

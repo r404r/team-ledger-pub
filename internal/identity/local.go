@@ -1,12 +1,9 @@
 package identity
 
 import (
-	"bytes"
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
@@ -27,25 +24,31 @@ const (
 	argonKeyLen  = 32
 )
 
-type LocalKeyService interface {
+type MACKeyService interface {
 	MAC(context.Context, sensitive.KeyDomain, []byte) (sensitive.MACValue, error)
+	Verify(context.Context, sensitive.KeyDomain, sensitive.KeyReference, []byte, []byte) (bool, error)
+}
+
+type LocalKeyService interface {
+	MACKeyService
 }
 
 type LocalCredential struct {
-	AccountID, OrgID, SubjectID, PepperKeyID, PHC string
-	UsernameDigest                                []byte
-	PepperVersion                                 uint32
-	CredentialRevision                            int64
-	Active                                        bool
-	Failures                                      int64
-	RetryAfter                                    time.Time
+	AccountID, OrgID, SubjectID, PepperKeyID, UsernameKeyID, PHC string
+	UsernameDigest                                               []byte
+	UsernameKeyVersion, PepperVersion                            uint32
+	CredentialRevision                                           int64
+	Active                                                       bool
+	Failures                                                     int64
+	RetryAfter                                                   time.Time
 }
 
 type LocalSessionIssue struct {
 	UsernameDigest, TokenHash, CSRFHash []byte
 	Now, ExpiresAt, IdleExpiresAt       time.Time
-	RequestID                           string
+	RequestID, CSRFKeyID, UsernameKeyID string
 	CredentialRevision                  int64
+	CSRFVersion, UsernameKeyVersion     uint32
 }
 
 type LocalStore interface {
@@ -53,6 +56,7 @@ type LocalStore interface {
 	LookupLocalCredential(context.Context, []byte) (LocalCredential, error)
 	RecordLocalFailure(context.Context, []byte, string, time.Time) error
 	IssueLocalSession(context.Context, LocalSessionIssue) error
+	UpgradeLocalCredential(context.Context, []byte, int64, string, sensitive.KeyReference, time.Time) error
 	ChangeLocalPassword(context.Context, []byte, int64, string, sensitive.KeyReference, string, time.Time) error
 }
 
@@ -66,9 +70,10 @@ type LocalPasswordChangeRequest struct {
 }
 
 type localAuthenticator struct {
-	store LocalStore
-	keys  LocalKeyService
-	fake  string
+	store   LocalStore
+	keys    LocalKeyService
+	fake    string
+	fakeKey sensitive.KeyReference
 }
 
 func CanonicalLocalUsername(raw string) (string, error) {
@@ -97,12 +102,35 @@ func localFrame(label string, raw []byte) []byte {
 	return append(out, raw...)
 }
 
-func LocalUsernameMAC(ctx context.Context, keys LocalKeyService, username string) (sensitive.MACValue, error) {
+func CSRFToken(ctx context.Context, keys MACKeyService, raw []byte) (string, sensitive.KeyReference, error) {
+	if keys == nil || len(raw) == 0 {
+		return "", sensitive.KeyReference{}, fault.Unavailable
+	}
+	frame := append([]byte("TEAMLEDGER-CSRF\x00"), raw...)
+	defer clear(frame)
+	value, err := keys.MAC(ctx, sensitive.DomainCSRFToken, frame)
+	if err != nil || value.Version == 0 || value.KeyID == "" || len(value.Digest) != sha256.Size {
+		clear(value.Digest)
+		return "", sensitive.KeyReference{}, fault.Unavailable
+	}
+	token := base64.RawURLEncoding.EncodeToString(value.Digest)
+	clear(value.Digest)
+	return token, sensitive.KeyReference{KeyID: value.KeyID, Version: value.Version}, nil
+}
+
+func LocalUsernameLookupFrame(username string) ([]byte, error) {
 	canonical, err := CanonicalLocalUsername(username)
+	if err != nil {
+		return nil, err
+	}
+	return localFrame("TEAMLEDGER-LOCAL-USERNAME\x00V1", []byte(canonical)), nil
+}
+
+func LocalUsernameMAC(ctx context.Context, keys LocalKeyService, username string) (sensitive.MACValue, error) {
+	frame, err := LocalUsernameLookupFrame(username)
 	if err != nil || keys == nil {
 		return sensitive.MACValue{}, fault.Invalid
 	}
-	frame := localFrame("TEAMLEDGER-LOCAL-USERNAME\x00V1", []byte(canonical))
 	defer clear(frame)
 	value, err := keys.MAC(ctx, sensitive.DomainLocalUsernameLookup, frame)
 	if err != nil || value.Version == 0 || len(value.Digest) != 32 || value.KeyID == "" {
@@ -112,79 +140,70 @@ func LocalUsernameMAC(ctx context.Context, keys LocalKeyService, username string
 	return value, nil
 }
 
-func localPasswordMAC(ctx context.Context, keys LocalKeyService, password string) (sensitive.MACValue, error) {
-	if !validLocalPassword(password) || keys == nil {
-		return sensitive.MACValue{}, fault.Invalid
-	}
-	frame := localFrame("TEAMLEDGER-LOCAL-PASSWORD\x00V1", []byte(password))
-	defer clear(frame)
-	value, err := keys.MAC(ctx, sensitive.DomainLocalPasswordPepper, frame)
-	if err != nil || value.Version == 0 || len(value.Digest) != 32 || value.KeyID == "" {
-		clear(value.Digest)
-		return sensitive.MACValue{}, fault.Unavailable
-	}
-	return value, nil
+func passwordFrame(input []byte) []byte {
+	return localFrame("TEAMLEDGER-LOCAL-PASSWORD\x00V2", input)
 }
 
-func passwordPHC(input, salt []byte) (string, error) {
-	if len(input) != 32 || len(salt) != 16 {
-		return "", fault.Invalid
+func passwordPHC(ctx context.Context, keys LocalKeyService, password string, salt []byte) (string, sensitive.KeyReference, error) {
+	if !validLocalPassword(password) || keys == nil || len(salt) != 16 {
+		return "", sensitive.KeyReference{}, fault.Invalid
 	}
-	digest := argon2.IDKey(input, salt, argonTime, argonMemory, argonThreads, argonKeyLen)
-	defer clear(digest)
-	return fmt.Sprintf("$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s", argonMemory, argonTime, argonThreads, base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(digest)), nil
+	input := argon2.IDKey([]byte(password), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
+	defer clear(input)
+	frame := passwordFrame(input)
+	defer clear(frame)
+	pepper, err := keys.MAC(ctx, sensitive.DomainLocalPasswordPepper, frame)
+	if err != nil || pepper.Version == 0 || len(pepper.Digest) != 32 || pepper.KeyID == "" {
+		clear(pepper.Digest)
+		return "", sensitive.KeyReference{}, fault.Unavailable
+	}
+	defer clear(pepper.Digest)
+	phc := fmt.Sprintf("$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s", argonMemory, argonTime, argonThreads, base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(pepper.Digest))
+	return phc, sensitive.KeyReference{KeyID: pepper.KeyID, Version: pepper.Version}, nil
 }
 
 func NewPasswordCredential(ctx context.Context, keys LocalKeyService, password string) (string, sensitive.KeyReference, error) {
-	pepper, err := localPasswordMAC(ctx, keys, password)
-	if err != nil {
-		return "", sensitive.KeyReference{}, err
-	}
-	defer clear(pepper.Digest)
 	salt := make([]byte, 16)
-	if _, err = rand.Read(salt); err != nil {
+	if _, err := rand.Read(salt); err != nil {
 		return "", sensitive.KeyReference{}, fault.Unavailable
 	}
 	defer clear(salt)
-	phc, err := passwordPHC(pepper.Digest, salt)
-	return phc, sensitive.KeyReference{KeyID: pepper.KeyID, Version: pepper.Version}, err
+	return passwordPHC(ctx, keys, password, salt)
 }
 
-func verifyPHC(phc string, input []byte) bool {
+func verifyPHC(ctx context.Context, keys LocalKeyService, phc, password string, reference sensitive.KeyReference) bool {
 	parts := strings.Split(phc, "$")
-	if len(parts) != 6 || parts[1] != "argon2id" || parts[2] != "v=19" || parts[3] != "m=65536,t=3,p=1" {
+	if len(parts) != 6 || parts[1] != "argon2id" || parts[2] != "v=19" || parts[3] != "m=65536,t=3,p=1" || reference.KeyID == "" || reference.Version == 0 || !validLocalPassword(password) {
 		return false
 	}
 	salt, e1 := base64.RawStdEncoding.DecodeString(parts[4])
 	want, e2 := base64.RawStdEncoding.DecodeString(parts[5])
 	defer clear(salt)
 	defer clear(want)
-	if e1 != nil || e2 != nil || len(salt) != 16 || len(want) != argonKeyLen || len(input) != 32 {
+	if e1 != nil || e2 != nil || len(salt) != 16 || len(want) != 32 {
 		return false
 	}
-	got := argon2.IDKey(input, salt, argonTime, argonMemory, argonThreads, argonKeyLen)
-	defer clear(got)
-	return subtle.ConstantTimeCompare(got, want) == 1
+	input := argon2.IDKey([]byte(password), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
+	defer clear(input)
+	frame := passwordFrame(input)
+	defer clear(frame)
+	ok, err := keys.Verify(ctx, sensitive.DomainLocalPasswordPepper, reference, frame, want)
+	return err == nil && ok
 }
 
 func newLocalAuthenticator(ctx context.Context, store LocalStore, keys LocalKeyService) (*localAuthenticator, error) {
 	if store == nil || keys == nil {
 		return nil, fault.Unavailable
 	}
-	pepper, err := localPasswordMAC(ctx, keys, "teamledger-fake-password")
+	fake, reference, err := passwordPHC(ctx, keys, "teamledger-fake-password", []byte("local-fake-salt!"))
 	if err != nil {
 		return nil, err
 	}
-	defer clear(pepper.Digest)
-	fake, err := passwordPHC(pepper.Digest, []byte("local-fake-salt!"))
-	if err != nil {
-		return nil, err
-	}
-	return &localAuthenticator{store: store, keys: keys, fake: fake}, nil
+	return &localAuthenticator{store: store, keys: keys, fake: fake, fakeKey: reference}, nil
 }
 
-func NewLocal(ctx context.Context, store Store, local LocalStore, csrfKey []byte, keys LocalKeyService) (*Service, error) {
-	if store == nil || local == nil || len(csrfKey) != 32 {
+func NewLocal(ctx context.Context, store Store, local LocalStore, keys LocalKeyService) (*Service, error) {
+	if store == nil || local == nil || keys == nil {
 		return nil, fault.Unavailable
 	}
 	mode, err := local.IdentityMode(ctx)
@@ -195,7 +214,7 @@ func NewLocal(ctx context.Context, store Store, local LocalStore, csrfKey []byte
 	if err != nil {
 		return nil, err
 	}
-	return &Service{Store: store, csrfKey: bytes.Clone(csrfKey), Now: time.Now, mode: "local", local: authenticator}, nil
+	return &Service{Store: store, keys: keys, Now: time.Now, mode: "local", local: authenticator}, nil
 }
 
 func (s *Service) LocalLogin(ctx context.Context, request LocalLoginRequest) (LoginResult, error) {
@@ -208,23 +227,34 @@ func (s *Service) LocalLogin(ctx context.Context, request LocalLoginRequest) (Lo
 	}
 	defer clear(username.Digest)
 	credential, lookupErr := s.local.store.LookupLocalCredential(ctx, username.Digest)
-	password, passwordErr := localPasswordMAC(ctx, s.local.keys, request.Password)
-	if passwordErr != nil {
-		return LoginResult{}, passwordErr
-	}
-	defer clear(password.Digest)
 	now := s.now()
-	phc := s.local.fake
-	validAccount := lookupErr == nil && credential.Active && credential.RetryAfter.Before(now) && credential.PepperVersion == password.Version && credential.PepperKeyID == password.KeyID
+	phc, reference := s.local.fake, s.local.fakeKey
+	validAccount := lookupErr == nil && credential.Active && credential.RetryAfter.Before(now)
 	if validAccount {
 		phc = credential.PHC
+		reference = sensitive.KeyReference{KeyID: credential.PepperKeyID, Version: credential.PepperVersion}
 	}
-	validPassword := verifyPHC(phc, password.Digest)
+	validPassword := verifyPHC(ctx, s.local.keys, phc, request.Password, reference)
 	if !validAccount || !validPassword {
 		if err = s.local.store.RecordLocalFailure(ctx, username.Digest, request.RequestID, now); err != nil {
 			return LoginResult{}, err
 		}
 		return LoginResult{}, fault.Unauthenticated
+	}
+	probe, err := s.local.keys.MAC(ctx, sensitive.DomainLocalPasswordPepper, []byte("TEAMLEDGER-LOCAL-PASSWORD-ACTIVE\x00V1"))
+	if err != nil || probe.Version == 0 || probe.KeyID == "" {
+		clear(probe.Digest)
+		return LoginResult{}, fault.Unavailable
+	}
+	clear(probe.Digest)
+	if credential.PepperVersion != probe.Version || credential.PepperKeyID != probe.KeyID {
+		upgradedPHC, upgradedKey, upgradeErr := NewPasswordCredential(ctx, s.local.keys, request.Password)
+		if upgradeErr != nil {
+			return LoginResult{}, upgradeErr
+		}
+		if upgradeErr = s.local.store.UpgradeLocalCredential(ctx, username.Digest, credential.CredentialRevision, upgradedPHC, upgradedKey, now); upgradeErr != nil {
+			return LoginResult{}, upgradeErr
+		}
 	}
 	cookie, raw, err := randomToken()
 	if err != nil {
@@ -232,11 +262,12 @@ func (s *Service) LocalLogin(ctx context.Context, request LocalLoginRequest) (Lo
 	}
 	defer clear(raw)
 	hash := sha256.Sum256(raw)
-	mac := hmac.New(sha256.New, s.csrfKey)
-	_, _ = mac.Write([]byte("TEAMLEDGER-CSRF\x00"))
-	_, _ = mac.Write(raw)
-	csrfHash := sha256.Sum256([]byte(base64.RawURLEncoding.EncodeToString(mac.Sum(nil))))
-	issue := LocalSessionIssue{UsernameDigest: username.Digest, TokenHash: hash[:], CSRFHash: csrfHash[:], Now: now, ExpiresAt: now.Add(8 * time.Hour), IdleExpiresAt: now.Add(30 * time.Minute), RequestID: request.RequestID, CredentialRevision: credential.CredentialRevision}
+	csrf, csrfKey, err := CSRFToken(ctx, s.keys, raw)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	csrfHash := sha256.Sum256([]byte(csrf))
+	issue := LocalSessionIssue{UsernameDigest: username.Digest, UsernameKeyID: credential.UsernameKeyID, UsernameKeyVersion: credential.UsernameKeyVersion, TokenHash: hash[:], CSRFHash: csrfHash[:], CSRFKeyID: csrfKey.KeyID, CSRFVersion: csrfKey.Version, Now: now, ExpiresAt: now.Add(8 * time.Hour), IdleExpiresAt: now.Add(30 * time.Minute), RequestID: request.RequestID, CredentialRevision: credential.CredentialRevision}
 	if err = s.local.store.IssueLocalSession(ctx, issue); err != nil {
 		return LoginResult{}, err
 	}
@@ -255,12 +286,7 @@ func (s *Service) ChangeLocalPassword(ctx context.Context, request LocalPassword
 	if err != nil || !credential.Active {
 		return fault.Unauthenticated
 	}
-	current, err := localPasswordMAC(ctx, s.local.keys, request.CurrentPassword)
-	if err != nil {
-		return err
-	}
-	valid := current.Version == credential.PepperVersion && current.KeyID == credential.PepperKeyID && verifyPHC(credential.PHC, current.Digest)
-	clear(current.Digest)
+	valid := verifyPHC(ctx, s.local.keys, credential.PHC, request.CurrentPassword, sensitive.KeyReference{KeyID: credential.PepperKeyID, Version: credential.PepperVersion})
 	if !valid {
 		return fault.Unauthenticated
 	}

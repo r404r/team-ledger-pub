@@ -84,14 +84,18 @@ func (s *Service) structuredInput(ctx context.Context, q Request, employee, wind
 	source := sha256.Sum256(append([]byte("TEAMLEDGER-ASSESSMENT-SOURCE\x00V1\x00"), raw...))
 	input.SourceDigest = hex.EncodeToString(source[:])
 	raw, _ = json.Marshal(input)
-	mac := hmac.New(sha256.New, s.DigestKey)
-	mac.Write([]byte("TEAMLEDGER-ASSESSMENT-GENERATION\x00V1\x00"))
+	frame := []byte("TEAMLEDGER-ASSESSMENT-GENERATION\x00V1\x00")
 	for _, part := range []string{a.OrgID, employee, windowID, strconv.FormatInt(window.PolicyRevision, 10), a.SubjectID, strconv.FormatInt(a.SubjectEpoch, 10), strconv.FormatInt(a.AuthEpoch, 10), strconv.FormatInt(sourceEpoch, 10), string(raw)} {
-		mac.Write([]byte(strconv.Itoa(len(part))))
-		mac.Write([]byte{':'})
-		mac.Write([]byte(part))
+		frame = append(frame, []byte(strconv.Itoa(len(part)))...)
+		frame = append(frame, ':')
+		frame = append(frame, part...)
 	}
-	return window, input, mac.Sum(nil), source[:], sourceEpoch, nil
+	generation, macErr := s.mac(frame, true)
+	clear(frame)
+	if macErr != nil {
+		return Window{}, StructuredInput{}, nil, nil, 0, fault.Unavailable
+	}
+	return window, input, generation, source[:], sourceEpoch, nil
 }
 
 func (s *Service) RequestAssessment(ctx context.Context, q Request, employee string, command AssessmentCommand) (InputView, error) {
@@ -248,21 +252,22 @@ func approvedCitations(document, approved ResultDocument) bool {
 }
 
 func (s *Service) workerReceiptDigest(q WorkerRequest, lease Lease, document ResultDocument) ([]byte, error) {
-	if !value.ValidID(q.Key) || len(s.DigestKey) < sha256.Size {
+	if !value.ValidID(q.Key) {
 		return nil, fault.Invalid
 	}
 	raw, err := json.Marshal(document)
 	if err != nil {
 		return nil, fault.Invalid
 	}
-	mac := hmac.New(sha256.New, s.DigestKey)
-	mac.Write([]byte("TEAMLEDGER-ASSESSMENT-WORKER-RESULT\x00V1\x00"))
+	frame := []byte("TEAMLEDGER-ASSESSMENT-WORKER-RESULT\x00V1\x00")
 	for _, part := range []string{q.WorkerID, q.Key, lease.JobID, strconv.FormatInt(lease.Fence, 10), string(raw)} {
-		mac.Write([]byte(strconv.Itoa(len(part))))
-		mac.Write([]byte{':'})
-		mac.Write([]byte(part))
+		frame = append(frame, []byte(strconv.Itoa(len(part)))...)
+		frame = append(frame, ':')
+		frame = append(frame, part...)
 	}
-	return mac.Sum(nil), nil
+	clear(raw)
+	defer clear(frame)
+	return s.mac(frame, false)
 }
 
 func (s *Service) Submit(ctx context.Context, q WorkerRequest, lease Lease, document ResultDocument) (ResultView, error) {

@@ -16,6 +16,7 @@ import (
 type Service struct {
 	Store     Store
 	CursorKey []byte
+	CursorMAC func([]byte) ([]byte, error)
 	Now       func() time.Time
 }
 

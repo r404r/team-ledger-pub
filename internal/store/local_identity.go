@@ -61,20 +61,21 @@ func (r *Repository) EnsureIdentityMode(ctx context.Context, mode string, now ti
 func (r *Repository) LookupLocalCredential(ctx context.Context, digest []byte) (identity.LocalCredential, error) {
 	var result identity.LocalCredential
 	var retry dbTime
-	var active, subjectActive bool
-	var pepperVersion, revision int64
+	var accountActive, subjectActive bool
+	var usernameVersion, pepperVersion, revision int64
 	err := r.DB.QueryRowContext(ctx, reader{r.DB, r.Backend}.sql(
-		"SELECT a.id,a.org_id,a.subject_id,a.username_digest,a.active,s.active,c.pepper_key_id,c.pepper_version,c.password_phc,c.revision,COALESCE(t.failures,0),COALESCE(t.retry_after,0) FROM local_account a JOIN subject s ON s.org_id=a.org_id AND s.id=a.subject_id JOIN local_credential c ON c.account_id=a.id LEFT JOIN local_login_throttle t ON t.username_digest=a.username_digest WHERE a.username_digest=?",
-		"SELECT a.id,a.org_id,a.subject_id,a.username_digest,a.active,s.active,c.pepper_key_id,c.pepper_version,c.password_phc,c.revision,COALESCE(t.failures,0),COALESCE(t.retry_after,TIMESTAMPTZ 'epoch') FROM local_account a JOIN subject s ON s.org_id=a.org_id AND s.id=a.subject_id JOIN local_credential c ON c.account_id=a.id LEFT JOIN local_login_throttle t ON t.username_digest=a.username_digest WHERE a.username_digest=$1"), digest).Scan(&result.AccountID, &result.OrgID, &result.SubjectID, &result.UsernameDigest, &active, &subjectActive, &result.PepperKeyID, &pepperVersion, &result.PHC, &revision, &result.Failures, &retry)
+		"SELECT a.id,a.org_id,a.subject_id,a.username_digest,a.username_key_id,a.username_key_version,a.active,s.active,c.pepper_key_id,c.pepper_version,c.password_phc,c.revision,COALESCE(t.failures,0),COALESCE(t.retry_after,0) FROM local_account a JOIN subject s ON s.org_id=a.org_id AND s.id=a.subject_id JOIN local_credential c ON c.account_id=a.id LEFT JOIN local_login_throttle t ON t.username_digest=a.username_digest WHERE a.username_digest=?",
+		"SELECT a.id,a.org_id,a.subject_id,a.username_digest,a.username_key_id,a.username_key_version,a.active,s.active,c.pepper_key_id,c.pepper_version,c.password_phc,c.revision,COALESCE(t.failures,0),COALESCE(t.retry_after,TIMESTAMPTZ 'epoch') FROM local_account a JOIN subject s ON s.org_id=a.org_id AND s.id=a.subject_id JOIN local_credential c ON c.account_id=a.id LEFT JOIN local_login_throttle t ON t.username_digest=a.username_digest WHERE a.username_digest=$1"), digest).Scan(&result.AccountID, &result.OrgID, &result.SubjectID, &result.UsernameDigest, &result.UsernameKeyID, &usernameVersion, &accountActive, &subjectActive, &result.PepperKeyID, &pepperVersion, &result.PHC, &revision, &result.Failures, &retry)
 	if errors.Is(err, sql.ErrNoRows) {
 		return result, fault.Unauthenticated
 	}
-	if err != nil || pepperVersion <= 0 || pepperVersion > math.MaxUint32 || revision <= 0 {
+	if err != nil || usernameVersion <= 0 || usernameVersion > math.MaxUint32 || pepperVersion <= 0 || pepperVersion > math.MaxUint32 || revision <= 0 {
 		return identity.LocalCredential{}, safeError(err)
 	}
+	result.UsernameKeyVersion = uint32(usernameVersion)
 	result.PepperVersion = uint32(pepperVersion)
 	result.CredentialRevision = revision
-	result.Active = active && subjectActive
+	result.Active = accountActive && subjectActive
 	result.RetryAfter = retry.Time
 	return result, nil
 }
@@ -124,7 +125,7 @@ func (r *Repository) RecordLocalFailure(ctx context.Context, digest []byte, requ
 }
 
 func (r *Repository) IssueLocalSession(ctx context.Context, issue identity.LocalSessionIssue) error {
-	if len(issue.UsernameDigest) != 32 || len(issue.TokenHash) != 32 || len(issue.CSRFHash) != 32 || issue.CredentialRevision <= 0 || !value.ValidID(issue.RequestID) || !issue.ExpiresAt.Equal(issue.Now.Add(8*time.Hour)) || !issue.IdleExpiresAt.Equal(issue.Now.Add(30*time.Minute)) {
+	if len(issue.UsernameDigest) != 32 || issue.UsernameKeyID == "" || issue.UsernameKeyVersion == 0 || len(issue.TokenHash) != 32 || len(issue.CSRFHash) != 32 || issue.CSRFKeyID == "" || issue.CSRFVersion == 0 || issue.CredentialRevision <= 0 || !value.ValidID(issue.RequestID) || !issue.ExpiresAt.Equal(issue.Now.Add(8*time.Hour)) || !issue.IdleExpiresAt.Equal(issue.Now.Add(30*time.Minute)) {
 		return fault.Invalid
 	}
 	tx, err := r.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
@@ -148,10 +149,10 @@ func (r *Repository) IssueLocalSession(ctx context.Context, issue identity.Local
 		return safeError(err)
 	}
 	zero := r.BindTime(time.Unix(0, 0).UTC())
-	if _, err = tx.ExecContext(ctx, q.sql("INSERT INTO session(token_hash,org_id,subject_id,subject_epoch,expires_at,idle_expires_at,mfa_until,revoked,csrf_hash,csrf_version) VALUES(?,?,?,?,?,?,?,0,?,1)", "INSERT INTO session(token_hash,org_id,subject_id,subject_epoch,expires_at,idle_expires_at,mfa_until,revoked,csrf_hash,csrf_version) VALUES($1,$2,$3,$4,$5,$6,$7,false,$8,1)"), issue.TokenHash, orgID, subjectID, epoch, r.BindTime(issue.ExpiresAt), r.BindTime(issue.IdleExpiresAt), zero, issue.CSRFHash); err != nil {
+	if _, err = tx.ExecContext(ctx, q.sql("INSERT INTO session(token_hash,org_id,subject_id,subject_epoch,expires_at,idle_expires_at,mfa_until,revoked,csrf_hash,csrf_key_id,csrf_version) VALUES(?,?,?,?,?,?,?,0,?,?,?)", "INSERT INTO session(token_hash,org_id,subject_id,subject_epoch,expires_at,idle_expires_at,mfa_until,revoked,csrf_hash,csrf_key_id,csrf_version) VALUES($1,$2,$3,$4,$5,$6,$7,false,$8,$9,$10)"), issue.TokenHash, orgID, subjectID, epoch, r.BindTime(issue.ExpiresAt), r.BindTime(issue.IdleExpiresAt), zero, issue.CSRFHash, issue.CSRFKeyID, issue.CSRFVersion); err != nil {
 		return safeError(err)
 	}
-	if _, err = tx.ExecContext(ctx, q.sql("INSERT INTO session_auth(token_hash,org_id,subject_id,identity_digest,key_version,created_at,acr,amr_json) VALUES(?,?,?,?,1,?,'','[\"pwd\"]')", "INSERT INTO session_auth(token_hash,org_id,subject_id,identity_digest,key_version,created_at,acr,amr_json) VALUES($1,$2,$3,$4,1,$5,'','[\"pwd\"]')"), issue.TokenHash, orgID, subjectID, issue.UsernameDigest, r.BindTime(issue.Now)); err != nil {
+	if _, err = tx.ExecContext(ctx, q.sql("INSERT INTO session_auth(token_hash,org_id,subject_id,identity_digest,identity_key_id,key_version,created_at,acr,amr_json) VALUES(?,?,?,?,?,?,?,'','[\"pwd\"]')", "INSERT INTO session_auth(token_hash,org_id,subject_id,identity_digest,identity_key_id,key_version,created_at,acr,amr_json) VALUES($1,$2,$3,$4,$5,$6,$7,'','[\"pwd\"]')"), issue.TokenHash, orgID, subjectID, issue.UsernameDigest, issue.UsernameKeyID, issue.UsernameKeyVersion, r.BindTime(issue.Now)); err != nil {
 		return safeError(err)
 	}
 	if err = insertAudit(ctx, tx, r.Backend, organization.Audit{ID: value.NewID(), OrgID: orgID, SubjectID: subjectID, Operation: "AUTH-LOGIN", RequestID: issue.RequestID, Outcome: "allowed", At: issue.Now}); err != nil {
@@ -162,6 +163,27 @@ func (r *Repository) IssueLocalSession(ctx context.Context, issue identity.Local
 	}
 	return nil
 }
+func (r *Repository) UpgradeLocalCredential(ctx context.Context, usernameDigest []byte, credentialRevision int64, phc string, pepper sensitive.KeyReference, now time.Time) error {
+	if len(usernameDigest) != 32 || credentialRevision <= 0 || len(phc) < 80 || len(phc) > 256 || pepper.KeyID == "" || pepper.Version == 0 {
+		return fault.Invalid
+	}
+	result, err := r.DB.ExecContext(ctx, reader{r.DB, r.Backend}.sql(
+		"UPDATE local_credential SET pepper_key_id=?,pepper_version=?,password_phc=?,updated_at=? WHERE account_id=(SELECT id FROM local_account WHERE username_digest=? AND active=1) AND revision=?",
+		"UPDATE local_credential SET pepper_key_id=$1,pepper_version=$2,password_phc=$3,updated_at=$4 WHERE account_id=(SELECT id FROM local_account WHERE username_digest=$5 AND active=true) AND revision=$6"),
+		pepper.KeyID, pepper.Version, phc, r.BindTime(now), usernameDigest, credentialRevision)
+	if err != nil {
+		return safeError(err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return safeError(err)
+	}
+	if n != 1 {
+		return fault.Unauthenticated
+	}
+	return nil
+}
+
 func (r *Repository) ChangeLocalPassword(ctx context.Context, sessionHash []byte, credentialRevision int64, phc string, pepper sensitive.KeyReference, requestID string, now time.Time) error {
 	if len(sessionHash) != 32 || credentialRevision <= 0 || len(phc) < 80 || len(phc) > 256 || pepper.KeyID == "" || pepper.Version == 0 || !value.ValidID(requestID) {
 		return fault.Invalid

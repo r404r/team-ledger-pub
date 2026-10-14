@@ -171,26 +171,25 @@ func (c *KeydClient) MAC(ctx context.Context, domain KeyDomain, message []byte) 
 	return *response.MAC, nil
 }
 
-func (c *KeydClient) Verify(ctx context.Context, domain KeyDomain, version uint32, message, digest []byte) (bool, error) {
-	response, err := c.call(ctx, keydRequest{Operation: "verify", Domain: domain, Version: version, Message: message, MAC: digest})
+func (c *KeydClient) Verify(ctx context.Context, domain KeyDomain, reference KeyReference, message, digest []byte) (bool, error) {
+	response, err := c.call(ctx, keydRequest{Operation: "verify", Domain: domain, KeyID: reference.KeyID, Version: reference.Version, Message: message, MAC: digest})
 	if err != nil {
 		return false, err
 	}
 	return response.Verified, nil
 }
 
-// ProcessKey returns a purpose-separated process key derived through keyd's MAC
-// boundary. It is used only by legacy in-process HMAC consumers during the v12
-// clean cutover; no root or keyring material is exposed.
+// ProcessKey returns a purpose-separated process key only for the transient
+// OIDC transaction encryption domain. Root and keyring material stay in keyd.
 func (c *KeydClient) ProcessKey(ctx context.Context, domain KeyDomain, label string) ([]byte, error) {
-	if label == "" {
+	if domain != DomainIdentityTransaction || label == "" {
 		return nil, ErrInvalid
 	}
-	value, err := c.MAC(ctx, domain, []byte("TEAMLEDGER-PROCESS-KEY\x00"+label))
-	if err != nil {
-		return nil, err
+	response, err := c.call(ctx, keydRequest{Operation: "derive", Domain: domain, Message: []byte(label)})
+	if err != nil || response.MAC == nil || len(response.MAC.Digest) != 32 {
+		return nil, keyError(err)
 	}
-	return value.Digest, nil
+	return response.MAC.Digest, nil
 }
 
 type keydWrapper struct {

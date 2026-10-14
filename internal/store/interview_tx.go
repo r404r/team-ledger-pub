@@ -273,6 +273,6 @@ func (t *transaction) SaveInterviewReceipt(ctx context.Context, org, subject, op
 	if err != nil {
 		return fault.Invalid
 	}
-	_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO interview_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_json,recorded_at) VALUES(?,?,?,?,?,1,?,?)"), org, subject, operation, key, receipt.Digest, string(result), t.bindTime(time.Now()))
+	_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO interview_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_json,recorded_at,digest_key_id) VALUES(?,?,?,?,?,?,?,?,?)"), org, subject, operation, key, receipt.Digest, t.commandMACKey.Version, string(result), t.bindTime(time.Now()), t.commandMACKey.KeyID)
 	return safeError(err)
 }

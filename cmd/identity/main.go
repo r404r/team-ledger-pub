@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -43,6 +44,8 @@ func run(args []string) error {
 			return localAccountRun("disable", args[1:])
 		case "mode-switch":
 			return modeSwitchRun(args[1:])
+		case "reindex":
+			return identityReindexRun(args[1:])
 		}
 	}
 	if len(args) == 0 || args[0] != "bind" && args[0] != "unbind" {
@@ -83,25 +86,20 @@ func run(args []string) error {
 		return fault.Invalid
 	}
 	keyd := &sensitive.KeydClient{Socket: *keydSocket, Timeout: 5 * time.Second}
-	key, err := keyd.ProcessKey(context.Background(), sensitive.DomainIdentitySubjectLookup, "identity-subject-v1")
-	if err != nil {
-		return fault.Unavailable
-	}
-	defer clear(key)
 	subBytes, err := configfile.Read(*subFile, 4096, true)
 	if err != nil || len(subBytes) == 0 || strings.ContainsAny(string(subBytes), "\x00\r\n") {
 		clear(subBytes)
 		return fault.Invalid
 	}
 	defer clear(subBytes)
-	digest, err := identity.IdentityDigest(key, *issuer, string(subBytes))
-	if err != nil {
-		return err
-	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	digestValue, err := identity.IdentityMAC(ctx, keyd, *issuer, string(subBytes))
+	if err != nil {
+		return err
+	}
 	var repo *store.Repository
 	if *backend == "postgres" {
 		repo, err = store.OpenPostgresWithCheckedCA(ctx, dsn, postgresCA)
@@ -115,9 +113,27 @@ func run(args []string) error {
 	if err = repo.CheckSchema(ctx); err != nil {
 		return err
 	}
-	mapping := identity.Identity{Digest: digest, KeyVersion: 1, OrgID: *org, SubjectID: *subject, EmployeeID: *employee}
+	mapping := identity.Identity{Digest: digestValue.Digest, KeyVersion: int(digestValue.Version), KeyID: digestValue.KeyID, OrgID: *org, SubjectID: *subject, EmployeeID: *employee}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	if op == "bind" {
+		mapping.MappingID = value.NewID()
+		binding := sensitive.Context{OrgID: *org, RecordID: mapping.MappingID, VersionID: mapping.MappingID, ObjectKind: "identity_mapping", Purpose: "identity", SchemaType: "identity.mapping.v1", SchemaVersion: 1}
+		plaintext, marshalErr := json.Marshal(struct {
+			Issuer  string `json:"issuer"`
+			Subject string `json:"subject"`
+		}{Issuer: *issuer, Subject: string(subBytes)})
+		if marshalErr != nil {
+			return fault.Unavailable
+		}
+		defer clear(plaintext)
+		wrapper, wrapperErr := sensitive.NewKeydWrapper(keyd, sensitive.DomainIdentityMapping)
+		if wrapperErr != nil {
+			return fault.Unavailable
+		}
+		mapping.Source, err = (sensitive.Cipher{Wrapper: wrapper}).Seal(ctx, binding, plaintext)
+		if err != nil {
+			return fault.Unavailable
+		}
 		return repo.BindIdentity(ctx, mapping, *requestID, now)
 	}
 	return repo.UnbindIdentity(ctx, mapping, *requestID, now)

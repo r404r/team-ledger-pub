@@ -188,12 +188,6 @@ func runWithTrust(args []string, trustOverride []byte) error {
 		return err
 	}
 	keys := &sensitive.KeydClient{Socket: *keydSocket, Timeout: 10 * time.Second}
-	hmacValue, err := keys.MACStaging(context.Background(), sensitive.DomainBonusPaymentLookup, approval.ApprovalDigest, []byte("TEAMLEDGER-PROCESS-KEY\x00bonus-payment-v1"))
-	if err != nil || int64(hmacValue.Version) != version || hmacValue.KeyID != *targetKeyID {
-		clear(hmacValue.Digest)
-		return fault.Unavailable
-	}
-	defer clear(hmacValue.Digest)
 	wrapper, err := sensitive.NewKeydWrapper(keys, sensitive.DomainFinancialPayload)
 	if err != nil {
 		return fault.Unavailable
@@ -215,6 +209,8 @@ func runWithTrust(args []string, trustOverride []byte) error {
 	if err = repo.CheckSchema(ctx); err != nil {
 		return err
 	}
-	service := compensation.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, BonusHMACKeys: map[int64][]byte{version: hmacValue.Digest}}
+	service := compensation.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, BonusHMACStaging: func(ctx context.Context, manifest, frame []byte) (sensitive.MACValue, error) {
+		return keys.MACStaging(ctx, sensitive.DomainBonusPaymentLookup, manifest, frame)
+	}}
 	return service.ReindexBonusPaymentHMAC(ctx, *org, version, *targetKeyID, 0, approval)
 }

@@ -3,7 +3,6 @@ package assessment
 import (
 	"context"
 	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/json"
 	"strconv"
 
@@ -36,7 +35,7 @@ func encodeResultExport(value resultExportEnvelope) ([]byte, error) {
 	return append(encoded, '\n'), nil
 }
 func (s *Service) resultExportDigest(q Request, a authz.Snapshot, command ExportCommand) ([]byte, error) {
-	if len(s.DigestKey) < sha256.Size || !value.ValidID(q.Key) {
+	if !value.ValidID(q.Key) {
 		return nil, fault.Invalid
 	}
 	encoded, err := json.Marshal(command)
@@ -44,14 +43,14 @@ func (s *Service) resultExportDigest(q Request, a authz.Snapshot, command Export
 		return nil, fault.Invalid
 	}
 	defer clear(encoded)
-	mac := hmac.New(sha256.New, s.DigestKey)
-	mac.Write([]byte("TEAMLEDGER-ASSESSMENT-EXPORT\x00V1\x00"))
+	frame := []byte("TEAMLEDGER-ASSESSMENT-EXPORT\x00V1\x00")
 	for _, part := range []string{a.OrgID, a.SubjectID, q.Purpose, string(encoded)} {
-		mac.Write([]byte(strconv.Itoa(len(part))))
-		mac.Write([]byte{':'})
-		mac.Write([]byte(part))
+		frame = append(frame, []byte(strconv.Itoa(len(part)))...)
+		frame = append(frame, ':')
+		frame = append(frame, part...)
 	}
-	return mac.Sum(nil), nil
+	defer clear(frame)
+	return s.mac(frame, false)
 }
 func (s *Service) canExportResult(a authz.Snapshot, employee string) bool {
 	now := s.clock()

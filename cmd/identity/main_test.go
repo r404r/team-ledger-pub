@@ -9,7 +9,6 @@ import (
 
 	"github.com/r404r/team-ledger/internal/configfile"
 	"github.com/r404r/team-ledger/internal/identity"
-	"github.com/r404r/team-ledger/internal/sensitive"
 	"github.com/r404r/team-ledger/internal/testsupport"
 	"github.com/r404r/team-ledger/internal/value"
 )
@@ -43,15 +42,14 @@ func TestIdentityCLIReallyBindsApprovedExistingSubjectAndRevokesOnUnbind(t *test
 			if f.Count(t, "subject") != subjects || f.Count(t, "access_grant") != grants {
 				t.Fatal("binding cannot provision new subjects/grants")
 			}
-			key, err := client.ProcessKey(context.Background(), sensitive.DomainIdentitySubjectLookup, "identity-subject-v1")
+			if sources := f.Count(t, "identity_mapping_source"); sources != 1 {
+				t.Fatalf("canonical identity source rows=%d", sources)
+			}
+			digestValue, err := identity.IdentityMAC(context.Background(), client, issuer, sub)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer clear(key)
-			digest, err := identity.IdentityDigest(key, issuer, sub)
-			if err != nil {
-				t.Fatal(err)
-			}
+			digest := digestValue.Digest
 			if err = f.Exec(context.Background(), "INSERT INTO session_auth(token_hash,org_id,subject_id,identity_digest,key_version,created_at,acr,amr_json) VALUES(?,?,?,?,1,?,'','[]')", "INSERT INTO session_auth(token_hash,org_id,subject_id,identity_digest,key_version,created_at,acr,amr_json) VALUES($1,$2,$3,$4,1,$5,'','[]')", f.Owner.Hash, f.OrgID, f.Owner.SubjectID, digest, f.Repo.BindTime(f.Now)); err != nil {
 				t.Fatal(err)
 			}

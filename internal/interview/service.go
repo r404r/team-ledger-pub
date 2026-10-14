@@ -23,6 +23,8 @@ type Service struct {
 	Store                Store
 	Cipher               sensitive.Cipher
 	DigestKey, CursorKey []byte
+	CommandMAC           func([]byte) ([]byte, error)
+	CursorMAC            func([]byte) ([]byte, error)
 	Now                  func() time.Time
 }
 
@@ -134,7 +136,7 @@ func (s *Service) denied(ctx context.Context, q Request, a authz.Snapshot, op st
 	return e
 }
 func (s *Service) digest(q Request, a authz.Snapshot, op, id string, cmd any) ([]byte, error) {
-	if len(s.DigestKey) < 32 || !value.ValidID(q.Key) {
+	if !value.ValidID(q.Key) {
 		return nil, fault.Invalid
 	}
 	b, e := json.Marshal(struct {
@@ -145,6 +147,12 @@ func (s *Service) digest(q Request, a authz.Snapshot, op, id string, cmd any) ([
 		return nil, fault.Invalid
 	}
 	defer clear(b)
+	if s.CommandMAC != nil {
+		return s.CommandMAC(b)
+	}
+	if len(s.DigestKey) < 32 {
+		return nil, fault.Invalid
+	}
 	h := hmac.New(sha256.New, s.DigestKey)
 	h.Write(b)
 	return h.Sum(nil), nil
@@ -350,6 +358,20 @@ type cursor struct {
 	Auth, SubjectEpoch, Graph      int64
 }
 
+func (s *Service) cursorDigest(raw []byte) ([]byte, error) {
+	if s.CursorMAC != nil {
+		frame := append([]byte("TEAMLEDGER-INTERVIEW-CURSOR\x00V1\x00"), raw...)
+		defer clear(frame)
+		return s.CursorMAC(frame)
+	}
+	if len(s.CursorKey) < 32 {
+		return nil, fault.Unavailable
+	}
+	h := hmac.New(sha256.New, s.CursorKey)
+	h.Write(raw)
+	return h.Sum(nil), nil
+}
+
 func (s *Service) cursor(ctx context.Context, a authz.Snapshot, query, token string) (cursor, error) {
 	d, e := day(a, s.clock())
 	if e != nil {
@@ -363,7 +385,7 @@ func (s *Service) cursor(ctx context.Context, a authz.Snapshot, query, token str
 	if token == "" {
 		return base, nil
 	}
-	if len(token) > 4096 || len(s.CursorKey) < 32 {
+	if len(token) > 4096 || s.CursorMAC == nil && len(s.CursorKey) < 32 {
 		return base, fault.Invalid
 	}
 	b, e := base64.RawURLEncoding.DecodeString(token)
@@ -371,9 +393,8 @@ func (s *Service) cursor(ctx context.Context, a authz.Snapshot, query, token str
 		return base, fault.Invalid
 	}
 	raw, mac := b[:len(b)-32], b[len(b)-32:]
-	h := hmac.New(sha256.New, s.CursorKey)
-	h.Write(raw)
-	if !hmac.Equal(mac, h.Sum(nil)) {
+	expected, macErr := s.cursorDigest(raw)
+	if macErr != nil || !hmac.Equal(mac, expected) {
 		return base, fault.Invalid
 	}
 	var old cursor
@@ -389,7 +410,7 @@ func (s *Service) cursor(ctx context.Context, a authz.Snapshot, query, token str
 	return base, nil
 }
 func (s *Service) encodeCursor(c cursor, last string) (*string, error) {
-	if len(s.CursorKey) < 32 {
+	if s.CursorMAC == nil && len(s.CursorKey) < 32 {
 		return nil, fault.Unavailable
 	}
 	c.Last = last
@@ -397,9 +418,11 @@ func (s *Service) encodeCursor(c cursor, last string) (*string, error) {
 	if e != nil {
 		return nil, fault.Unavailable
 	}
-	h := hmac.New(sha256.New, s.CursorKey)
-	h.Write(b)
-	b = append(b, h.Sum(nil)...)
+	mac, e := s.cursorDigest(b)
+	if e != nil {
+		return nil, e
+	}
+	b = append(b, mac...)
 	return new(base64.RawURLEncoding.EncodeToString(b)), nil
 }
 func limit(n, def int) (int, error) {

@@ -38,12 +38,19 @@ func (s *Service) batchSession(ctx context.Context, req Request, org string, wri
 }
 
 func (s *Service) financialDigest(domain string, raw []byte) ([]byte, error) {
-	if len(s.DigestKey) < 32 || domain == "" {
+	if domain == "" {
+		return nil, fault.Unavailable
+	}
+	frame := append([]byte("teamledger-financial-digest\x00"+domain+"\x00"), raw...)
+	defer clear(frame)
+	if s.CommandMAC != nil {
+		return s.CommandMAC(frame)
+	}
+	if len(s.DigestKey) < 32 {
 		return nil, fault.Unavailable
 	}
 	mac := hmac.New(sha256.New, s.DigestKey)
-	_, _ = mac.Write([]byte("teamledger-financial-digest\x00" + domain + "\x00"))
-	_, _ = mac.Write(raw)
+	_, _ = mac.Write(frame)
 	return mac.Sum(nil), nil
 }
 
@@ -936,12 +943,28 @@ func (s *Service) resolveBatchBasis(ctx context.Context, batch BatchRecord, line
 		return BatchLineBasis{}, fault.Invalid
 	}
 	staffCode, ok := organization.NormalizeStaffCode(line.StaffCode)
-	if !ok || len(s.DigestKey) < 32 {
+	if !ok {
 		return BatchLineBasis{}, fault.Invalid
 	}
-	mac := hmac.New(sha256.New, s.DigestKey)
-	_, _ = mac.Write([]byte("staff-code\x00" + batch.OrgID + "\x00" + staffCode))
-	workforce, err := s.Batches.AdjustmentWorkforceBasis(ctx, batch.OrgID, line.EmployeeID, mac.Sum(nil), effective)
+	frame := []byte("staff-code\x00" + batch.OrgID + "\x00" + staffCode)
+	var lookup []byte
+	var lookupKeyID, lookupVersion = "legacy-process-key", uint32(1)
+	if s.StaffCodeMAC != nil {
+		value, macErr := s.StaffCodeMAC(ctx, frame)
+		if macErr != nil || value.Version == 0 || value.KeyID == "" || len(value.Digest) != sha256.Size {
+			clear(value.Digest)
+			return BatchLineBasis{}, fault.Unavailable
+		}
+		lookup, lookupKeyID, lookupVersion = value.Digest, value.KeyID, value.Version
+	} else {
+		if len(s.DigestKey) < 32 {
+			return BatchLineBasis{}, fault.Invalid
+		}
+		mac := hmac.New(sha256.New, s.DigestKey)
+		_, _ = mac.Write(frame)
+		lookup = mac.Sum(nil)
+	}
+	workforce, err := s.Batches.AdjustmentWorkforceBasis(ctx, batch.OrgID, line.EmployeeID, lookupKeyID, lookupVersion, lookup, effective)
 	if err != nil {
 		return BatchLineBasis{}, err
 	}

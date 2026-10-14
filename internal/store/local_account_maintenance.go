@@ -45,7 +45,7 @@ func (r *Repository) CreateLocalAccount(ctx context.Context, input LocalAccountP
 	if _, err = tx.ExecContext(ctx, q.sql("INSERT INTO local_credential(account_id,pepper_key_id,pepper_version,password_phc,revision,updated_at) VALUES(?,?,?,?,1,?)", "INSERT INTO local_credential(account_id,pepper_key_id,pepper_version,password_phc,revision,updated_at) VALUES($1,$2,$3,$4,1,$5)"), input.AccountID, input.PepperKey.KeyID, input.PepperKey.Version, input.PasswordPHC, at); err != nil {
 		return safeError(err)
 	}
-	if _, err = tx.ExecContext(ctx, q.sql("INSERT INTO subject_identity(digest,key_version,org_id,subject_id,active) VALUES(?,1,?,?,1)", "INSERT INTO subject_identity(digest,key_version,org_id,subject_id,active) VALUES($1,1,$2,$3,true)"), input.UsernameDigest, input.OrgID, input.SubjectID); err != nil {
+	if _, err = tx.ExecContext(ctx, q.sql("INSERT INTO subject_identity(digest,key_id,key_version,org_id,subject_id,active) VALUES(?,?,?,?,?,1)", "INSERT INTO subject_identity(digest,key_id,key_version,org_id,subject_id,active) VALUES($1,$2,$3,$4,$5,true)"), input.UsernameDigest, input.UsernameKey.KeyID, input.UsernameKey.Version, input.OrgID, input.SubjectID); err != nil {
 		return safeError(err)
 	}
 	actor, err := currentMaintenancePrincipal()

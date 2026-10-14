@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/r404r/team-ledger/internal/fault"
+	"github.com/r404r/team-ledger/internal/sensitive"
 )
 
 type OIDCConfig struct {
@@ -45,8 +46,10 @@ type Transaction struct {
 type Identity struct {
 	Digest           []byte
 	KeyVersion       int
+	KeyID, MappingID string
 	OrgID, SubjectID string
 	EmployeeID       string // Optional, explicitly approved employment correspondence.
+	Source           sensitive.Envelope
 	Active           bool
 }
 type Session struct {
@@ -61,6 +64,9 @@ type SessionIssue struct {
 	Now, ExpiresAt, IdleExpiresAt, MFAUntil, AuthTime time.Time
 	ACR                                               string
 	AMR                                               []string
+	CSRFKeyID                                         string
+	IdentityKeyID                                     string
+	CSRFVersion, IdentityVersion                      uint32
 	RequestID                                         string
 }
 

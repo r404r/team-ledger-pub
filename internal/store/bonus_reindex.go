@@ -50,7 +50,7 @@ func (r *Repository) ReindexBonusPaymentHMAC(ctx context.Context, org string, ta
 				r.blockBonusHMACReindex(ctx, org, state.snapshotID.String)
 				return fault.Unavailable
 			}
-			if e = r.stageBonusHMACDigest(ctx, org, state.snapshotID.String, targetVersion, payment, computed); e != nil {
+			if e = r.stageBonusHMACDigest(ctx, org, state.snapshotID.String, targetKeyID, targetVersion, payment, computed); e != nil {
 				r.blockBonusHMACReindex(ctx, org, state.snapshotID.String)
 				return e
 			}
@@ -153,7 +153,7 @@ func bonusPaymentManifest(ctx context.Context, t *transaction, org string) ([]by
 }
 
 func (r *Repository) pendingBonusHMACPayments(ctx context.Context, org, snapshot string) ([]compensation.BonusPaymentRecord, error) {
-	rows, err := r.DB.QueryContext(ctx, r.sql("SELECT p.org_id,p.employee_id,p.id,p.payload_id,p.kind,p.paid_date,p.business_source,p.award_id,p.original_payment_id,p.business_key_version,p.basis_revision,p.business_digest,p.recorded_at FROM bonus_payment p LEFT JOIN bonus_payment_business_index_staging s ON s.org_id=p.org_id AND s.snapshot_id=? AND s.payment_id=p.id WHERE p.org_id=? AND s.payment_id IS NULL ORDER BY p.employee_id,p.id LIMIT 100", "SELECT p.org_id,p.employee_id,p.id,p.payload_id,p.kind,p.paid_date::text,p.business_source,p.award_id,p.original_payment_id,p.business_key_version,p.basis_revision,p.business_digest,p.recorded_at FROM bonus_payment p LEFT JOIN bonus_payment_business_index_staging s ON s.org_id=p.org_id AND s.snapshot_id=$1 AND s.payment_id=p.id WHERE p.org_id=$2 AND s.payment_id IS NULL ORDER BY p.employee_id,p.id LIMIT 100"), snapshot, org)
+	rows, err := r.DB.QueryContext(ctx, r.sql("SELECT p.org_id,p.employee_id,p.id,p.payload_id,p.kind,p.paid_date,p.business_source,p.award_id,p.original_payment_id,p.business_key_id,p.business_key_version,p.basis_revision,p.business_digest,p.recorded_at FROM bonus_payment p LEFT JOIN bonus_payment_business_index_staging s ON s.org_id=p.org_id AND s.snapshot_id=? AND s.payment_id=p.id WHERE p.org_id=? AND s.payment_id IS NULL ORDER BY p.employee_id,p.id LIMIT 100", "SELECT p.org_id,p.employee_id,p.id,p.payload_id,p.kind,p.paid_date::text,p.business_source,p.award_id,p.original_payment_id,p.business_key_id,p.business_key_version,p.basis_revision,p.business_digest,p.recorded_at FROM bonus_payment p LEFT JOIN bonus_payment_business_index_staging s ON s.org_id=p.org_id AND s.snapshot_id=$1 AND s.payment_id=p.id WHERE p.org_id=$2 AND s.payment_id IS NULL ORDER BY p.employee_id,p.id LIMIT 100"), snapshot, org)
 	if err != nil {
 		return nil, safeError(err)
 	}
@@ -169,14 +169,14 @@ func (r *Repository) pendingBonusHMACPayments(ctx context.Context, org, snapshot
 	return out, safeError(rows.Err())
 }
 
-func (r *Repository) stageBonusHMACDigest(ctx context.Context, org, snapshot string, targetVersion int64, payment compensation.BonusPaymentRecord, digest []byte) error {
+func (r *Repository) stageBonusHMACDigest(ctx context.Context, org, snapshot, targetKeyID string, targetVersion int64, payment compensation.BonusPaymentRecord, digest []byte) error {
 	return r.WithTx(ctx, org, func(raw organization.Tx) error {
 		t := raw.(*transaction)
 		var marker string
-		if err := t.tx.QueryRowContext(ctx, t.structureSQL("SELECT state FROM hmac_index_state WHERE org_id=? AND domain='bonus_payment' AND snapshot_id=? AND target_version=?"), org, snapshot, targetVersion).Scan(&marker); err != nil || marker != "migrating" {
+		if err := t.tx.QueryRowContext(ctx, t.structureSQL("SELECT state FROM hmac_index_state WHERE org_id=? AND domain='bonus_payment' AND snapshot_id=? AND target_key_id=? AND target_version=?"), org, snapshot, targetKeyID, targetVersion).Scan(&marker); err != nil || marker != "migrating" {
 			return fault.Conflict
 		}
-		if _, err := t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO bonus_payment_business_index_staging(org_id,employee_id,domain,snapshot_id,key_version,digest,payment_id) VALUES(?,?,'bonus_payment',?,?,?,?)"), org, payment.EmployeeID, snapshot, targetVersion, digest, payment.ID); err != nil {
+		if _, err := t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO bonus_payment_business_index_staging(org_id,employee_id,domain,snapshot_id,key_id,key_version,digest,payment_id) VALUES(?,?,'bonus_payment',?,?,?,?,?)"), org, payment.EmployeeID, snapshot, targetKeyID, targetVersion, digest, payment.ID); err != nil {
 			return safeError(err)
 		}
 		_, err := t.tx.ExecContext(ctx, t.structureSQL("UPDATE hmac_index_state SET checkpoint=? WHERE org_id=? AND domain='bonus_payment' AND snapshot_id=?"), payment.ID, org, snapshot)
@@ -223,7 +223,7 @@ func (r *Repository) finishBonusHMACReindex(ctx context.Context, org, snapshot s
 		if _, err = t.tx.ExecContext(ctx, t.structureSQL("DELETE FROM bonus_payment_business_index WHERE org_id=?"), org); err != nil {
 			return safeError(err)
 		}
-		if _, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO bonus_payment_business_index(org_id,employee_id,domain,key_version,digest,payment_id) SELECT org_id,employee_id,domain,key_version,digest,payment_id FROM bonus_payment_business_index_staging WHERE org_id=? AND snapshot_id=?"), org, snapshot); err != nil {
+		if _, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO bonus_payment_business_index(org_id,employee_id,domain,key_id,key_version,digest,payment_id) SELECT org_id,employee_id,domain,key_id,key_version,digest,payment_id FROM bonus_payment_business_index_staging WHERE org_id=? AND snapshot_id=?"), org, snapshot); err != nil {
 			return safeError(err)
 		}
 		if _, err = t.tx.ExecContext(ctx, t.structureSQL("DELETE FROM bonus_payment_business_index_staging WHERE org_id=? AND snapshot_id=?"), org, snapshot); err != nil {

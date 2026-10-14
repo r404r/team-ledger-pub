@@ -35,7 +35,7 @@ func (t *transaction) SaveWorkforceReceipt(ctx context.Context, org, subject, op
 	if err != nil {
 		return fault.Invalid
 	}
-	_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO workforce_command_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_change_id,graph_revision,catalog_revision,result_json) VALUES(?,?,?,?,?,1,?,?,?,?)"), org, subject, operation, key, receipt.Digest, receipt.Result.ID, receipt.Result.GraphRevision, receipt.Result.CatalogRevision, string(encoded))
+	_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO workforce_command_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_change_id,graph_revision,catalog_revision,result_json,digest_key_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)"), org, subject, operation, key, receipt.Digest, t.commandMACKey.Version, receipt.Result.ID, receipt.Result.GraphRevision, receipt.Result.CatalogRevision, string(encoded), t.commandMACKey.KeyID)
 	return safeError(err)
 }
 
@@ -213,17 +213,17 @@ func (t *transaction) applyWorkforceItem(ctx context.Context, org, changeID stri
 	}
 	switch command.Kind {
 	case "identifier":
-		result, insertErr := t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO employee_identifier_owner(org_id,kind,key_version,digest,employee_id,claimed_at) VALUES(?,'staff_code',1,?,?,?) ON CONFLICT(org_id,kind,key_version,digest) DO NOTHING"), org, item.Digest, command.EmployeeID, t.bindTime(recordedAt))
+		result, insertErr := t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO employee_identifier_owner(org_id,kind,key_id,key_version,digest,employee_id,claimed_at) VALUES(?,'staff_code',?,?,?,?,?) ON CONFLICT(org_id,kind,key_version,digest) DO NOTHING"), org, item.DigestKeyID, item.DigestKeyVersion, item.Digest, command.EmployeeID, t.bindTime(recordedAt))
 		if insertErr != nil {
 			return safeError(insertErr)
 		}
 		if n, _ := result.RowsAffected(); n == 0 {
 			var owner string
-			if err = t.tx.QueryRowContext(ctx, t.structureSQL("SELECT employee_id FROM employee_identifier_owner WHERE org_id=? AND kind='staff_code' AND key_version=1 AND digest=?"), org, item.Digest).Scan(&owner); err != nil || owner != command.EmployeeID {
+			if err = t.tx.QueryRowContext(ctx, t.structureSQL("SELECT employee_id FROM employee_identifier_owner WHERE org_id=? AND kind='staff_code' AND key_version=? AND digest=?"), org, item.DigestKeyVersion, item.Digest).Scan(&owner); err != nil || owner != command.EmployeeID {
 				return fault.Conflict
 			}
 		}
-		_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO employee_business_identifier(org_id,id,employee_id,kind,lookup_key_version,lookup_digest,payload_id,valid_from,valid_to,recorded_at,change_id,revision,supersedes_id) VALUES(?,?,?,'staff_code',1,?,?,?,?,?,?,?,?)"), org, item.ID, command.EmployeeID, item.Digest, item.Payload.ID, *command.ValidFrom, nullablePointer(command.ValidTo), t.bindTime(recordedAt), changeID, revision, supersedes)
+		_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO employee_business_identifier(org_id,id,employee_id,kind,lookup_key_id,lookup_key_version,lookup_digest,payload_id,valid_from,valid_to,recorded_at,change_id,revision,supersedes_id) VALUES(?,?,?,'staff_code',?,?,?,?,?,?,?,?,?,?)"), org, item.ID, command.EmployeeID, item.DigestKeyID, item.DigestKeyVersion, item.Digest, item.Payload.ID, *command.ValidFrom, nullablePointer(command.ValidTo), t.bindTime(recordedAt), changeID, revision, supersedes)
 	case "employment":
 		_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO employment_spell(org_id,id,employee_id,legal_entity_id,location_code,kind,valid_from,valid_to,recorded_at,change_id,revision,supersedes_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)"), org, item.ID, command.EmployeeID, *command.LegalEntityID, *command.LocationCode, *command.EmploymentKind, *command.ValidFrom, nullablePointer(command.ValidTo), t.bindTime(recordedAt), changeID, revision, supersedes)
 	case "education":

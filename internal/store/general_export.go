@@ -41,6 +41,6 @@ func (t *transaction) SaveExportReceipt(ctx context.Context, org, subject, purpo
 	if org != t.org || len(receipt.Digest) != 32 {
 		return fault.Invalid
 	}
-	_, err := t.tx.ExecContext(ctx, t.sql("INSERT INTO general_export_receipt(org_id,subject_id,purpose,key,digest,export_id,created_at) VALUES(?,?,?,?,?,?,?)", "INSERT INTO general_export_receipt(org_id,subject_id,purpose,key,digest,export_id,created_at) VALUES($1,$2,$3,$4,$5,$6,$7)"), org, subject, purpose, key, receipt.Digest, receipt.ExportID, t.bindTime(at))
+	_, err := t.tx.ExecContext(ctx, t.sql("INSERT INTO general_export_receipt(org_id,subject_id,purpose,key,digest,export_id,created_at,digest_key_id,digest_key_version) VALUES(?,?,?,?,?,?,?,?,?)", "INSERT INTO general_export_receipt(org_id,subject_id,purpose,key,digest,export_id,created_at,digest_key_id,digest_key_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)"), org, subject, purpose, key, receipt.Digest, receipt.ExportID, t.bindTime(at), t.commandMACKey.KeyID, t.commandMACKey.Version)
 	return safeError(err)
 }

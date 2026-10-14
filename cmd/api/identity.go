@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -16,7 +15,7 @@ import (
 	"github.com/r404r/team-ledger/internal/identity"
 )
 
-func identityConfiguration(origin string, csrf, digest, cursor, idKey, txKey []byte) (string, *identity.OIDCConfig, func(), error) {
+func identityConfiguration(origin string, txKey []byte) (string, *identity.OIDCConfig, func(), error) {
 	names := []string{"OIDC_ISSUER", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET_FILE", "OIDC_MFA_ACR", "OIDC_MFA_AMR", "OIDC_CA_FILE"}
 	mode := os.Getenv("TEAMLEDGER_IDENTITY_MODE")
 	if mode != "local" && mode != "oidc" {
@@ -42,7 +41,7 @@ func identityConfiguration(origin string, csrf, digest, cursor, idKey, txKey []b
 	if e != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawPath != "" || (u.Path != "" && u.Path != "/") {
 		return "", nil, nil, errors.New("invalid identity origin")
 	}
-	if len(idKey) != 32 || len(txKey) != 32 || bytes.Equal(idKey, txKey) || bytes.Equal(idKey, csrf) || bytes.Equal(idKey, digest) || bytes.Equal(idKey, cursor) || bytes.Equal(txKey, csrf) || bytes.Equal(txKey, digest) || bytes.Equal(txKey, cursor) {
+	if len(txKey) != 32 {
 		return "", nil, nil, errors.New("keys must be distinct")
 	}
 	secretBytes, e := configfile.Read(values["OIDC_CLIENT_SECRET_FILE"], 4096, true)
@@ -66,6 +65,6 @@ func identityConfiguration(origin string, csrf, digest, cursor, idKey, txKey []b
 	}
 	transport := &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}, TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: 5 * time.Second, MaxResponseHeaderBytes: 16 << 10, MaxConnsPerHost: 8, MaxIdleConns: 8, IdleConnTimeout: 30 * time.Second}
 	client := &http.Client{Transport: transport, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect refused") }}
-	config := &identity.OIDCConfig{Issuer: values["OIDC_ISSUER"], ClientID: values["OIDC_CLIENT_ID"], ClientSecret: clientSecret, RedirectURI: strings.TrimSuffix(origin, "/") + "/api/v1/auth/callback", HTTPClient: client, IdentityKey: idKey, TransactionKey: txKey, MFAACR: values["OIDC_MFA_ACR"], MFAAMR: strings.Split(values["OIDC_MFA_AMR"], ",")}
+	config := &identity.OIDCConfig{Issuer: values["OIDC_ISSUER"], ClientID: values["OIDC_CLIENT_ID"], ClientSecret: clientSecret, RedirectURI: strings.TrimSuffix(origin, "/") + "/api/v1/auth/callback", HTTPClient: client, TransactionKey: txKey, MFAACR: values["OIDC_MFA_ACR"], MFAAMR: strings.Split(values["OIDC_MFA_AMR"], ",")}
 	return mode, config, transport.CloseIdleConnections, nil
 }

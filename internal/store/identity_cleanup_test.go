@@ -14,6 +14,7 @@ import (
 
 	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/identity"
+	"github.com/r404r/team-ledger/internal/sensitive"
 	"github.com/r404r/team-ledger/internal/testsupport"
 	"github.com/r404r/team-ledger/internal/value"
 )
@@ -163,7 +164,7 @@ func TestOIDCTransactionCleanupExactExpiryPreservesConsumedProofAndIssuance(t *t
 			if err = f.Repo.BindIdentity(ctx, mapping, value.NewID(), f.Now); err != nil {
 				t.Fatal(err)
 			}
-			issue := identity.SessionIssue{Transaction: proof, IdentityDigest: digest, TokenHash: bytes.Repeat([]byte{74}, 32), CSRFHash: bytes.Repeat([]byte{75}, 32), Now: f.Now, ExpiresAt: f.Now.Add(8 * time.Hour), IdleExpiresAt: f.Now.Add(30 * time.Minute), RequestID: value.NewID()}
+			issue := identity.SessionIssue{Transaction: proof, IdentityDigest: digest, IdentityKeyID: "legacy-process-key", IdentityVersion: 1, TokenHash: bytes.Repeat([]byte{74}, 32), CSRFHash: bytes.Repeat([]byte{75}, 32), CSRFKeyID: "00000000-0000-7000-8000-000000000001", CSRFVersion: 1, Now: f.Now, ExpiresAt: f.Now.Add(8 * time.Hour), IdleExpiresAt: f.Now.Add(30 * time.Minute), RequestID: value.NewID()}
 			if err = f.Repo.IssueSession(ctx, issue); err != nil {
 				t.Fatal("surviving consumed proof must still issue a mapped session:", err)
 			}
@@ -254,7 +255,7 @@ func TestOIDCTransactionBeginCleanupPreservesInFlightSignedCallbackAndSealedNonc
 			t.Cleanup(idp.Close)
 			idp.Now = func() time.Time { return f.Now }
 			cfg := identity.OIDCConfig{Issuer: idp.Server.URL, ClientID: idp.ClientID, ClientSecret: idp.ClientSecret, RedirectURI: f.Server.URL + "/api/v1/auth/callback", HTTPClient: idp.Client(), IdentityKey: bytes.Repeat([]byte{77}, 32), TransactionKey: bytes.Repeat([]byte{78}, 32)}
-			svc, err := identity.New(ctx, f.Repo, f.CSRFKey, &cfg)
+			svc, err := identity.New(ctx, f.Repo, testsupport.MACKeys{Key: f.CSRFKey, DomainKeys: map[sensitive.KeyDomain][]byte{sensitive.DomainIdentitySubjectLookup: cfg.IdentityKey}}, &cfg)
 			if err != nil {
 				t.Fatal(err)
 			}

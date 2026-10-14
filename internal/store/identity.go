@@ -202,14 +202,14 @@ func (r *Repository) ConsumeOIDCTransaction(ctx context.Context, state, binding 
 }
 func (q reader) identityMapping(ctx context.Context, digest []byte) (identity.Identity, error) {
 	var m identity.Identity
-	err := q.db.QueryRowContext(ctx, q.sql("SELECT digest,key_version,org_id,subject_id,active FROM subject_identity WHERE digest=?", "SELECT digest,key_version,org_id,subject_id,active FROM subject_identity WHERE digest=$1"), digest).Scan(&m.Digest, &m.KeyVersion, &m.OrgID, &m.SubjectID, &m.Active)
+	err := q.db.QueryRowContext(ctx, q.sql("SELECT digest,key_id,key_version,org_id,subject_id,active FROM subject_identity WHERE digest=?", "SELECT digest,key_id,key_version,org_id,subject_id,active FROM subject_identity WHERE digest=$1"), digest).Scan(&m.Digest, &m.KeyID, &m.KeyVersion, &m.OrgID, &m.SubjectID, &m.Active)
 	if errors.Is(err, sql.ErrNoRows) {
 		return m, fault.Unauthenticated
 	}
 	if err != nil {
 		return m, safeError(err)
 	}
-	if m.KeyVersion != 1 || !m.Active {
+	if m.KeyVersion <= 0 || m.KeyID == "" || !m.Active {
 		return m, fault.Unauthenticated
 	}
 	return m, nil
@@ -220,10 +220,11 @@ func (q reader) currentIdentitySession(ctx context.Context, hash []byte, now tim
 	var active, revoked bool
 	var epoch int64
 	var mappingActive sql.NullBool
-	var authVersion sql.NullInt64
+	var authVersion, mappingVersion sql.NullInt64
+	var authKeyID, mappingKeyID sql.NullString
 	err := q.db.QueryRowContext(ctx, q.sql(
-		"SELECT s.token_hash,s.org_id,s.subject_id,s.subject_epoch,s.expires_at,s.idle_expires_at,u.active,u.auth_epoch,s.revoked,a.identity_digest,m.active,a.key_version FROM session s JOIN subject u ON u.org_id=s.org_id AND u.id=s.subject_id LEFT JOIN session_auth a ON a.token_hash=s.token_hash AND a.org_id=s.org_id AND a.subject_id=s.subject_id LEFT JOIN subject_identity m ON m.digest=a.identity_digest AND m.org_id=s.org_id AND m.subject_id=s.subject_id WHERE s.token_hash=?",
-		"SELECT s.token_hash,s.org_id,s.subject_id,s.subject_epoch,s.expires_at,s.idle_expires_at,u.active,u.auth_epoch,s.revoked,a.identity_digest,m.active,a.key_version FROM session s JOIN subject u ON u.org_id=s.org_id AND u.id=s.subject_id LEFT JOIN session_auth a ON a.token_hash=s.token_hash AND a.org_id=s.org_id AND a.subject_id=s.subject_id LEFT JOIN subject_identity m ON m.digest=a.identity_digest AND m.org_id=s.org_id AND m.subject_id=s.subject_id WHERE s.token_hash=$1"), hash).Scan(&s.Hash, &s.OrgID, &s.SubjectID, &s.Epoch, &expires, &idle, &active, &epoch, &revoked, &s.IdentityDigest, &mappingActive, &authVersion)
+		"SELECT s.token_hash,s.org_id,s.subject_id,s.subject_epoch,s.expires_at,s.idle_expires_at,u.active,u.auth_epoch,s.revoked,a.identity_digest,m.active,a.identity_key_id,a.key_version,m.key_id,m.key_version FROM session s JOIN subject u ON u.org_id=s.org_id AND u.id=s.subject_id LEFT JOIN session_auth a ON a.token_hash=s.token_hash AND a.org_id=s.org_id AND a.subject_id=s.subject_id LEFT JOIN subject_identity m ON m.digest=a.identity_digest AND m.org_id=s.org_id AND m.subject_id=s.subject_id WHERE s.token_hash=?",
+		"SELECT s.token_hash,s.org_id,s.subject_id,s.subject_epoch,s.expires_at,s.idle_expires_at,u.active,u.auth_epoch,s.revoked,a.identity_digest,m.active,a.identity_key_id,a.key_version,m.key_id,m.key_version FROM session s JOIN subject u ON u.org_id=s.org_id AND u.id=s.subject_id LEFT JOIN session_auth a ON a.token_hash=s.token_hash AND a.org_id=s.org_id AND a.subject_id=s.subject_id LEFT JOIN subject_identity m ON m.digest=a.identity_digest AND m.org_id=s.org_id AND m.subject_id=s.subject_id WHERE s.token_hash=$1"), hash).Scan(&s.Hash, &s.OrgID, &s.SubjectID, &s.Epoch, &expires, &idle, &active, &epoch, &revoked, &s.IdentityDigest, &mappingActive, &authKeyID, &authVersion, &mappingKeyID, &mappingVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return s, fault.Unauthenticated
 	}
@@ -231,7 +232,7 @@ func (q reader) currentIdentitySession(ctx context.Context, hash []byte, now tim
 		return identity.Session{}, safeError(err)
 	}
 	s.ExpiresAt, s.IdleExpiresAt = expires.Time, idle.Time
-	if !active || revoked || s.Epoch != epoch || !s.ExpiresAt.After(now) || !s.IdleExpiresAt.After(now) || len(s.IdentityDigest) != 0 && (!mappingActive.Valid || !mappingActive.Bool || !authVersion.Valid || authVersion.Int64 != 1) {
+	if !active || revoked || s.Epoch != epoch || !s.ExpiresAt.After(now) || !s.IdleExpiresAt.After(now) || len(s.IdentityDigest) != 0 && (!mappingActive.Valid || !mappingActive.Bool || !authVersion.Valid || !mappingVersion.Valid || authVersion.Int64 != mappingVersion.Int64 || !authKeyID.Valid || !mappingKeyID.Valid || authKeyID.String != mappingKeyID.String) {
 		return identity.Session{}, fault.Unauthenticated
 	}
 	return s, nil
@@ -246,7 +247,7 @@ func sameTransaction(a, b identity.Transaction) bool {
 	return bytes.Equal(a.StateHash, b.StateHash) && bytes.Equal(a.BindingHash, b.BindingHash) && bytes.Equal(a.Sealed, b.Sealed) && a.CreatedAt.Equal(b.CreatedAt) && a.ExpiresAt.Equal(b.ExpiresAt) && a.Mode == b.Mode && a.Action == b.Action && a.ReturnTo == b.ReturnTo && bytes.Equal(a.PreviousHash, b.PreviousHash) && a.ExpectedOrg == b.ExpectedOrg && a.ExpectedSubject == b.ExpectedSubject && a.ExpectedEpoch == b.ExpectedEpoch && bytes.Equal(a.ExpectedIdentity, b.ExpectedIdentity)
 }
 func (r *Repository) IssueSession(ctx context.Context, issue identity.SessionIssue) error {
-	if len(issue.TokenHash) != 32 || len(issue.CSRFHash) != 32 || len(issue.IdentityDigest) != 32 || !value.ValidID(issue.RequestID) || !issue.ExpiresAt.Equal(issue.Now.Add(8*time.Hour)) || !issue.IdleExpiresAt.Equal(issue.Now.Add(30*time.Minute)) {
+	if len(issue.TokenHash) != 32 || len(issue.CSRFHash) != 32 || issue.CSRFKeyID == "" || len(issue.IdentityDigest) != 32 || issue.IdentityKeyID == "" || issue.CSRFVersion == 0 || issue.IdentityVersion == 0 || !value.ValidID(issue.RequestID) || !issue.ExpiresAt.Equal(issue.Now.Add(8*time.Hour)) || !issue.IdleExpiresAt.Equal(issue.Now.Add(30*time.Minute)) {
 		return fault.Invalid
 	}
 	mapping, err := r.read().identityMapping(ctx, issue.IdentityDigest)
@@ -263,7 +264,7 @@ func (r *Repository) IssueSession(ctx context.Context, issue identity.SessionIss
 		if err != nil {
 			return err
 		}
-		if current.OrgID != mapping.OrgID || current.SubjectID != mapping.SubjectID {
+		if current.OrgID != mapping.OrgID || current.SubjectID != mapping.SubjectID || current.KeyID != issue.IdentityKeyID || current.KeyVersion != int(issue.IdentityVersion) {
 			return fault.Unauthenticated
 		}
 		proof, consumed, issued, err := q.oidcTransaction(ctx, t.StateHash)
@@ -299,8 +300,8 @@ func (r *Repository) IssueSession(ctx context.Context, issue identity.SessionIss
 			return fault.Unauthenticated
 		}
 		if _, err = q.db.ExecContext(ctx, q.sql(
-			"INSERT INTO session(token_hash,org_id,subject_id,subject_epoch,expires_at,idle_expires_at,mfa_until,revoked,csrf_hash,csrf_version) VALUES(?,?,?,?,?,?,?,0,?,1)",
-			"INSERT INTO session(token_hash,org_id,subject_id,subject_epoch,expires_at,idle_expires_at,mfa_until,revoked,csrf_hash,csrf_version) VALUES($1,$2,$3,$4,$5,$6,$7,false,$8,1)"), issue.TokenHash, current.OrgID, current.SubjectID, epoch, r.BindTime(issue.ExpiresAt), r.BindTime(issue.IdleExpiresAt), r.BindTime(issue.MFAUntil), issue.CSRFHash); err != nil {
+			"INSERT INTO session(token_hash,org_id,subject_id,subject_epoch,expires_at,idle_expires_at,mfa_until,revoked,csrf_hash,csrf_key_id,csrf_version) VALUES(?,?,?,?,?,?,?,0,?,?,?)",
+			"INSERT INTO session(token_hash,org_id,subject_id,subject_epoch,expires_at,idle_expires_at,mfa_until,revoked,csrf_hash,csrf_key_id,csrf_version) VALUES($1,$2,$3,$4,$5,$6,$7,false,$8,$9,$10)"), issue.TokenHash, current.OrgID, current.SubjectID, epoch, r.BindTime(issue.ExpiresAt), r.BindTime(issue.IdleExpiresAt), r.BindTime(issue.MFAUntil), issue.CSRFHash, issue.CSRFKeyID, issue.CSRFVersion); err != nil {
 			return safeError(err)
 		}
 		amr, err := json.Marshal(issue.AMR)
@@ -312,8 +313,8 @@ func (r *Repository) IssueSession(ctx context.Context, issue identity.SessionIss
 			authTime = r.BindTime(issue.AuthTime)
 		}
 		if _, err = q.db.ExecContext(ctx, q.sql(
-			"INSERT INTO session_auth(token_hash,org_id,subject_id,identity_digest,key_version,created_at,auth_time,acr,amr_json) VALUES(?,?,?,?,1,?,?,?,?)",
-			"INSERT INTO session_auth(token_hash,org_id,subject_id,identity_digest,key_version,created_at,auth_time,acr,amr_json) VALUES($1,$2,$3,$4,1,$5,$6,$7,$8)"), issue.TokenHash, current.OrgID, current.SubjectID, issue.IdentityDigest, r.BindTime(issue.Now), authTime, issue.ACR, string(amr)); err != nil {
+			"INSERT INTO session_auth(token_hash,org_id,subject_id,identity_digest,identity_key_id,key_version,created_at,auth_time,acr,amr_json) VALUES(?,?,?,?,?,?,?,?,?,?)",
+			"INSERT INTO session_auth(token_hash,org_id,subject_id,identity_digest,identity_key_id,key_version,created_at,auth_time,acr,amr_json) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"), issue.TokenHash, current.OrgID, current.SubjectID, issue.IdentityDigest, issue.IdentityKeyID, issue.IdentityVersion, r.BindTime(issue.Now), authTime, issue.ACR, string(amr)); err != nil {
 			return safeError(err)
 		}
 		result, err := q.db.ExecContext(ctx, q.sql("UPDATE oidc_transaction SET issued_hash=? WHERE state_hash=? AND consumed=1 AND issued_hash IS NULL", "UPDATE oidc_transaction SET issued_hash=$1 WHERE state_hash=$2 AND consumed=true AND issued_hash IS NULL"), issue.TokenHash, t.StateHash)
@@ -375,7 +376,14 @@ func (r *Repository) AuditIdentityDenied(ctx context.Context, operation, request
 	return r.AuditDenied(ctx, organization.Audit{ID: value.NewID(), Operation: operation, RequestID: requestID, At: now})
 }
 func validMapping(m identity.Identity, requestID string) bool {
-	return len(m.Digest) == 32 && m.KeyVersion == 1 && value.ValidID(m.OrgID) && value.ValidID(m.SubjectID) && value.ValidID(requestID) && (m.EmployeeID == "" || value.ValidID(m.EmployeeID))
+	if len(m.Digest) != 32 || m.KeyVersion <= 0 || value.ValidID(m.OrgID) == false || value.ValidID(m.SubjectID) == false || value.ValidID(requestID) == false || m.EmployeeID != "" && !value.ValidID(m.EmployeeID) {
+		return false
+	}
+	if m.MappingID == "" {
+		return len(m.Source.SealedBytes) == 0
+	}
+	c := m.Source.Context
+	return value.ValidID(m.MappingID) && m.KeyID != "" && c.OrgID == m.OrgID && c.RecordID == m.MappingID && c.VersionID == m.MappingID && c.ObjectKind == "identity_mapping" && c.Purpose == "identity" && c.SchemaType == "identity.mapping.v1" && c.SchemaVersion == 1 && m.Source.FormatVersion == 1 && m.Source.Algorithm == "A256GCM-RANDOMNONCE" && m.Source.DEKID != "" && m.Source.Key.KEKID != "" && m.Source.Key.Version > 0 && len(m.Source.Key.Data) > 0 && len(m.Source.SealedBytes) > 0
 }
 
 type maintenancePrincipal struct {
@@ -428,8 +436,18 @@ func (r *Repository) BindIdentity(ctx context.Context, m identity.Identity, requ
 		if !active {
 			return fault.Forbidden
 		}
-		if _, err := q.db.ExecContext(ctx, q.sql("INSERT INTO subject_identity(digest,key_version,org_id,subject_id,active) VALUES(?,1,?,?,0) ON CONFLICT(digest) DO NOTHING", "INSERT INTO subject_identity(digest,key_version,org_id,subject_id,active) VALUES($1,1,$2,$3,false) ON CONFLICT(digest) DO NOTHING"), m.Digest, m.OrgID, m.SubjectID); err != nil {
+		keyID := m.KeyID
+		if keyID == "" {
+			keyID = "legacy-process-key"
+		}
+		if _, err := q.db.ExecContext(ctx, q.sql("INSERT INTO subject_identity(digest,key_id,key_version,org_id,subject_id,active) VALUES(?,?,?,?,?,0) ON CONFLICT(digest) DO NOTHING", "INSERT INTO subject_identity(digest,key_id,key_version,org_id,subject_id,active) VALUES($1,$2,$3,$4,$5,false) ON CONFLICT(digest) DO NOTHING"), m.Digest, keyID, m.KeyVersion, m.OrgID, m.SubjectID); err != nil {
 			return safeError(err)
+		}
+		if m.MappingID != "" {
+			c, e := m.Source.Context, m.Source
+			if _, err := q.db.ExecContext(ctx, q.sql("INSERT INTO identity_mapping_source(mapping_id,digest,org_id,subject_id,key_id,key_version,record_id,version_id,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(digest) DO NOTHING", "INSERT INTO identity_mapping_source(mapping_id,digest,org_id,subject_id,key_id,key_version,record_id,version_id,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT(digest) DO NOTHING"), m.MappingID, m.Digest, m.OrgID, m.SubjectID, m.KeyID, m.KeyVersion, c.RecordID, c.VersionID, c.Purpose, c.SchemaType, c.SchemaVersion, e.FormatVersion, e.Algorithm, e.DEKID, e.Key.KEKID, e.Key.Version, e.Key.Data, e.SealedBytes, r.BindTime(now)); err != nil {
+				return safeError(err)
+			}
 		}
 		var org, subject string
 		if err := q.db.QueryRowContext(ctx, q.sql("SELECT org_id,subject_id,active FROM subject_identity WHERE digest=?", "SELECT org_id,subject_id,active FROM subject_identity WHERE digest=$1 FOR UPDATE"), m.Digest).Scan(&org, &subject, &active); err != nil {

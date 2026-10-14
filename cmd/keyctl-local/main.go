@@ -13,6 +13,8 @@ import (
 
 	"github.com/r404r/team-ledger/internal/configfile"
 	"github.com/r404r/team-ledger/internal/sensitive"
+	"github.com/r404r/team-ledger/internal/store"
+	"github.com/r404r/team-ledger/internal/value"
 )
 
 func keyDomain(value string) (sensitive.KeyDomain, bool) {
@@ -45,6 +47,20 @@ func lifecycle(action string, args []string) error {
 	domain, ok := keyDomain(*domainName)
 	if !ok {
 		return errors.New("invalid key domain")
+	}
+	switch domain {
+	case sensitive.DomainCommandReceipt, sensitive.DomainAssessmentGeneration:
+		return errors.New("persistent MAC domain rotation is not available")
+	case sensitive.DomainLocalPasswordPepper:
+		return errors.New("password pepper rotation requires credential dependency maintenance")
+	}
+	if action == "activate" {
+		switch domain {
+		case sensitive.DomainCSRFToken:
+			return errors.New("CSRF activation requires csrf-activate")
+		case sensitive.DomainStaffCodeLookup, sensitive.DomainBonusPaymentLookup, sensitive.DomainIdentitySubjectLookup, sensitive.DomainLocalUsernameLookup:
+			return errors.New("index activation requires its database maintenance command")
+		}
 	}
 	raw, err := configfile.Read(*manifestFile, 1<<20, false)
 	if err != nil || len(raw) == 0 {
@@ -191,9 +207,73 @@ func offlineRestore(args []string) error {
 	}{"restored_isolated", inventory})
 }
 
+func csrfActivate(args []string) error {
+	set := flag.NewFlagSet("csrf-activate", flag.ContinueOnError)
+	set.SetOutput(os.Stderr)
+	socket := set.String("socket", "", "local keyd Unix socket")
+	manifestFile := set.String("manifest-file", "", "approved manifest file")
+	backend := set.String("backend", "", "sqlite or postgres")
+	dsnFile := set.String("dsn-file", "", "protected database DSN file")
+	requestID := set.String("request-id", "", "maintenance request UUID")
+	if err := set.Parse(args); err != nil || set.NArg() != 0 || *socket == "" || *manifestFile == "" || (*backend != "sqlite" && *backend != "postgres") || !value.ValidID(*requestID) {
+		return errors.New("invalid CSRF activation arguments")
+	}
+	raw, err := configfile.Read(*manifestFile, 1<<20, false)
+	if err != nil || len(raw) == 0 {
+		return errors.New("invalid manifest")
+	}
+	manifest := sha256.Sum256(raw)
+	clear(raw)
+	dsnRaw, err := configfile.Read(*dsnFile, 16<<10, true)
+	if err != nil {
+		return errors.New("invalid database configuration")
+	}
+	defer clear(dsnRaw)
+	client := &sensitive.KeydClient{Socket: *socket, Timeout: 10 * time.Second}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	state, err := client.Ready(ctx)
+	staged := state.Staged[sensitive.DomainCSRFToken]
+	if err != nil || staged.Version == 0 || staged.KeyID == "" {
+		return errors.New("CSRF key is not staged")
+	}
+	repo, err := store.Open(ctx, *backend, string(dsnRaw))
+	if err != nil {
+		return errors.New("database unavailable")
+	}
+	defer repo.Close()
+	if err = repo.CheckSchema(ctx); err != nil {
+		return errors.New("invalid database schema")
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if state.Active[sensitive.DomainCSRFToken] != staged.Version {
+		if err = repo.BeginCryptoStage(ctx, state, sensitive.DomainCSRFToken, manifest[:], now); err != nil {
+			return err
+		}
+		if err = repo.RevokeCSRFVersion(ctx, state.ActiveKeys[sensitive.DomainCSRFToken], *requestID, now); err != nil {
+			return err
+		}
+		state, err = client.Activate(ctx, sensitive.DomainCSRFToken, manifest[:])
+		if err != nil {
+			return errors.New("CSRF activation failed after safe session revocation")
+		}
+	}
+	if err = repo.RecordCryptoActivation(ctx, state, sensitive.DomainCSRFToken, manifest[:], now); err != nil {
+		return err
+	}
+	state, err = client.Acknowledge(ctx, sensitive.DomainCSRFToken, manifest[:])
+	if err != nil {
+		return errors.New("CSRF activation acknowledgement failed")
+	}
+	if err = repo.CompleteCryptoActivation(ctx, state, sensitive.DomainCSRFToken, manifest[:], now); err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(state)
+}
+
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: keyctl-local init|status|stage|activate|offline-export|offline-verify-pair|offline-restore")
+		return errors.New("usage: keyctl-local init|status|stage|activate|csrf-activate|offline-export|offline-verify-pair|offline-restore")
 	}
 	switch args[0] {
 	case "init":
@@ -208,6 +288,8 @@ func run(args []string) error {
 		return status(args[1:])
 	case "stage", "activate":
 		return lifecycle(args[0], args[1:])
+	case "csrf-activate":
+		return csrfActivate(args[1:])
 	case "offline-export":
 		return offlineExport(args[1:])
 	case "offline-verify-pair":
@@ -215,7 +297,7 @@ func run(args []string) error {
 	case "offline-restore":
 		return offlineRestore(args[1:])
 	default:
-		return errors.New("usage: keyctl-local init|status|stage|activate|offline-export|offline-verify-pair|offline-restore")
+		return errors.New("usage: keyctl-local init|status|stage|activate|csrf-activate|offline-export|offline-verify-pair|offline-restore")
 	}
 }
 

@@ -562,7 +562,7 @@ func (t *transaction) SaveGrantReceipt(ctx context.Context, org, subject, operat
 	if org != t.org || !valid || !validEpoch {
 		return fault.Invalid
 	}
-	_, err := t.tx.ExecContext(ctx, t.sql("INSERT INTO grant_command_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_id,result_revision,result_status,result_auth_epoch) VALUES(?,?,?,?,?,1,?,?,?,?)", "INSERT INTO grant_command_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_id,result_revision,result_status,result_auth_epoch) VALUES($1,$2,$3,$4,$5,1,$6,$7,$8,$9)"), org, subject, operation, key, receipt.Digest, receipt.Result.ID, revision, receipt.Result.Status, epoch)
+	_, err := t.tx.ExecContext(ctx, t.sql("INSERT INTO grant_command_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_id,result_revision,result_status,result_auth_epoch,digest_key_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)", "INSERT INTO grant_command_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_id,result_revision,result_status,result_auth_epoch,digest_key_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)"), org, subject, operation, key, receipt.Digest, t.commandMACKey.Version, receipt.Result.ID, revision, receipt.Result.Status, epoch, t.commandMACKey.KeyID)
 	return safeError(err)
 }
 

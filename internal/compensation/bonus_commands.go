@@ -362,11 +362,11 @@ func (s *Service) RecordBonusPayment(ctx context.Context, q Request, employee st
 	if err != nil || active != s.BonusHMACActive || keyID == "" || s.BonusHMACKeyIDs[active] != keyID {
 		return BonusResult{}, fault.Unavailable
 	}
-	businessDigest, err := s.bonusBusinessDigest(a.OrgID, employee, command.BusinessSource, command.ExternalFactID, active)
+	businessDigest, err := s.bonusBusinessDigest(ctx, a.OrgID, employee, command.BusinessSource, command.ExternalFactID, active)
 	if err != nil {
 		return BonusResult{}, err
 	}
-	if existing, ok, e := store.BonusPaymentByDigest(ctx, a.OrgID, employee, active, businessDigest); e != nil {
+	if existing, ok, e := store.BonusPaymentByDigest(ctx, a.OrgID, employee, keyID, active, businessDigest); e != nil {
 		return BonusResult{}, e
 	} else if ok {
 		var payload bonusPaymentPayload
@@ -400,7 +400,7 @@ func (s *Service) RecordBonusPayment(ctx context.Context, q Request, employee st
 		if e != nil {
 			return BonusResult{}, e
 		}
-		record := &BonusPaymentRecord{OrgID: a.OrgID, EmployeeID: employee, ID: id, PayloadID: sealed.ID, Kind: command.Kind, PaidDate: command.PaidDate, BusinessSource: command.BusinessSource, AwardID: command.AwardID, OriginalPaymentID: command.OriginalPaymentID, BusinessKeyVersion: active, BusinessDigest: businessDigest, BasisRevision: basis + 1, RecordedAt: s.clock()}
+		record := &BonusPaymentRecord{OrgID: a.OrgID, EmployeeID: employee, ID: id, PayloadID: sealed.ID, Kind: command.Kind, PaidDate: command.PaidDate, BusinessSource: command.BusinessSource, AwardID: command.AwardID, OriginalPaymentID: command.OriginalPaymentID, BusinessKeyID: keyID, BusinessKeyVersion: active, BusinessDigest: businessDigest, BasisRevision: basis + 1, RecordedAt: s.clock()}
 		facts := make([]BonusPaymentFact, 0, len(snapshot.Payments)+1)
 		for _, p := range snapshot.Payments {
 			var old bonusPaymentPayload

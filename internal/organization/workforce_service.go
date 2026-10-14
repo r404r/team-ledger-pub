@@ -288,9 +288,19 @@ func (s *Service) ChangeWorkforce(ctx context.Context, request Request, org stri
 		case "identifier":
 			if item.Action != "end" {
 				normalized, _ := NormalizeStaffCode(*item.StaffCode)
-				mac := hmac.New(sha256.New, s.DigestKey)
-				_, _ = mac.Write([]byte("staff-code\x00" + org + "\x00" + normalized))
-				prepared.Digest = mac.Sum(nil)
+				frame := []byte("staff-code\x00" + org + "\x00" + normalized)
+				if s.StaffCodeMAC != nil {
+					value, macErr := s.StaffCodeMAC(ctx, frame)
+					if macErr != nil || value.Version == 0 || value.KeyID == "" || len(value.Digest) != sha256.Size {
+						clear(value.Digest)
+						return WorkforceChangeResult{}, fault.Unavailable
+					}
+					prepared.Digest, prepared.DigestKeyID, prepared.DigestKeyVersion = value.Digest, value.KeyID, value.Version
+				} else {
+					mac := hmac.New(sha256.New, s.DigestKey)
+					_, _ = mac.Write(frame)
+					prepared.Digest, prepared.DigestKeyID, prepared.DigestKeyVersion = mac.Sum(nil), "legacy-process-key", 1
+				}
 				payload, sealErr := s.sealWorkforceFact(ctx, org, item.EmployeeID, prepared.ID, "employee_identifier", "pii.employee_identifier.v1", struct {
 					StaffCode string `json:"staff_code"`
 				}{StaffCode: normalized})

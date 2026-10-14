@@ -35,8 +35,8 @@ func (r *Repository) BonusPayload(ctx context.Context, org, id string) (compensa
 func (r *Repository) BonusCommandReceipt(ctx context.Context, org, subject, operation, key string) (compensation.BonusResult, []byte, bool, error) {
 	return r.read().BonusCommandReceipt(ctx, org, subject, operation, key)
 }
-func (r *Repository) BonusPaymentByDigest(ctx context.Context, org, employee string, version int64, digest []byte) (compensation.BonusPaymentRecord, bool, error) {
-	return r.read().BonusPaymentByDigest(ctx, org, employee, version, digest)
+func (r *Repository) BonusPaymentByDigest(ctx context.Context, org, employee, keyID string, version int64, digest []byte) (compensation.BonusPaymentRecord, bool, error) {
+	return r.read().BonusPaymentByDigest(ctx, org, employee, keyID, version, digest)
 }
 func (r *Repository) BonusHMACReady(ctx context.Context, org string) (int64, string, error) {
 	return r.read().BonusHMACReady(ctx, org)
@@ -138,7 +138,7 @@ func (r reader) BonusSnapshotPage(ctx context.Context, org, employee string, que
 	case "awards":
 		rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT org_id,employee_id,id,state,version_id,payload_id,author_subject_id,"+r.structureDate("period_start")+","+r.structureDate("period_end")+",target_id,corrects_award_id,approval_id,revision,basis_revision,recorded_at FROM bonus_award"+predicate+" ORDER BY recorded_at,id LIMIT ?"), args...)
 	case "payments":
-		rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT org_id,employee_id,id,payload_id,kind,"+r.structureDate("paid_date")+",business_source,award_id,original_payment_id,business_key_version,basis_revision,business_digest,recorded_at FROM bonus_payment"+predicate+" ORDER BY paid_date,id LIMIT ?"), args...)
+		rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT org_id,employee_id,id,payload_id,kind,"+r.structureDate("paid_date")+",business_source,award_id,original_payment_id,business_key_id,business_key_version,basis_revision,business_digest,recorded_at FROM bonus_payment"+predicate+" ORDER BY paid_date,id LIMIT ?"), args...)
 	case "extensions":
 		rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT org_id,employee_id,id,payload_id,schema_type,schema_version,revision,basis_revision,supersedes_id,recorded_at FROM compensation_extension_version"+predicate+" ORDER BY recorded_at,id LIMIT ?"), args...)
 	default:
@@ -163,7 +163,7 @@ func (r reader) BonusSnapshotPage(ctx context.Context, org, employee string, que
 			out.Snapshot.Awards = append(out.Snapshot.Awards, v)
 		case "payments":
 			var v compensation.BonusPaymentRecord
-			err = rows.Scan(&v.OrgID, &v.EmployeeID, &v.ID, &v.PayloadID, &v.Kind, &v.PaidDate, &v.BusinessSource, &v.AwardID, &v.OriginalPaymentID, &v.BusinessKeyVersion, &v.BasisRevision, &v.BusinessDigest, &at)
+			err = rows.Scan(&v.OrgID, &v.EmployeeID, &v.ID, &v.PayloadID, &v.Kind, &v.PaidDate, &v.BusinessSource, &v.AwardID, &v.OriginalPaymentID, &v.BusinessKeyID, &v.BusinessKeyVersion, &v.BasisRevision, &v.BusinessDigest, &at)
 			v.RecordedAt = at.Time
 			out.Snapshot.Payments = append(out.Snapshot.Payments, v)
 		case "extensions":
@@ -270,14 +270,14 @@ func (r reader) BonusSnapshot(ctx context.Context, org, employee string) (compen
 	if err = rows.Close(); err != nil {
 		return out, safeError(err)
 	}
-	rows, err = r.db.QueryContext(ctx, r.sql("SELECT org_id,employee_id,id,payload_id,kind,paid_date,business_source,award_id,original_payment_id,business_key_version,basis_revision,business_digest,recorded_at FROM bonus_payment WHERE org_id=? AND employee_id=? ORDER BY paid_date,id", "SELECT org_id,employee_id,id,payload_id,kind,paid_date::text,business_source,award_id,original_payment_id,business_key_version,basis_revision,business_digest,recorded_at FROM bonus_payment WHERE org_id=$1 AND employee_id=$2 ORDER BY paid_date,id"), org, employee)
+	rows, err = r.db.QueryContext(ctx, r.sql("SELECT org_id,employee_id,id,payload_id,kind,paid_date,business_source,award_id,original_payment_id,business_key_id,business_key_version,basis_revision,business_digest,recorded_at FROM bonus_payment WHERE org_id=? AND employee_id=? ORDER BY paid_date,id", "SELECT org_id,employee_id,id,payload_id,kind,paid_date::text,business_source,award_id,original_payment_id,business_key_id,business_key_version,basis_revision,business_digest,recorded_at FROM bonus_payment WHERE org_id=$1 AND employee_id=$2 ORDER BY paid_date,id"), org, employee)
 	if err != nil {
 		return out, safeError(err)
 	}
 	for rows.Next() {
 		var v compensation.BonusPaymentRecord
 		var at dbTime
-		if err = rows.Scan(&v.OrgID, &v.EmployeeID, &v.ID, &v.PayloadID, &v.Kind, &v.PaidDate, &v.BusinessSource, &v.AwardID, &v.OriginalPaymentID, &v.BusinessKeyVersion, &v.BasisRevision, &v.BusinessDigest, &at); err != nil {
+		if err = rows.Scan(&v.OrgID, &v.EmployeeID, &v.ID, &v.PayloadID, &v.Kind, &v.PaidDate, &v.BusinessSource, &v.AwardID, &v.OriginalPaymentID, &v.BusinessKeyID, &v.BusinessKeyVersion, &v.BasisRevision, &v.BusinessDigest, &at); err != nil {
 			rows.Close()
 			return out, safeError(err)
 		}
@@ -332,12 +332,12 @@ func (r reader) BonusCommandReceipt(ctx context.Context, org, subject, operation
 func scanBonusPayment(row grantScanner) (compensation.BonusPaymentRecord, error) {
 	var v compensation.BonusPaymentRecord
 	var at dbTime
-	err := row.Scan(&v.OrgID, &v.EmployeeID, &v.ID, &v.PayloadID, &v.Kind, &v.PaidDate, &v.BusinessSource, &v.AwardID, &v.OriginalPaymentID, &v.BusinessKeyVersion, &v.BasisRevision, &v.BusinessDigest, &at)
+	err := row.Scan(&v.OrgID, &v.EmployeeID, &v.ID, &v.PayloadID, &v.Kind, &v.PaidDate, &v.BusinessSource, &v.AwardID, &v.OriginalPaymentID, &v.BusinessKeyID, &v.BusinessKeyVersion, &v.BasisRevision, &v.BusinessDigest, &at)
 	v.RecordedAt = at.Time
 	return v, compensationReadError(err)
 }
-func (r reader) BonusPaymentByDigest(ctx context.Context, org, employee string, version int64, digest []byte) (compensation.BonusPaymentRecord, bool, error) {
-	v, err := scanBonusPayment(r.db.QueryRowContext(ctx, r.sql("SELECT p.org_id,p.employee_id,p.id,p.payload_id,p.kind,p.paid_date,p.business_source,p.award_id,p.original_payment_id,p.business_key_version,p.basis_revision,p.business_digest,p.recorded_at FROM bonus_payment_business_index i JOIN bonus_payment p ON p.org_id=i.org_id AND p.employee_id=i.employee_id AND p.id=i.payment_id WHERE i.org_id=? AND i.employee_id=? AND i.key_version=? AND i.digest=?", "SELECT p.org_id,p.employee_id,p.id,p.payload_id,p.kind,p.paid_date::text,p.business_source,p.award_id,p.original_payment_id,p.business_key_version,p.basis_revision,p.business_digest,p.recorded_at FROM bonus_payment_business_index i JOIN bonus_payment p ON p.org_id=i.org_id AND p.employee_id=i.employee_id AND p.id=i.payment_id WHERE i.org_id=$1 AND i.employee_id=$2 AND i.key_version=$3 AND i.digest=$4"), org, employee, version, digest))
+func (r reader) BonusPaymentByDigest(ctx context.Context, org, employee, keyID string, version int64, digest []byte) (compensation.BonusPaymentRecord, bool, error) {
+	v, err := scanBonusPayment(r.db.QueryRowContext(ctx, r.sql("SELECT p.org_id,p.employee_id,p.id,p.payload_id,p.kind,p.paid_date,p.business_source,p.award_id,p.original_payment_id,p.business_key_id,p.business_key_version,p.basis_revision,p.business_digest,p.recorded_at FROM bonus_payment_business_index i JOIN bonus_payment p ON p.org_id=i.org_id AND p.employee_id=i.employee_id AND p.id=i.payment_id WHERE i.org_id=? AND i.employee_id=? AND i.key_id=? AND i.key_version=? AND i.digest=?", "SELECT p.org_id,p.employee_id,p.id,p.payload_id,p.kind,p.paid_date::text,p.business_source,p.award_id,p.original_payment_id,p.business_key_id,p.business_key_version,p.basis_revision,p.business_digest,p.recorded_at FROM bonus_payment_business_index i JOIN bonus_payment p ON p.org_id=i.org_id AND p.employee_id=i.employee_id AND p.id=i.payment_id WHERE i.org_id=$1 AND i.employee_id=$2 AND i.key_id=$3 AND i.key_version=$4 AND i.digest=$5"), org, employee, keyID, version, digest))
 	if errors.Is(err, fault.NotFound) {
 		return v, false, nil
 	}

@@ -452,6 +452,8 @@ func payloadRegistry(binding Context) (object, purpose, schemaVersion uint16, em
 		object, purpose, schemaVersion, expected = 16, 8, 1, "backup.archive.v1"
 	case "local_username":
 		object, purpose, schemaVersion, expected = 17, 9, 1, "identity.local_username.v1"
+	case "identity_mapping":
+		object, purpose, schemaVersion, expected = 18, 9, 1, "identity.mapping.v1"
 	default:
 		return 0, 0, 0, false, ErrInvalid
 	}

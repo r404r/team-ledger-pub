@@ -24,7 +24,7 @@ func (r *Repository) CreateAdjustmentImportCandidate(ctx context.Context, candid
 		return candidate, safeError(err)
 	}
 	receipt.BatchID, receipt.ResultRevision, receipt.RecordedAt = candidate.BatchID, candidate.BaseRevision, candidate.CreatedAt
-	if err = insertBatchReceipt(ctx, tx, q, candidate.OrgID, receipt); err != nil {
+	if err = insertBatchReceipt(ctx, tx, q, candidate.OrgID, r.commandReference(), receipt); err != nil {
 		return candidate, err
 	}
 	if err = tx.Commit(); err != nil {

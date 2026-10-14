@@ -28,7 +28,7 @@ func (t *transaction) FinalizeAdjustmentBatch(ctx context.Context, org, batch st
 		return safeError(err)
 	}
 	receipt.BatchID, receipt.ResultRevision, receipt.RecordedAt = batch, expectedRevision+1, now
-	return insertBatchReceipt(ctx, t.tx, reader{db: t.tx, backend: t.backend}, org, receipt)
+	return insertBatchReceipt(ctx, t.tx, reader{db: t.tx, backend: t.backend}, org, t.commandMACKey, receipt)
 }
 
 func (t *transaction) LockSalaryRangeBasis(ctx context.Context, org, id string, revision int64, effective string) error {

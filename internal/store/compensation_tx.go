@@ -189,6 +189,6 @@ func (t *transaction) SaveCompensationReceipt(ctx context.Context, org, subject,
 	if err != nil {
 		return fault.Invalid
 	}
-	_, err = t.tx.ExecContext(ctx, t.sql("INSERT INTO compensation_command_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_json,recorded_at) VALUES(?,?,?,?,?,1,?,?)", "INSERT INTO compensation_command_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_json,recorded_at) VALUES($1,$2,$3,$4,$5,1,$6,$7)"), org, subject, operation, key, receipt.Digest, string(encoded), t.bindTime(time.Now()))
+	_, err = t.tx.ExecContext(ctx, t.sql("INSERT INTO compensation_command_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_json,recorded_at,digest_key_id) VALUES(?,?,?,?,?,?,?,?,?)", "INSERT INTO compensation_command_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_json,recorded_at,digest_key_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)"), org, subject, operation, key, receipt.Digest, t.commandMACKey.Version, string(encoded), t.bindTime(time.Now()), t.commandMACKey.KeyID)
 	return safeError(err)
 }

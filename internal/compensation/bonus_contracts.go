@@ -192,11 +192,11 @@ type BonusApprovalRecord struct {
 }
 
 type BonusPaymentRecord struct {
-	OrgID, EmployeeID, ID, PayloadID, Kind, PaidDate, BusinessSource string
-	AwardID, OriginalPaymentID                                       *string
-	BusinessKeyVersion, BasisRevision                                int64
-	BusinessDigest                                                   []byte
-	RecordedAt                                                       time.Time
+	OrgID, EmployeeID, ID, PayloadID, Kind, PaidDate, BusinessSource, BusinessKeyID string
+	AwardID, OriginalPaymentID                                                      *string
+	BusinessKeyVersion, BasisRevision                                               int64
+	BusinessDigest                                                                  []byte
+	RecordedAt                                                                      time.Time
 }
 
 type BonusExtensionRecord struct {
@@ -251,7 +251,7 @@ type BonusReader interface {
 	BonusSnapshotPage(context.Context, string, string, BonusPageQuery) (BonusSnapshotPage, error)
 	BonusPayload(context.Context, string, string) (Payload, error)
 	BonusCommandReceipt(context.Context, string, string, string, string) (BonusResult, []byte, bool, error)
-	BonusPaymentByDigest(context.Context, string, string, int64, []byte) (BonusPaymentRecord, bool, error)
+	BonusPaymentByDigest(context.Context, string, string, string, int64, []byte) (BonusPaymentRecord, bool, error)
 	BonusHMACReady(context.Context, string) (int64, string, error)
 }
 

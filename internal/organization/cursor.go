@@ -19,29 +19,36 @@ type organizationCursor struct {
 }
 
 func (s *Service) queryDigest(domain string, filter any, q string) (string, error) {
-	if len(s.DigestKey) != 32 {
-		return "", fault.Unavailable
-	}
 	b, err := json.Marshal(filter)
 	if err != nil {
 		return "", fault.Invalid
 	}
+	frame := append([]byte("TEAMLEDGER-ORGANIZATION-FILTER\x00V1\x00"+domain+"\x00"), b...)
+	frame = append(frame, 0)
+	frame = append(frame, q...)
+	defer clear(frame)
+	if s.CommandMAC != nil {
+		digest, macErr := s.CommandMAC(frame)
+		return base64.RawURLEncoding.EncodeToString(digest), macErr
+	}
+	if len(s.DigestKey) != 32 {
+		return "", fault.Unavailable
+	}
 	m := hmac.New(sha256.New, s.DigestKey)
-	m.Write([]byte("TEAMLEDGER-ORGANIZATION-FILTER\x00V1\x00"))
-	m.Write([]byte(domain))
-	m.Write([]byte{0})
-	m.Write(b)
-	m.Write([]byte{0})
-	m.Write([]byte(q))
+	m.Write(frame)
 	return base64.RawURLEncoding.EncodeToString(m.Sum(nil)), nil
 }
 func (s *Service) queryCursorMAC(data []byte) ([]byte, error) {
+	frame := append([]byte("TEAMLEDGER-ORGANIZATION-CURSOR\x00V1\x00"), data...)
+	defer clear(frame)
+	if s.CursorMAC != nil {
+		return s.CursorMAC(frame)
+	}
 	if len(s.CursorKey) != 32 || len(s.DigestKey) != 32 || bytes.Equal(s.CursorKey, s.DigestKey) {
 		return nil, fault.Unavailable
 	}
 	m := hmac.New(sha256.New, s.CursorKey)
-	m.Write([]byte("TEAMLEDGER-ORGANIZATION-CURSOR\x00V1\x00"))
-	m.Write(data)
+	m.Write(frame)
 	return m.Sum(nil), nil
 }
 func (s *Service) sealQueryCursor(domain string, snap authz.Snapshot, g Graph, day, filter, last string) (string, error) {

@@ -247,7 +247,7 @@ func TestGrantSchemaCommandReceiptOwnersAndFiniteResults(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			base := map[string]any{"org_id": f.OrgID, "subject_id": f.Owner.SubjectID, "operation": "OP-SEC-02", "key": value.NewID(), "digest": bytes.Repeat([]byte{3}, 32), "digest_key_version": 1, "result_id": localGrant["id"], "result_revision": int64(1), "result_status": "current", "result_auth_epoch": int64(1)}
+			base := map[string]any{"org_id": f.OrgID, "subject_id": f.Owner.SubjectID, "operation": "OP-SEC-02", "key": value.NewID(), "digest": bytes.Repeat([]byte{3}, 32), "digest_key_id": "legacy-command-receipt", "digest_key_version": 1, "result_id": localGrant["id"], "result_revision": int64(1), "result_status": "current", "result_auth_epoch": int64(1)}
 			if err := grantSchemaInsert(f.Repo, "grant_command_receipt", base); err != nil {
 				t.Fatal("same-owner typed grant receipt must persist:", err)
 			}

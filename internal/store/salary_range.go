@@ -153,7 +153,8 @@ func (r *Repository) ApplySalaryRangeChanges(ctx context.Context, org string, re
 	if len(receipt.Digest) != 32 {
 		return fault.Invalid
 	}
-	if _, err = tx.ExecContext(ctx, q.structureSQL("INSERT INTO salary_range_command_receipt(org_id,subject_id,key,digest,recorded_at) VALUES(?,?,?,?,?)"), org, receipt.SubjectID, receipt.Key, receipt.Digest, receipt.RecordedAt.UnixMicro()); err != nil {
+	reference := r.commandReference()
+	if _, err = tx.ExecContext(ctx, q.structureSQL("INSERT INTO salary_range_command_receipt(org_id,subject_id,key,digest,recorded_at,digest_key_id,digest_key_version) VALUES(?,?,?,?,?,?,?)"), org, receipt.SubjectID, receipt.Key, receipt.Digest, receipt.RecordedAt.UnixMicro(), reference.KeyID, reference.Version); err != nil {
 		return safeError(err)
 	}
 	auditID := value.NewID()

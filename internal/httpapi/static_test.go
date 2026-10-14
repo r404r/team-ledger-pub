@@ -14,6 +14,7 @@ import (
 	"github.com/r404r/team-ledger/internal/identity"
 	"github.com/r404r/team-ledger/internal/interview"
 	"github.com/r404r/team-ledger/internal/organization"
+	"github.com/r404r/team-ledger/internal/testsupport"
 )
 
 func TestSupportedPageAllowsExplicitBusinessDateOnly(t *testing.T) {
@@ -21,7 +22,7 @@ func TestSupportedPageAllowsExplicitBusinessDateOnly(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<!doctype html><title>Synthetic page</title>"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := httpapi.New(&organization.Service{}, &interview.Service{}, &assessment.Service{}, &compensation.Service{}, &authz.Service{}, &identity.Service{}, make([]byte, 32), "https://fixture.invalid", dir, "synthetic-deployment")
+	handler, err := httpapi.New(&organization.Service{}, &interview.Service{}, &assessment.Service{}, &compensation.Service{}, &authz.Service{}, &identity.Service{}, testsupport.MACKeys{Key: make([]byte, 32)}, "https://fixture.invalid", dir, "synthetic-deployment")
 	if err != nil {
 		t.Fatal(err)
 	}

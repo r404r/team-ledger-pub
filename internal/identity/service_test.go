@@ -16,6 +16,7 @@ import (
 	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/identity"
 	"github.com/r404r/team-ledger/internal/organization"
+	"github.com/r404r/team-ledger/internal/sensitive"
 	"github.com/r404r/team-ledger/internal/store"
 	"github.com/r404r/team-ledger/internal/testsupport"
 	"github.com/r404r/team-ledger/internal/value"
@@ -48,7 +49,7 @@ func newIdentityHarness(t *testing.T, backend string) *harness {
 	t.Cleanup(idp.Close)
 	idp.Now = func() time.Time { return f.Now }
 	cfg := identity.OIDCConfig{Issuer: idp.Server.URL, ClientID: idp.ClientID, ClientSecret: idp.ClientSecret, RedirectURI: f.Server.URL + "/api/v1/auth/callback", HTTPClient: idp.Client(), IdentityKey: bytes.Repeat([]byte{61}, 32), TransactionKey: bytes.Repeat([]byte{62}, 32), MFAACR: "synthetic-approved-mfa", MFAAMR: []string{"pwd", "otp"}}
-	s, err := identity.New(context.Background(), f.Repo, f.CSRFKey, &cfg)
+	s, err := identity.New(context.Background(), f.Repo, testsupport.MACKeys{Key: f.CSRFKey, DomainKeys: map[sensitive.KeyDomain][]byte{sensitive.DomainIdentitySubjectLookup: cfg.IdentityKey}}, &cfg)
 	if err != nil {
 		t.Fatal("real TLS discovery failed:", err)
 	}
@@ -146,7 +147,7 @@ func TestOIDCSignedLoginConsumerRotationLogoutAndRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer reopened.Close()
-			restarted, err := identity.New(ctx, reopened, h.f.CSRFKey, &h.cfg)
+			restarted, err := identity.New(ctx, reopened, testsupport.MACKeys{Key: h.f.CSRFKey, DomainKeys: map[sensitive.KeyDomain][]byte{sensitive.DomainIdentitySubjectLookup: h.cfg.IdentityKey}}, &h.cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -286,7 +287,7 @@ func TestOIDCStateBrowserPKCEExpiryOnceAndConcurrentCallbacks(t *testing.T) {
 			// An unfinished encrypted proof also survives a new service/repository instance.
 			a = h.begin(t, "login", nil)
 			request = h.callback(t, a, nil)
-			restarted, err := identity.New(ctx, h.f.Repo, h.f.CSRFKey, &h.cfg)
+			restarted, err := identity.New(ctx, h.f.Repo, testsupport.MACKeys{Key: h.f.CSRFKey, DomainKeys: map[sensitive.KeyDomain][]byte{sensitive.DomainIdentitySubjectLookup: h.cfg.IdentityKey}}, &h.cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -549,7 +550,7 @@ func TestIdentityAuditFailureRollsBackLoginLogoutAndBinding(t *testing.T) {
 func TestOIDCDisabledAndPartialConfigurationHaveNoLocalFallback(t *testing.T) {
 	h := newIdentityHarness(t, "sqlite")
 	ctx := context.Background()
-	disabled, err := identity.New(ctx, h.f.Repo, h.f.CSRFKey, nil)
+	disabled, err := identity.New(ctx, h.f.Repo, testsupport.MACKeys{Key: h.f.CSRFKey, DomainKeys: map[sensitive.KeyDomain][]byte{sensitive.DomainIdentitySubjectLookup: h.cfg.IdentityKey}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -563,10 +564,10 @@ func TestOIDCDisabledAndPartialConfigurationHaveNoLocalFallback(t *testing.T) {
 	if err = disabled.Logout(ctx, h.f.Owner.Hash, value.NewID()); err != nil {
 		t.Fatal(err)
 	}
-	for _, change := range []func(*identity.OIDCConfig){func(c *identity.OIDCConfig) { c.ClientSecret = "" }, func(c *identity.OIDCConfig) { c.IdentityKey = h.f.CSRFKey }, func(c *identity.OIDCConfig) { c.TransactionKey = c.IdentityKey }, func(c *identity.OIDCConfig) { c.Issuer = "http://untrusted.invalid" }, func(c *identity.OIDCConfig) { c.RedirectURI = "https://app.invalid/wrong" }, func(c *identity.OIDCConfig) { c.MFAAMR = nil }} {
+	for _, change := range []func(*identity.OIDCConfig){func(c *identity.OIDCConfig) { c.ClientSecret = "" }, func(c *identity.OIDCConfig) { c.TransactionKey = nil }, func(c *identity.OIDCConfig) { c.Issuer = "http://untrusted.invalid" }, func(c *identity.OIDCConfig) { c.RedirectURI = "https://app.invalid/wrong" }, func(c *identity.OIDCConfig) { c.MFAAMR = nil }} {
 		cfg := h.cfg
 		change(&cfg)
-		if _, err = identity.New(ctx, h.f.Repo, h.f.CSRFKey, &cfg); !errors.Is(err, fault.Unavailable) {
+		if _, err = identity.New(ctx, h.f.Repo, testsupport.MACKeys{Key: h.f.CSRFKey, DomainKeys: map[sensitive.KeyDomain][]byte{sensitive.DomainIdentitySubjectLookup: cfg.IdentityKey}}, &cfg); !errors.Is(err, fault.Unavailable) {
 			t.Fatal("partial/untrusted configuration must fail closed")
 		}
 	}
@@ -727,14 +728,14 @@ func TestOIDCDiscoveryEndpointsAndTLSAreActuallyTrusted(t *testing.T) {
 		{"jwks_uri": "https://user:secret@unapproved.invalid/jwks"},
 	} {
 		h.idp.SetDiscoveryOverrides(override)
-		if _, err := identity.New(ctx, h.f.Repo, h.f.CSRFKey, &h.cfg); !errors.Is(err, fault.Unavailable) {
+		if _, err := identity.New(ctx, h.f.Repo, testsupport.MACKeys{Key: h.f.CSRFKey, DomainKeys: map[sensitive.KeyDomain][]byte{sensitive.DomainIdentitySubjectLookup: h.cfg.IdentityKey}}, &h.cfg); !errors.Is(err, fault.Unavailable) {
 			t.Fatal("untrusted discovery must fail closed:", err)
 		}
 	}
 	h.idp.SetDiscoveryOverrides(nil)
 	cfg := h.cfg
 	cfg.HTTPClient = &http.Client{Timeout: time.Second}
-	if _, err := identity.New(ctx, h.f.Repo, h.f.CSRFKey, &cfg); !errors.Is(err, fault.Unavailable) {
+	if _, err := identity.New(ctx, h.f.Repo, testsupport.MACKeys{Key: h.f.CSRFKey, DomainKeys: map[sensitive.KeyDomain][]byte{sensitive.DomainIdentitySubjectLookup: cfg.IdentityKey}}, &cfg); !errors.Is(err, fault.Unavailable) {
 		t.Fatal("untrusted self-signed IdP TLS cannot be accepted")
 	}
 	client := h.idp.Client()
@@ -743,7 +744,7 @@ func TestOIDCDiscoveryEndpointsAndTLSAreActuallyTrusted(t *testing.T) {
 	transport.TLSClientConfig.InsecureSkipVerify = true
 	client.Transport = transport
 	cfg.HTTPClient = client
-	if _, err := identity.New(ctx, h.f.Repo, h.f.CSRFKey, &cfg); !errors.Is(err, fault.Unavailable) {
+	if _, err := identity.New(ctx, h.f.Repo, testsupport.MACKeys{Key: h.f.CSRFKey, DomainKeys: map[sensitive.KeyDomain][]byte{sensitive.DomainIdentitySubjectLookup: cfg.IdentityKey}}, &cfg); !errors.Is(err, fault.Unavailable) {
 		t.Fatal("explicit TLS-verification bypass cannot be accepted")
 	}
 }

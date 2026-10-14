@@ -1,6 +1,7 @@
 package organization
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -21,11 +22,14 @@ import (
 )
 
 type Service struct {
-	Store     Store
-	Cipher    sensitive.Cipher
-	DigestKey []byte
-	CursorKey []byte
-	Now       func() time.Time
+	Store        Store
+	Cipher       sensitive.Cipher
+	DigestKey    []byte
+	CommandMAC   func([]byte) ([]byte, error)
+	CursorKey    []byte
+	CursorMAC    func([]byte) ([]byte, error)
+	StaffCodeMAC func(context.Context, []byte) (sensitive.MACValue, error)
+	Now          func() time.Time
 }
 
 func (s *Service) clock() time.Time {
@@ -298,25 +302,30 @@ func profileBinding(employee Employee, version string) sensitive.Context {
 }
 
 func (s *Service) digest(request Request, snapshot authz.Snapshot, operation, object string, command any) ([]byte, error) {
-	if len(s.DigestKey) != 32 {
-		return nil, fault.Unavailable
-	}
 	data, err := json.Marshal(command)
 	if err != nil {
 		return nil, fault.Invalid
 	}
 	defer clear(data)
-	mac := hmac.New(sha256.New, s.DigestKey)
-	_, _ = mac.Write([]byte("TEAMLEDGER-COMMAND-V1"))
+	var frame bytes.Buffer
+	frame.WriteString("TEAMLEDGER-COMMAND-V1")
 	var size [4]byte
 	for _, part := range []string{snapshot.OrgID, snapshot.SubjectID, operation, object, request.Purpose} {
 		binary.BigEndian.PutUint32(size[:], uint32(len(part)))
-		_, _ = mac.Write(size[:])
-		_, _ = mac.Write([]byte(part))
+		frame.Write(size[:])
+		frame.WriteString(part)
 	}
 	binary.BigEndian.PutUint32(size[:], uint32(len(data)))
-	_, _ = mac.Write(size[:])
-	_, _ = mac.Write(data)
+	frame.Write(size[:])
+	frame.Write(data)
+	if s.CommandMAC != nil {
+		return s.CommandMAC(frame.Bytes())
+	}
+	if len(s.DigestKey) != 32 {
+		return nil, fault.Unavailable
+	}
+	mac := hmac.New(sha256.New, s.DigestKey)
+	_, _ = mac.Write(frame.Bytes())
 	return mac.Sum(nil), nil
 }
 

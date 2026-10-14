@@ -19,6 +19,8 @@ import (
 type Service struct {
 	Store            Store
 	DigestKey        []byte
+	CommandMAC       func([]byte) ([]byte, error)
+	GenerationMAC    func([]byte) ([]byte, error)
 	Now              func() time.Time
 	Cipher           sensitive.Cipher
 	ProviderPolicies map[string]ProviderPolicy
@@ -94,18 +96,34 @@ func windowView(window Window) WindowView {
 	return WindowView{ID: window.ID, PolicyRevision: strconv.FormatInt(window.PolicyRevision, 10), LocalStart: window.LocalStart, LocalEnd: window.LocalEnd, StartAt: window.StartAt, EndAt: window.EndAt, DueAt: window.DueAt, Paused: window.Paused}
 }
 
-func (s *Service) policyDigest(q Request, a authz.Snapshot, employee string, command PolicyCommand) ([]byte, error) {
-	if len(s.DigestKey) < sha256.Size || !value.ValidID(q.Key) || !value.ValidID(q.RequestID) {
-		return nil, fault.Invalid
+func (s *Service) mac(frame []byte, generation bool) ([]byte, error) {
+	callback := s.CommandMAC
+	if generation {
+		callback = s.GenerationMAC
+	}
+	if callback != nil {
+		return callback(frame)
+	}
+	if len(s.DigestKey) < sha256.Size {
+		return nil, fault.Unavailable
 	}
 	mac := hmac.New(sha256.New, s.DigestKey)
-	mac.Write([]byte("TEAMLEDGER-ASSESSMENT-POLICY\x00V1\x00"))
-	for _, part := range []string{a.OrgID, a.SubjectID, employee, q.Purpose, command.ExpectedRevision, canonicalPolicy(command)} {
-		mac.Write([]byte(strconv.Itoa(len(part))))
-		mac.Write([]byte{':'})
-		mac.Write([]byte(part))
-	}
+	mac.Write(frame)
 	return mac.Sum(nil), nil
+}
+
+func (s *Service) policyDigest(q Request, a authz.Snapshot, employee string, command PolicyCommand) ([]byte, error) {
+	if !value.ValidID(q.Key) || !value.ValidID(q.RequestID) {
+		return nil, fault.Invalid
+	}
+	frame := []byte("TEAMLEDGER-ASSESSMENT-POLICY\x00V1\x00")
+	for _, part := range []string{a.OrgID, a.SubjectID, employee, q.Purpose, command.ExpectedRevision, canonicalPolicy(command)} {
+		frame = append(frame, []byte(strconv.Itoa(len(part)))...)
+		frame = append(frame, ':')
+		frame = append(frame, part...)
+	}
+	defer clear(frame)
+	return s.mac(frame, false)
 }
 
 func (s *Service) PutPolicy(ctx context.Context, q Request, employee string, command PolicyCommand) (PolicyView, error) {

@@ -168,7 +168,7 @@ func (s *Service) loadCommand(ctx context.Context, p ProposalRecord) (proposalPa
 	return out, e
 }
 func (s *Service) digest(q Request, a authz.Snapshot, op, target string, cmd any) ([]byte, error) {
-	if len(s.DigestKey) < 32 || !value.ValidID(q.Key) {
+	if !value.ValidID(q.Key) {
 		return nil, fault.Invalid
 	}
 	raw, e := json.Marshal(struct {
@@ -179,6 +179,12 @@ func (s *Service) digest(q Request, a authz.Snapshot, op, target string, cmd any
 		return nil, fault.Invalid
 	}
 	defer clear(raw)
+	if s.CommandMAC != nil {
+		return s.CommandMAC(raw)
+	}
+	if len(s.DigestKey) < 32 {
+		return nil, fault.Invalid
+	}
 	h := hmac.New(sha256.New, s.DigestKey)
 	h.Write(raw)
 	return h.Sum(nil), nil

@@ -1,8 +1,6 @@
 package compensation
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 
@@ -22,13 +20,16 @@ func (s *Service) bonusCursorBinding(a authz.Snapshot, employee string, query Bo
 		Grants                           []authz.Grant
 		JobAssignments, Relations        []authz.Tenure
 	}{a.OrgID, a.SubjectID, employee, revision, sessionHash, a.AuthEpoch, a.SubjectEpoch, a.SessionEpoch, query, a.Assignments, a.Grants, a.JobAssignments, a.Relations})
-	if err != nil || len(s.CursorKey) < 32 {
+	if err != nil {
 		return "", fault.Unavailable
 	}
-	mac := hmac.New(sha256.New, s.CursorKey)
-	mac.Write([]byte("TEAMLEDGER-BONUS-CURSOR-BINDING-v1\x00"))
-	mac.Write(raw)
-	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
+	frame := append([]byte("TEAMLEDGER-BONUS-CURSOR-BINDING-v1\x00"), raw...)
+	defer clear(frame)
+	digest, err := s.cursorDigest(frame)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(digest), nil
 }
 
 func pageBonus[T any](values []T, after string, limit int, key func(T) string) ([]T, string) {

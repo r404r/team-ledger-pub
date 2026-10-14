@@ -69,24 +69,45 @@ func (s *Service) validateBonusEnabled() error {
 	return nil
 }
 
-func (s *Service) bonusBusinessDigest(org, employee, source, external string, version int64) ([]byte, error) {
-	key := s.BonusHMACKeys[version]
+func (s *Service) bonusBusinessDigest(ctx context.Context, org, employee, source, external string, version int64) ([]byte, error) {
 	if !contains(s.Policy.ControlledBonusSources, source) {
 		return nil, fault.Unavailable
 	}
-	return bonusBusinessDigest(key, org, employee, source, external)
+	frame, err := bonusBusinessFrame(org, employee, source, external)
+	if err != nil {
+		return nil, err
+	}
+	if s.BonusMAC != nil {
+		value, err := s.BonusMAC(ctx, frame)
+		if err != nil || int64(value.Version) != version || value.KeyID != s.BonusHMACKeyIDs[version] || len(value.Digest) != 32 {
+			clear(value.Digest)
+			return nil, fault.Unavailable
+		}
+		return value.Digest, nil
+	}
+	return bonusBusinessDigest(s.BonusHMACKeys[version], org, employee, source, external)
+}
+
+func framedMessage(domain string, parts ...string) []byte {
+	message := []byte(domain)
+	var size [4]byte
+	for _, part := range parts {
+		size = [4]byte{}
+		binary.BigEndian.PutUint32(size[:], uint32(len(part)))
+		message = append(message, size[:]...)
+		message = append(message, part...)
+	}
+	return message
+}
+
+func messageHMAC(key, message []byte) []byte {
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write(message)
+	return mac.Sum(nil)
 }
 
 func framedHMAC(key []byte, domain string, parts ...string) []byte {
-	mac := hmac.New(sha256.New, key)
-	mac.Write([]byte(domain))
-	var size [4]byte
-	for _, part := range parts {
-		binary.BigEndian.PutUint32(size[:], uint32(len(part)))
-		mac.Write(size[:])
-		mac.Write([]byte(part))
-	}
-	return mac.Sum(nil)
+	return messageHMAC(key, framedMessage(domain, parts...))
 }
 
 func (s *Service) bonusCommandDigest(q Request, a authz.Snapshot, operation, target string, command any) ([]byte, error) {

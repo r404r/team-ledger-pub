@@ -20,6 +20,18 @@ type changesCursor struct {
 	Expires time.Time `json:"expires"`
 }
 
+func (s *Service) cursorDigest(frame []byte) ([]byte, error) {
+	if s.CursorMAC != nil {
+		return s.CursorMAC(frame)
+	}
+	if len(s.CursorKey) < 32 {
+		return nil, fault.Unavailable
+	}
+	h := hmac.New(sha256.New, s.CursorKey)
+	h.Write(frame)
+	return h.Sum(nil), nil
+}
+
 func (s *Service) cursorBinding(a authz.Snapshot, employee string, q ChangesQuery, b readBasis, scope Scope, head int64, sessionHash []byte) (string, error) {
 	q.Cursor = ""
 	raw, e := json.Marshal(struct {
@@ -35,29 +47,35 @@ func (s *Service) cursorBinding(a authz.Snapshot, employee string, q ChangesQuer
 		Grants                      []authz.Grant
 		JobAssignments, Relations   []authz.Tenure
 	}{a.OrgID, a.SubjectID, employee, purpose, head, sessionHash, a.AuthEpoch, a.SubjectEpoch, a.SessionEpoch, b, q, scope, a.Assignments, a.Grants, a.JobAssignments, a.Relations})
-	if e != nil || len(s.CursorKey) < 32 {
+	if e != nil {
 		return "", fault.Unavailable
 	}
-	h := hmac.New(sha256.New, s.CursorKey)
-	h.Write([]byte("TEAMLEDGER-COMPENSATION-CURSOR-BINDING-v1\x00"))
-	h.Write(raw)
-	return base64.RawURLEncoding.EncodeToString(h.Sum(nil)), nil
+	frame := append([]byte("TEAMLEDGER-COMPENSATION-CURSOR-BINDING-v1\x00"), raw...)
+	defer clear(frame)
+	digest, e := s.cursorDigest(frame)
+	if e != nil {
+		return "", e
+	}
+	return base64.RawURLEncoding.EncodeToString(digest), nil
 }
 func (s *Service) signCursor(binding, after string) (string, error) {
-	if len(s.CursorKey) < 32 {
+	if s.CursorMAC == nil && len(s.CursorKey) < 32 {
 		return "", fault.Unavailable
 	}
 	raw, e := json.Marshal(changesCursor{1, binding, after, s.clock().Add(15 * time.Minute)})
 	if e != nil {
 		return "", fault.Unavailable
 	}
-	h := hmac.New(sha256.New, s.CursorKey)
-	h.Write([]byte("TEAMLEDGER-COMPENSATION-CURSOR-v1\x00"))
-	h.Write(raw)
-	return base64.RawURLEncoding.EncodeToString(raw) + "." + base64.RawURLEncoding.EncodeToString(h.Sum(nil)), nil
+	frame := append([]byte("TEAMLEDGER-COMPENSATION-CURSOR-v1\x00"), raw...)
+	defer clear(frame)
+	digest, e := s.cursorDigest(frame)
+	if e != nil {
+		return "", e
+	}
+	return base64.RawURLEncoding.EncodeToString(raw) + "." + base64.RawURLEncoding.EncodeToString(digest), nil
 }
 func (s *Service) cursorPosition(token, binding string) (string, error) {
-	if len(token) > 8192 || len(s.CursorKey) < 32 {
+	if len(token) > 8192 || s.CursorMAC == nil && len(s.CursorKey) < 32 {
 		return "", fault.Invalid
 	}
 	parts := strings.Split(token, ".")
@@ -72,10 +90,10 @@ func (s *Service) cursorPosition(token, binding string) (string, error) {
 	if e != nil {
 		return "", fault.Invalid
 	}
-	h := hmac.New(sha256.New, s.CursorKey)
-	h.Write([]byte("TEAMLEDGER-COMPENSATION-CURSOR-v1\x00"))
-	h.Write(raw)
-	if !hmac.Equal(sig, h.Sum(nil)) {
+	frame := append([]byte("TEAMLEDGER-COMPENSATION-CURSOR-v1\x00"), raw...)
+	expected, macErr := s.cursorDigest(frame)
+	clear(frame)
+	if macErr != nil || !hmac.Equal(sig, expected) {
 		return "", fault.Invalid
 	}
 	var c changesCursor

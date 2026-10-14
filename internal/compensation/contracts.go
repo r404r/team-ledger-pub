@@ -12,9 +12,14 @@ type Service struct {
 	Store                Store
 	Cipher               sensitive.Cipher
 	DigestKey, CursorKey []byte
+	CommandMAC           func([]byte) ([]byte, error)
+	CursorMAC            func([]byte) ([]byte, error)
 	BonusHMACKeys        map[int64][]byte
 	BonusHMACKeyIDs      map[int64]string
 	BonusHMACActive      int64
+	BonusMAC             func(context.Context, []byte) (sensitive.MACValue, error)
+	BonusHMACStaging     func(context.Context, []byte, []byte) (sensitive.MACValue, error)
+	StaffCodeMAC         func(context.Context, []byte) (sensitive.MACValue, error)
 	Policy               Policy
 	Now                  func() time.Time
 	Batches              BatchStore

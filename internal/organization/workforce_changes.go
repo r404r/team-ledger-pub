@@ -96,10 +96,12 @@ type WorkforceCommandReceipt struct {
 }
 
 type WorkforcePreparedItem struct {
-	Command WorkforceChangeItem
-	ID      string
-	Payload *WorkforcePayload
-	Digest  []byte
+	Command          WorkforceChangeItem
+	ID               string
+	Payload          *WorkforcePayload
+	Digest           []byte
+	DigestKeyID      string
+	DigestKeyVersion uint32
 }
 
 type WorkforceWrite struct {

@@ -27,12 +27,16 @@ func filterDigest(f Filter) [32]byte {
 }
 
 func (s *Service) cursorMAC(payload []byte) ([]byte, error) {
+	frame := append([]byte("TEAMLEDGER-GRANT-CURSOR\x00V1\x00"), payload...)
+	defer clear(frame)
+	if s.CursorMAC != nil {
+		return s.CursorMAC(frame)
+	}
 	if len(s.CursorKey) != 32 || len(s.DigestKey) != 32 || bytes.Equal(s.CursorKey, s.DigestKey) {
 		return nil, fault.Unavailable
 	}
 	mac := hmac.New(sha256.New, s.CursorKey)
-	mac.Write([]byte("TEAMLEDGER-GRANT-CURSOR\x00V1\x00"))
-	mac.Write(payload)
+	mac.Write(frame)
 	return mac.Sum(nil), nil
 }
 

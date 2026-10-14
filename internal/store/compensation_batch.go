@@ -96,7 +96,7 @@ func (r *Repository) CreateAdjustmentBatch(ctx context.Context, org, subject, id
 		}
 	}
 	receipt.BatchID, receipt.ResultRevision, receipt.RecordedAt = id, 1, now
-	if err = insertBatchReceipt(ctx, tx, q, org, receipt); err != nil {
+	if err = insertBatchReceipt(ctx, tx, q, org, r.commandReference(), receipt); err != nil {
 		return compensation.BatchRecord{}, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -259,7 +259,7 @@ func (r *Repository) ReplaceAdjustmentBatchLines(ctx context.Context, batch comp
 		return batch, safeError(err)
 	}
 	receipt.BatchID, receipt.ResultRevision = batch.ID, newRevision
-	if err = insertBatchReceipt(ctx, tx, q, batch.OrgID, receipt); err != nil {
+	if err = insertBatchReceipt(ctx, tx, q, batch.OrgID, r.commandReference(), receipt); err != nil {
 		return batch, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -268,10 +268,10 @@ func (r *Repository) ReplaceAdjustmentBatchLines(ctx context.Context, batch comp
 	return r.AdjustmentBatch(ctx, batch.OrgID, batch.ID)
 }
 
-func (r *Repository) AdjustmentWorkforceBasis(ctx context.Context, org, employee string, digest []byte, asOf string) (compensation.BatchWorkforceBasis, error) {
+func (r *Repository) AdjustmentWorkforceBasis(ctx context.Context, org, employee, lookupKeyID string, lookupVersion uint32, digest []byte, asOf string) (compensation.BatchWorkforceBasis, error) {
 	q := r.read()
-	query := "SELECT i.id,i.revision,e.id,e.revision,e.legal_entity_id,e.location_code,a.id,a.revision,a.job_family_id,a.career_level_id FROM employee_business_identifier i JOIN employment_spell e ON e.org_id=i.org_id AND e.employee_id=i.employee_id JOIN job_assignment a ON a.org_id=i.org_id AND a.employee_id=i.employee_id WHERE i.org_id=? AND i.employee_id=? AND i.kind='staff_code' AND i.lookup_key_version=1 AND i.lookup_digest=? AND i.valid_from<=? AND (i.valid_to IS NULL OR i.valid_to>?) AND e.valid_from<=? AND (e.valid_to IS NULL OR e.valid_to>?) AND a.valid_from<=? AND (a.valid_to IS NULL OR a.valid_to>?) ORDER BY i.id,e.id,a.id"
-	rows, err := q.db.QueryContext(ctx, q.structureSQL(query), org, employee, digest, asOf, asOf, asOf, asOf, asOf, asOf)
+	query := "SELECT i.id,i.revision,e.id,e.revision,e.legal_entity_id,e.location_code,a.id,a.revision,a.job_family_id,a.career_level_id FROM employee_business_identifier i JOIN employment_spell e ON e.org_id=i.org_id AND e.employee_id=i.employee_id JOIN job_assignment a ON a.org_id=i.org_id AND a.employee_id=i.employee_id WHERE i.org_id=? AND i.employee_id=? AND i.kind='staff_code' AND i.lookup_key_id=? AND i.lookup_key_version=? AND i.lookup_digest=? AND i.valid_from<=? AND (i.valid_to IS NULL OR i.valid_to>?) AND e.valid_from<=? AND (e.valid_to IS NULL OR e.valid_to>?) AND a.valid_from<=? AND (a.valid_to IS NULL OR a.valid_to>?) ORDER BY i.valid_from DESC,e.valid_from DESC,a.valid_from DESC,i.id,e.id,a.id"
+	rows, err := q.db.QueryContext(ctx, q.structureSQL(query), org, employee, lookupKeyID, lookupVersion, digest, asOf, asOf, asOf, asOf, asOf, asOf)
 	if err != nil {
 		return compensation.BatchWorkforceBasis{}, safeError(err)
 	}
@@ -352,7 +352,7 @@ func (r *Repository) TransitionAdjustmentBatch(ctx context.Context, batch compen
 		return batch, safeError(err)
 	}
 	receipt.BatchID, receipt.ResultRevision, receipt.RecordedAt = batch.ID, batch.Revision+1, now
-	if err = insertBatchReceipt(ctx, tx, q, batch.OrgID, receipt); err != nil {
+	if err = insertBatchReceipt(ctx, tx, q, batch.OrgID, r.commandReference(), receipt); err != nil {
 		return batch, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -360,11 +360,11 @@ func (r *Repository) TransitionAdjustmentBatch(ctx context.Context, batch compen
 	}
 	return r.AdjustmentBatch(ctx, batch.OrgID, batch.ID)
 }
-func insertBatchReceipt(ctx context.Context, tx *sql.Tx, q reader, org string, receipt compensation.BatchCommandReceipt) error {
+func insertBatchReceipt(ctx context.Context, tx *sql.Tx, q reader, org string, reference sensitive.KeyReference, receipt compensation.BatchCommandReceipt) error {
 	if len(receipt.Digest) != sha256.Size || !value.ValidID(receipt.SubjectID) || !value.ValidID(receipt.Key) || !value.ValidID(receipt.BatchID) || !value.ValidID(receipt.RequestID) {
 		return fault.Invalid
 	}
-	if _, err := tx.ExecContext(ctx, q.structureSQL("INSERT INTO compensation_batch_command_receipt(org_id,subject_id,operation,key,digest,batch_id,result_revision,recorded_at) VALUES(?,?,?,?,?,?,?,?)"), org, receipt.SubjectID, receipt.Operation, receipt.Key, receipt.Digest, receipt.BatchID, receipt.ResultRevision, receipt.RecordedAt.UnixMicro()); err != nil {
+	if _, err := tx.ExecContext(ctx, q.structureSQL("INSERT INTO compensation_batch_command_receipt(org_id,subject_id,operation,key,digest,batch_id,result_revision,recorded_at,digest_key_id,digest_key_version) VALUES(?,?,?,?,?,?,?,?,?,?)"), org, receipt.SubjectID, receipt.Operation, receipt.Key, receipt.Digest, receipt.BatchID, receipt.ResultRevision, receipt.RecordedAt.UnixMicro(), reference.KeyID, reference.Version); err != nil {
 		return safeError(err)
 	}
 	auditID := value.NewID()

@@ -261,7 +261,7 @@ func (t *transaction) SaveAssessmentReceipt(ctx context.Context, org, subject, k
 	if org != t.org || len(receipt.Digest) != 32 || receipt.Policy.OrgID != org || receipt.Policy.Revision < 1 {
 		return fault.Invalid
 	}
-	result, err := t.tx.ExecContext(ctx, t.sql("INSERT INTO assessment_command_receipt(org_id,subject_id,operation,key,digest,employee_id,result_revision,recorded_at) VALUES(?,?,'OP-AI-01',?,?,?,?,?)", "INSERT INTO assessment_command_receipt(org_id,subject_id,operation,key,digest,employee_id,result_revision,recorded_at) VALUES($1,$2,'OP-AI-01',$3,$4,$5,$6,$7)"), org, subject, key, receipt.Digest, receipt.Policy.EmployeeID, receipt.Policy.Revision, t.bindTime(receipt.Policy.UpdatedAt))
+	result, err := t.tx.ExecContext(ctx, t.sql("INSERT INTO assessment_command_receipt(org_id,subject_id,operation,key,digest,employee_id,result_revision,recorded_at,digest_key_id,digest_key_version) VALUES(?,?,'OP-AI-01',?,?,?,?,?,?,?)", "INSERT INTO assessment_command_receipt(org_id,subject_id,operation,key,digest,employee_id,result_revision,recorded_at,digest_key_id,digest_key_version) VALUES($1,$2,'OP-AI-01',$3,$4,$5,$6,$7,$8,$9)"), org, subject, key, receipt.Digest, receipt.Policy.EmployeeID, receipt.Policy.Revision, t.bindTime(receipt.Policy.UpdatedAt), t.commandMACKey.KeyID, t.commandMACKey.Version)
 	if err != nil {
 		return safeError(err)
 	}

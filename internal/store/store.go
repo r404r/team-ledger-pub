@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/organization"
+	"github.com/r404r/team-ledger/internal/sensitive"
 	"modernc.org/sqlite"
 )
 
@@ -29,8 +30,10 @@ import (
 var migrations embed.FS
 
 type Repository struct {
-	DB      *sql.DB
-	Backend string
+	DB               *sql.DB
+	Backend          string
+	CommandMACKey    sensitive.KeyReference
+	GenerationMACKey sensitive.KeyReference
 }
 type queryer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
@@ -43,8 +46,10 @@ type reader struct {
 }
 type transaction struct {
 	reader
-	tx  *sql.Tx
-	org string
+	tx               *sql.Tx
+	org              string
+	commandMACKey    sensitive.KeyReference
+	generationMACKey sensitive.KeyReference
 }
 
 var _ organization.Store = (*Repository)(nil)

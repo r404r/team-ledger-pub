@@ -132,13 +132,30 @@ func TestKeydInitLockSocketWrapMACAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	verified, err := client.Verify(context.Background(), DomainCommandReceipt, value.Version, []byte("synthetic command"), value.Digest)
+	verified, err := client.Verify(context.Background(), DomainCommandReceipt, KeyReference{KeyID: value.KeyID, Version: value.Version}, []byte("synthetic command"), value.Digest)
 	if err != nil || !verified {
 		t.Fatal("MAC verification failed", err)
 	}
-	verified, err = client.Verify(context.Background(), DomainCommandReceipt, value.Version, []byte("other"), value.Digest)
+	verified, err = client.Verify(context.Background(), DomainCommandReceipt, KeyReference{KeyID: "wrong-key-id", Version: value.Version}, []byte("synthetic command"), value.Digest)
+	if err == nil || verified {
+		t.Fatal("MAC verification accepted wrong key ID", err)
+	}
+	verified, err = client.Verify(context.Background(), DomainCommandReceipt, KeyReference{KeyID: value.KeyID, Version: value.Version}, []byte("other"), value.Digest)
 	if err != nil || verified {
 		t.Fatal("wrong MAC input accepted", err)
+	}
+	processKey, err := client.ProcessKey(context.Background(), DomainIdentityTransaction, "oidc-transaction-v1")
+	if err != nil || len(processKey) != 32 {
+		t.Fatal("identity transaction derivation failed", err)
+	}
+	again, err := client.ProcessKey(context.Background(), DomainIdentityTransaction, "oidc-transaction-v1")
+	if err != nil || !bytes.Equal(processKey, again) {
+		t.Fatal("identity transaction derivation was not stable", err)
+	}
+	clear(processKey)
+	clear(again)
+	if _, err = client.ProcessKey(context.Background(), DomainCommandReceipt, "forbidden"); !errors.Is(err, ErrInvalid) {
+		t.Fatal("MAC domain exposed a process key", err)
 	}
 	manifest := bytes.Repeat([]byte{0x5a}, 32)
 	wrapperTarget := KeyReference{KeyID: "00000000-0000-4000-8000-000000000002", Version: 2}
@@ -223,7 +240,7 @@ func TestKeydInitLockSocketWrapMACAndRestart(t *testing.T) {
 	if _, err = client.Acknowledge(context.Background(), DomainCommandReceipt, macManifest); err != nil {
 		t.Fatal("MAC acknowledgement failed", err)
 	}
-	verified, err = client.Verify(context.Background(), DomainCommandReceipt, value.Version, []byte("synthetic command"), value.Digest)
+	verified, err = client.Verify(context.Background(), DomainCommandReceipt, KeyReference{KeyID: value.KeyID, Version: value.Version}, []byte("synthetic command"), value.Digest)
 	if err != nil || !verified {
 		t.Fatal("historical MAC was not retained verify-only", err)
 	}

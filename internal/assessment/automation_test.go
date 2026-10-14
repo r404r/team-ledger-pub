@@ -11,6 +11,7 @@ import (
 	"github.com/r404r/team-ledger/internal/assessment"
 	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/interview"
+	"github.com/r404r/team-ledger/internal/sensitive"
 	"github.com/r404r/team-ledger/internal/testsupport"
 	"github.com/r404r/team-ledger/internal/value"
 )
@@ -55,6 +56,11 @@ func TestAssessmentIndependentApprovalLeaseFencingEncryptedDraftAndPublish(t *te
 		if !errors.Is(err, fault.Conflict) {
 			t.Fatal("requester must not self-approve:", err)
 		}
+		f.Repo.GenerationMACKey = sensitive.KeyReference{KeyID: "unexpected-generation-key", Version: 2}
+		if _, mismatchErr := f.Assessment.ApproveAssessment(ctx, assessmentRequest(f.Manager), employee, assessment.ApproveCommand{InputID: input.ID, ProviderPolicyID: f.AssessmentProviderID, Audience: "manager_followup"}); !errors.Is(mismatchErr, fault.Unavailable) {
+			t.Fatal("generation key reference mismatch was accepted:", mismatchErr)
+		}
+		f.Repo.GenerationMACKey = sensitive.KeyReference{}
 		job, err := f.Assessment.ApproveAssessment(ctx, assessmentRequest(f.Manager), employee, assessment.ApproveCommand{InputID: input.ID, ProviderPolicyID: f.AssessmentProviderID, Audience: "manager_followup"})
 		if err != nil || job.State != "queued" {
 			t.Fatal("independent approval:", job, err)

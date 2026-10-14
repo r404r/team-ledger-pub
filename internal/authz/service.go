@@ -1,6 +1,7 @@
 package authz
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/hmac"
@@ -23,6 +24,8 @@ import (
 type Service struct {
 	Store                Store
 	DigestKey, CursorKey []byte
+	CommandMAC           func([]byte) ([]byte, error)
+	CursorMAC            func([]byte) ([]byte, error)
 	Now                  func() time.Time
 }
 
@@ -511,25 +514,30 @@ func (s *Service) Revoke(ctx context.Context, request Request, id string, comman
 }
 
 func (s *Service) digest(request Request, current Snapshot, operation, object string, command any) ([]byte, error) {
-	if len(s.DigestKey) != 32 {
-		return nil, fault.Unavailable
-	}
 	body, err := json.Marshal(command)
 	if err != nil {
 		return nil, fault.Invalid
 	}
 	defer clear(body)
-	mac := hmac.New(sha256.New, s.DigestKey)
-	mac.Write([]byte("TEAMLEDGER-GRANT-COMMAND\x00V1\x00"))
+	var frame bytes.Buffer
+	frame.WriteString("TEAMLEDGER-GRANT-COMMAND\x00V1\x00")
 	var size [4]byte
 	for _, field := range []string{current.OrgID, current.SubjectID, request.Purpose, operation, object} {
 		binary.BigEndian.PutUint32(size[:], uint32(len(field)))
-		mac.Write(size[:])
-		mac.Write([]byte(field))
+		frame.Write(size[:])
+		frame.WriteString(field)
 	}
 	binary.BigEndian.PutUint32(size[:], uint32(len(body)))
-	mac.Write(size[:])
-	mac.Write(body)
+	frame.Write(size[:])
+	frame.Write(body)
+	if s.CommandMAC != nil {
+		return s.CommandMAC(frame.Bytes())
+	}
+	if len(s.DigestKey) != 32 {
+		return nil, fault.Unavailable
+	}
+	mac := hmac.New(sha256.New, s.DigestKey)
+	mac.Write(frame.Bytes())
 	return mac.Sum(nil), nil
 }
 

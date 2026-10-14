@@ -57,7 +57,7 @@ func (r *Repository) CreateAssessmentInput(ctx context.Context, actor authz.Snap
 		if currentEpoch != expectedEpoch {
 			return fault.Conflict
 		}
-		if _, insertErr := t.tx.ExecContext(ctx, t.sql("INSERT INTO approved_assessment_input(org_id,employee_id,id,window_id,generation_digest,source_digest,facts_json,requested_by,created_at,status) VALUES(?,?,?,?,?,?,?,?,?,'proposed')", "INSERT INTO approved_assessment_input(org_id,employee_id,id,window_id,generation_digest,source_digest,facts_json,requested_by,created_at,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'proposed')"), actor.OrgID, window.EmployeeID, out.ID, window.ID, generation, source, string(raw), actor.SubjectID, t.bindTime(now)); insertErr != nil {
+		if _, insertErr := t.tx.ExecContext(ctx, t.sql("INSERT INTO approved_assessment_input(org_id,employee_id,id,window_id,generation_digest,source_digest,facts_json,requested_by,created_at,status,generation_key_id,generation_key_version) VALUES(?,?,?,?,?,?,?,?,?,'proposed',?,?)", "INSERT INTO approved_assessment_input(org_id,employee_id,id,window_id,generation_digest,source_digest,facts_json,requested_by,created_at,status,generation_key_id,generation_key_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'proposed',$10,$11)"), actor.OrgID, window.EmployeeID, out.ID, window.ID, generation, source, string(raw), actor.SubjectID, t.bindTime(now), t.generationMACKey.KeyID, t.generationMACKey.Version); insertErr != nil {
 			return safeError(insertErr)
 		}
 		return t.Audit(ctx, audit)
@@ -72,12 +72,16 @@ func (r *Repository) ApproveAssessmentInput(ctx context.Context, actor authz.Sna
 	var out assessment.Job
 	err := r.WithTx(ctx, actor.OrgID, func(base organization.Tx) error {
 		t := base.(*transaction)
-		var requested, status, raw string
-		if err := t.tx.QueryRowContext(ctx, t.sql("SELECT employee_id,window_id,requested_by,status,facts_json,source_digest,generation_digest FROM approved_assessment_input WHERE org_id=? AND id=?", "SELECT employee_id,window_id,requested_by,status,facts_json,source_digest,generation_digest FROM approved_assessment_input WHERE org_id=$1 AND id=$2 FOR UPDATE"), actor.OrgID, inputID).Scan(&out.EmployeeID, &out.WindowID, &requested, &status, &raw, &out.SourceDigest, &out.GenerationDigest); err != nil {
+		var requested, status, raw, generationKeyID string
+		var generationKeyVersion int64
+		if err := t.tx.QueryRowContext(ctx, t.sql("SELECT employee_id,window_id,requested_by,status,facts_json,source_digest,generation_digest,generation_key_id,generation_key_version FROM approved_assessment_input WHERE org_id=? AND id=?", "SELECT employee_id,window_id,requested_by,status,facts_json,source_digest,generation_digest,generation_key_id,generation_key_version FROM approved_assessment_input WHERE org_id=$1 AND id=$2 FOR UPDATE"), actor.OrgID, inputID).Scan(&out.EmployeeID, &out.WindowID, &requested, &status, &raw, &out.SourceDigest, &out.GenerationDigest, &generationKeyID, &generationKeyVersion); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return fault.NotFound
 			}
 			return safeError(err)
+		}
+		if generationKeyID != t.generationMACKey.KeyID || generationKeyVersion != int64(t.generationMACKey.Version) {
+			return fault.Unavailable
 		}
 		if status != "proposed" || requested == actor.SubjectID || !json.Valid([]byte(raw)) {
 			return fault.Conflict
@@ -93,7 +97,7 @@ func (r *Repository) ApproveAssessmentInput(ctx context.Context, actor authz.Sna
 		if _, err := t.tx.ExecContext(ctx, t.sql("UPDATE approved_assessment_input SET status='approved',approved_by=?,approved_at=? WHERE org_id=? AND id=? AND status='proposed'", "UPDATE approved_assessment_input SET status='approved',approved_by=$1,approved_at=$2 WHERE org_id=$3 AND id=$4 AND status='proposed'"), actor.SubjectID, t.bindTime(now), actor.OrgID, inputID); err != nil {
 			return safeError(err)
 		}
-		if _, err := t.tx.ExecContext(ctx, t.sql("INSERT INTO assessment_job(org_id,employee_id,id,input_id,window_id,generation_digest,source_digest,provider_policy_id,audience,state,max_attempts,deadline_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,'queued',?,?,?)", "INSERT INTO assessment_job(org_id,employee_id,id,input_id,window_id,generation_digest,source_digest,provider_policy_id,audience,state,max_attempts,deadline_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'queued',$10,$11,$12)"), actor.OrgID, out.EmployeeID, out.ID, inputID, out.WindowID, out.GenerationDigest, out.SourceDigest, provider, audience, out.MaxAttempts, t.bindTime(out.DeadlineAt), t.bindTime(now)); err != nil {
+		if _, err := t.tx.ExecContext(ctx, t.sql("INSERT INTO assessment_job(org_id,employee_id,id,input_id,window_id,generation_digest,source_digest,provider_policy_id,audience,state,max_attempts,deadline_at,created_at,generation_key_id,generation_key_version) VALUES(?,?,?,?,?,?,?,?,?,'queued',?,?,?,?,?)", "INSERT INTO assessment_job(org_id,employee_id,id,input_id,window_id,generation_digest,source_digest,provider_policy_id,audience,state,max_attempts,deadline_at,created_at,generation_key_id,generation_key_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'queued',$10,$11,$12,$13,$14)"), actor.OrgID, out.EmployeeID, out.ID, inputID, out.WindowID, out.GenerationDigest, out.SourceDigest, provider, audience, out.MaxAttempts, t.bindTime(out.DeadlineAt), t.bindTime(now), t.generationMACKey.KeyID, t.generationMACKey.Version); err != nil {
 			return safeError(err)
 		}
 		return t.Audit(ctx, audit)
@@ -180,7 +184,7 @@ func (r *Repository) ClaimAssessmentJob(ctx context.Context, org, worker, key st
 			return fault.Conflict
 		}
 		claimed = true
-		_, err = t.tx.ExecContext(ctx, t.sql("INSERT INTO assessment_job_receipt(org_id,worker_id,operation,key,digest,job_id,recorded_at) VALUES(?,?,'OP-AI-06',?,?,?,?)", "INSERT INTO assessment_job_receipt(org_id,worker_id,operation,key,digest,job_id,recorded_at) VALUES($1,$2,'OP-AI-06',$3,$4,$5,$6)"), org, worker, key, requestDigest, out.ID, t.bindTime(now))
+		_, err = t.tx.ExecContext(ctx, t.sql("INSERT INTO assessment_job_receipt(org_id,worker_id,operation,key,digest,job_id,recorded_at,digest_key_id,digest_key_version) VALUES(?,?,'OP-AI-06',?,?,?,?,?,?)", "INSERT INTO assessment_job_receipt(org_id,worker_id,operation,key,digest,job_id,recorded_at,digest_key_id,digest_key_version) VALUES($1,$2,'OP-AI-06',$3,$4,$5,$6,$7,$8)"), org, worker, key, requestDigest, out.ID, t.bindTime(now), t.commandMACKey.KeyID, t.commandMACKey.Version)
 		return safeError(err)
 	})
 	if err != nil {
@@ -281,7 +285,7 @@ func (r *Repository) CompleteAssessmentJob(ctx context.Context, worker, key, job
 		if _, err := t.tx.ExecContext(ctx, t.sql("UPDATE approved_assessment_input SET status='consumed' WHERE org_id=? AND id=? AND status='approved'", "UPDATE approved_assessment_input SET status='consumed' WHERE org_id=$1 AND id=$2 AND status='approved'"), out.OrgID, inputID); err != nil {
 			return safeError(err)
 		}
-		_, err := t.tx.ExecContext(ctx, t.sql("INSERT INTO assessment_job_receipt(org_id,worker_id,operation,key,digest,job_id,result_id,recorded_at) VALUES(?,?,'OP-AI-07',?,?,?,?,?)", "INSERT INTO assessment_job_receipt(org_id,worker_id,operation,key,digest,job_id,result_id,recorded_at) VALUES($1,$2,'OP-AI-07',$3,$4,$5,$6,$7)"), out.OrgID, worker, key, receiptDigest, job, out.ID, t.bindTime(now))
+		_, err := t.tx.ExecContext(ctx, t.sql("INSERT INTO assessment_job_receipt(org_id,worker_id,operation,key,digest,job_id,result_id,recorded_at,digest_key_id,digest_key_version) VALUES(?,?,'OP-AI-07',?,?,?,?,?,?,?)", "INSERT INTO assessment_job_receipt(org_id,worker_id,operation,key,digest,job_id,result_id,recorded_at,digest_key_id,digest_key_version) VALUES($1,$2,'OP-AI-07',$3,$4,$5,$6,$7,$8,$9)"), out.OrgID, worker, key, receiptDigest, job, out.ID, t.bindTime(now), t.commandMACKey.KeyID, t.commandMACKey.Version)
 		return safeError(err)
 	})
 	return out, err
@@ -479,7 +483,7 @@ func (r *Repository) CreateScheduledAssessment(ctx context.Context, actor authz.
 			return fault.Conflict
 		}
 		inputID := value.NewID()
-		result, insertErr := t.tx.ExecContext(ctx, t.sql("INSERT INTO approved_assessment_input(org_id,employee_id,id,window_id,generation_digest,source_digest,facts_json,requested_by,created_at,approved_by,approved_at,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,'approved') ON CONFLICT(org_id,window_id,generation_digest) WHERE status<>'invalidated' DO NOTHING", "INSERT INTO approved_assessment_input(org_id,employee_id,id,window_id,generation_digest,source_digest,facts_json,requested_by,created_at,approved_by,approved_at,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'approved') ON CONFLICT(org_id,window_id,generation_digest) WHERE status<>'invalidated' DO NOTHING"), scheduled.OrgID, scheduled.EmployeeID, inputID, scheduled.ID, generation, source, string(raw), actor.SubjectID, t.bindTime(now), scheduled.ApprovedBy, t.bindTime(now))
+		result, insertErr := t.tx.ExecContext(ctx, t.sql("INSERT INTO approved_assessment_input(org_id,employee_id,id,window_id,generation_digest,source_digest,facts_json,requested_by,created_at,approved_by,approved_at,status,generation_key_id,generation_key_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,'approved',?,?) ON CONFLICT(org_id,window_id,generation_digest) WHERE status<>'invalidated' DO NOTHING", "INSERT INTO approved_assessment_input(org_id,employee_id,id,window_id,generation_digest,source_digest,facts_json,requested_by,created_at,approved_by,approved_at,status,generation_key_id,generation_key_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'approved',$12,$13) ON CONFLICT(org_id,window_id,generation_digest) WHERE status<>'invalidated' DO NOTHING"), scheduled.OrgID, scheduled.EmployeeID, inputID, scheduled.ID, generation, source, string(raw), actor.SubjectID, t.bindTime(now), scheduled.ApprovedBy, t.bindTime(now), t.generationMACKey.KeyID, t.generationMACKey.Version)
 		if insertErr != nil {
 			return safeError(insertErr)
 		}
@@ -492,7 +496,7 @@ func (r *Repository) CreateScheduledAssessment(ctx context.Context, actor authz.
 			return safeError(insertErr)
 		}
 		jobID := value.NewID()
-		_, insertErr = t.tx.ExecContext(ctx, t.sql("INSERT INTO assessment_job(org_id,employee_id,id,input_id,window_id,generation_digest,source_digest,provider_policy_id,audience,state,max_attempts,deadline_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,'queued',3,?,?)", "INSERT INTO assessment_job(org_id,employee_id,id,input_id,window_id,generation_digest,source_digest,provider_policy_id,audience,state,max_attempts,deadline_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'queued',3,$10,$11)"), scheduled.OrgID, scheduled.EmployeeID, jobID, inputID, scheduled.ID, generation, source, scheduled.ProviderPolicyID, scheduled.Audience, t.bindTime(now.Add(10*time.Minute)), t.bindTime(now))
+		_, insertErr = t.tx.ExecContext(ctx, t.sql("INSERT INTO assessment_job(org_id,employee_id,id,input_id,window_id,generation_digest,source_digest,provider_policy_id,audience,state,max_attempts,deadline_at,created_at,generation_key_id,generation_key_version) VALUES(?,?,?,?,?,?,?,?,?,'queued',3,?,?,?,?)", "INSERT INTO assessment_job(org_id,employee_id,id,input_id,window_id,generation_digest,source_digest,provider_policy_id,audience,state,max_attempts,deadline_at,created_at,generation_key_id,generation_key_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'queued',3,$10,$11,$12,$13)"), scheduled.OrgID, scheduled.EmployeeID, jobID, inputID, scheduled.ID, generation, source, scheduled.ProviderPolicyID, scheduled.Audience, t.bindTime(now.Add(10*time.Minute)), t.bindTime(now), t.generationMACKey.KeyID, t.generationMACKey.Version)
 		if insertErr != nil {
 			return safeError(insertErr)
 		}

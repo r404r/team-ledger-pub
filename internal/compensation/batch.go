@@ -183,7 +183,7 @@ type BatchStore interface {
 	AdjustmentBatches(context.Context, string, int, string, int) ([]BatchRecord, error)
 	AdjustmentBatchLines(context.Context, string, string, int64) ([]BatchLineRecord, error)
 	AdjustmentBatchPayload(context.Context, string, string) (BatchPayloadRecord, error)
-	AdjustmentWorkforceBasis(context.Context, string, string, []byte, string) (BatchWorkforceBasis, error)
+	AdjustmentWorkforceBasis(context.Context, string, string, string, uint32, []byte, string) (BatchWorkforceBasis, error)
 	AdjustmentBatchCounts(context.Context, string, string, int) (AdjustmentCounts, error)
 	AdjustmentBatchOriginalEvent(context.Context, string, string, string) (string, error)
 	CreateAdjustmentImportCandidate(context.Context, ImportCandidateRecord, BatchCommandReceipt) (ImportCandidateRecord, error)

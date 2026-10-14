@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -103,27 +104,12 @@ func run() error {
 	if e != nil || ready.MaterialGeneration == 0 {
 		return errors.New("key service unavailable")
 	}
-	csrf, e := keys.ProcessKey(startup, sensitive.DomainCSRFToken, "csrf-v1")
-	if e != nil {
-		return errors.New("key service unavailable")
+	leaseKey := make([]byte, 32)
+	if _, e = rand.Read(leaseKey); e != nil {
+		return errors.New("random source unavailable")
 	}
-	defer clear(csrf)
-	digest, e := keys.ProcessKey(startup, sensitive.DomainCommandReceipt, "command-receipt-v1")
-	if e != nil {
-		return errors.New("key service unavailable")
-	}
-	defer clear(digest)
-	cursor, e := keys.ProcessKey(startup, sensitive.DomainCursorToken, "cursor-v1")
-	if e != nil {
-		return errors.New("key service unavailable")
-	}
-	defer clear(cursor)
-	identityKey, e := keys.ProcessKey(startup, sensitive.DomainIdentitySubjectLookup, "identity-subject-v1")
-	if e != nil {
-		return errors.New("key service unavailable")
-	}
-	defer clear(identityKey)
-	transactionKey, e := keys.ProcessKey(startup, sensitive.DomainCommandReceipt, "identity-transaction-v1")
+	defer clear(leaseKey)
+	transactionKey, e := keys.ProcessKey(startup, sensitive.DomainIdentityTransaction, "identity-transaction-v1")
 	if e != nil {
 		return errors.New("key service unavailable")
 	}
@@ -148,18 +134,15 @@ func run() error {
 	if e != nil {
 		return e
 	}
-	var bonusHMACKeys map[int64][]byte
 	var bonusHMACKeyIDs map[int64]string
 	var bonusHMACActive int64
 	if len(policy.ControlledBonusSources) != 0 {
-		value, err := keys.MAC(startup, sensitive.DomainBonusPaymentLookup, []byte("TEAMLEDGER-PROCESS-KEY\x00bonus-payment-v1"))
-		if err != nil {
+		reference := ready.ActiveKeys[sensitive.DomainBonusPaymentLookup]
+		if reference.Version == 0 || reference.KeyID == "" {
 			return errors.New("key service unavailable")
 		}
-		bonusHMACActive = int64(value.Version)
-		bonusHMACKeys = map[int64][]byte{bonusHMACActive: value.Digest}
-		bonusHMACKeyIDs = map[int64]string{bonusHMACActive: value.KeyID}
-		defer clear(value.Digest)
+		bonusHMACActive = int64(reference.Version)
+		bonusHMACKeyIDs = map[int64]string{bonusHMACActive: reference.KeyID}
 	}
 	keyPEM, e := configfile.Read(cfg["TLS_KEY_FILE"], 64<<10, true)
 	if e != nil {
@@ -199,18 +182,41 @@ func run() error {
 	if repo.VerifyOrInitializeCryptoState(startup, ready, time.Now().UTC()) != nil {
 		return errors.New("key material does not match database")
 	}
-	service := &organization.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, DigestKey: digest, CursorKey: cursor, Now: time.Now}
-	interviews := &interview.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: interviewWrapper}, DigestKey: digest, CursorKey: cursor, Now: time.Now}
-	assessments := &assessment.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: assessmentWrapper}, DigestKey: digest, ProviderPolicies: assessmentProviders, Workers: assessmentWorkers, ServiceSubjects: assessmentServices, Now: time.Now}
+	repo.CommandMACKey = ready.ActiveKeys[sensitive.DomainCommandReceipt]
+	repo.GenerationMACKey = ready.ActiveKeys[sensitive.DomainAssessmentGeneration]
+	if repo.CommandMACKey.KeyID == "" || repo.CommandMACKey.Version == 0 || repo.GenerationMACKey.KeyID == "" || repo.GenerationMACKey.Version == 0 {
+		return errors.New("key material does not match persistent MAC contracts")
+	}
+	commandMAC := func(frame []byte) ([]byte, error) {
+		value, err := keys.MAC(ctx, sensitive.DomainCommandReceipt, frame)
+		return value.Digest, err
+	}
+	generationMAC := func(frame []byte) ([]byte, error) {
+		value, err := keys.MAC(ctx, sensitive.DomainAssessmentGeneration, frame)
+		return value.Digest, err
+	}
+	cursorMAC := func(frame []byte) ([]byte, error) {
+		value, err := keys.MAC(ctx, sensitive.DomainCursorToken, frame)
+		return value.Digest, err
+	}
+	service := &organization.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: wrapper}, CommandMAC: commandMAC, CursorMAC: cursorMAC, StaffCodeMAC: func(ctx context.Context, frame []byte) (sensitive.MACValue, error) {
+		return keys.MAC(ctx, sensitive.DomainStaffCodeLookup, frame)
+	}, Now: time.Now}
+	interviews := &interview.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: interviewWrapper}, CommandMAC: commandMAC, CursorMAC: cursorMAC, Now: time.Now}
+	assessments := &assessment.Service{Store: repo, Cipher: sensitive.Cipher{Wrapper: assessmentWrapper}, DigestKey: leaseKey, CommandMAC: commandMAC, GenerationMAC: generationMAC, ProviderPolicies: assessmentProviders, Workers: assessmentWorkers, ServiceSubjects: assessmentServices, Now: time.Now}
 	schedulerFailed := make(chan struct{}, 1)
 	go func() {
 		if runAssessmentScheduler(ctx, assessments) != nil {
 			schedulerFailed <- struct{}{}
 		}
 	}()
-	finance := &compensation.Service{Store: repo, Batches: repo, Cipher: sensitive.Cipher{Wrapper: financialWrapper}, DigestKey: digest, CursorKey: cursor, BonusHMACKeys: bonusHMACKeys, BonusHMACKeyIDs: bonusHMACKeyIDs, BonusHMACActive: bonusHMACActive, Policy: policy, Now: time.Now}
-	grants := &authz.Service{Store: repo, DigestKey: digest, CursorKey: cursor, Now: time.Now}
-	identityMode, oidcConfig, closeIdentity, e := identityConfiguration(cfg["PUBLIC_ORIGIN"], csrf, digest, cursor, identityKey, transactionKey)
+	finance := &compensation.Service{Store: repo, Batches: repo, Cipher: sensitive.Cipher{Wrapper: financialWrapper}, CommandMAC: commandMAC, CursorMAC: cursorMAC, BonusHMACKeyIDs: bonusHMACKeyIDs, BonusHMACActive: bonusHMACActive, BonusMAC: func(ctx context.Context, frame []byte) (sensitive.MACValue, error) {
+		return keys.MAC(ctx, sensitive.DomainBonusPaymentLookup, frame)
+	}, StaffCodeMAC: func(ctx context.Context, frame []byte) (sensitive.MACValue, error) {
+		return keys.MAC(ctx, sensitive.DomainStaffCodeLookup, frame)
+	}, Policy: policy, Now: time.Now}
+	grants := &authz.Service{Store: repo, CommandMAC: commandMAC, CursorMAC: cursorMAC, Now: time.Now}
+	identityMode, oidcConfig, closeIdentity, e := identityConfiguration(cfg["PUBLIC_ORIGIN"], transactionKey)
 	if e != nil {
 		return e
 	}
@@ -222,14 +228,14 @@ func run() error {
 	}
 	var identities *identity.Service
 	if identityMode == "local" {
-		identities, e = identity.NewLocal(startup, repo, repo, csrf, keys)
+		identities, e = identity.NewLocal(startup, repo, repo, keys)
 	} else {
-		identities, e = identity.New(startup, repo, csrf, oidcConfig)
+		identities, e = identity.New(startup, repo, keys, oidcConfig)
 	}
 	if e != nil {
 		return errors.New("identity unavailable")
 	}
-	handler, e := httpapi.New(service, interviews, assessments, finance, grants, identities, csrf, cfg["PUBLIC_ORIGIN"], cfg["WEB_DIR"], cfg["DEPLOYMENT_ID"])
+	handler, e := httpapi.New(service, interviews, assessments, finance, grants, identities, keys, cfg["PUBLIC_ORIGIN"], cfg["WEB_DIR"], cfg["DEPLOYMENT_ID"])
 	if e != nil {
 		return e
 	}

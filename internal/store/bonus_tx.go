@@ -99,18 +99,18 @@ func (t *transaction) CommitBonus(ctx context.Context, w compensation.BonusWrite
 		}
 	}
 	if v := w.Payment; v != nil {
-		if v.OrgID != t.org || v.EmployeeID != a.EmployeeID || v.BasisRevision != a.Revision || len(v.BusinessDigest) != 32 {
+		if v.OrgID != t.org || v.EmployeeID != a.EmployeeID || v.BasisRevision != a.Revision || v.BusinessKeyID == "" || v.BusinessKeyVersion <= 0 || len(v.BusinessDigest) != 32 {
 			return fault.Invalid
 		}
-		var ready string
+		var ready, activeKeyID string
 		var active int64
-		if err := t.tx.QueryRowContext(ctx, t.structureSQL("SELECT state,active_version FROM hmac_index_state WHERE org_id=? AND domain='bonus_payment'"), v.OrgID).Scan(&ready, &active); err != nil || ready != "ready" || active != v.BusinessKeyVersion {
+		if err := t.tx.QueryRowContext(ctx, t.structureSQL("SELECT state,active_key_id,active_version FROM hmac_index_state WHERE org_id=? AND domain='bonus_payment'"), v.OrgID).Scan(&ready, &activeKeyID, &active); err != nil || ready != "ready" || activeKeyID != v.BusinessKeyID || active != v.BusinessKeyVersion {
 			return fault.Unavailable
 		}
-		if _, err := t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO bonus_payment(org_id,employee_id,id,payload_id,kind,paid_date,business_source,award_id,original_payment_id,business_key_version,basis_revision,business_digest,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)"), v.OrgID, v.EmployeeID, v.ID, v.PayloadID, v.Kind, v.PaidDate, v.BusinessSource, v.AwardID, v.OriginalPaymentID, v.BusinessKeyVersion, v.BasisRevision, v.BusinessDigest, t.bindTime(v.RecordedAt)); err != nil {
+		if _, err := t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO bonus_payment(org_id,employee_id,id,payload_id,kind,paid_date,business_source,award_id,original_payment_id,business_key_id,business_key_version,basis_revision,business_digest,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)"), v.OrgID, v.EmployeeID, v.ID, v.PayloadID, v.Kind, v.PaidDate, v.BusinessSource, v.AwardID, v.OriginalPaymentID, v.BusinessKeyID, v.BusinessKeyVersion, v.BasisRevision, v.BusinessDigest, t.bindTime(v.RecordedAt)); err != nil {
 			return safeError(err)
 		}
-		if _, err := t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO bonus_payment_business_index(org_id,employee_id,domain,key_version,digest,payment_id) VALUES(?,?,'bonus_payment',?,?,?)"), v.OrgID, v.EmployeeID, v.BusinessKeyVersion, v.BusinessDigest, v.ID); err != nil {
+		if _, err := t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO bonus_payment_business_index(org_id,employee_id,domain,key_id,key_version,digest,payment_id) VALUES(?,?,'bonus_payment',?,?,?,?)"), v.OrgID, v.EmployeeID, v.BusinessKeyID, v.BusinessKeyVersion, v.BusinessDigest, v.ID); err != nil {
 			return safeError(err)
 		}
 	}
@@ -126,7 +126,7 @@ func (t *transaction) CommitBonus(ctx context.Context, w compensation.BonusWrite
 	if err != nil {
 		return fault.Invalid
 	}
-	if _, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO bonus_command_receipt(org_id,subject_id,operation,key,digest,result_json,recorded_at) VALUES(?,?,?,?,?,?,?)"), a.OrgID, w.Audit.SubjectID, w.Operation, w.CommandKey, w.CommandDigest, string(encoded), t.bindTime(w.Audit.At)); err != nil {
+	if _, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO bonus_command_receipt(org_id,subject_id,operation,key,digest,result_json,recorded_at,digest_key_id,digest_key_version) VALUES(?,?,?,?,?,?,?,?,?)"), a.OrgID, w.Audit.SubjectID, w.Operation, w.CommandKey, w.CommandDigest, string(encoded), t.bindTime(w.Audit.At), t.commandMACKey.KeyID, t.commandMACKey.Version); err != nil {
 		return safeError(err)
 	}
 	return t.Audit(ctx, w.Audit)

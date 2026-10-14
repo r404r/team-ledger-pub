@@ -28,9 +28,9 @@ func (r reader) Security(ctx context.Context, hash []byte, org, employee string)
 	var s authz.Snapshot
 	var expires, idle, mfa dbTime
 	q := r.sql(
-		"SELECT s.subject_id,s.org_id,o.timezone,u.active,s.revoked,s.subject_epoch,u.auth_epoch,g.auth_epoch,s.expires_at,s.idle_expires_at,s.mfa_until,s.csrf_hash,s.csrf_version FROM session s JOIN subject u ON u.org_id=s.org_id AND u.id=s.subject_id JOIN organization o ON o.id=s.org_id JOIN authorization_guard g ON g.org_id=s.org_id WHERE s.token_hash=? AND (?='' OR s.org_id=?)",
-		"SELECT s.subject_id,s.org_id,o.timezone,u.active,s.revoked,s.subject_epoch,u.auth_epoch,g.auth_epoch,s.expires_at,s.idle_expires_at,s.mfa_until,s.csrf_hash,s.csrf_version FROM session s JOIN subject u ON u.org_id=s.org_id AND u.id=s.subject_id JOIN organization o ON o.id=s.org_id JOIN authorization_guard g ON g.org_id=s.org_id WHERE s.token_hash=$1 AND ($2='' OR s.org_id=$3)")
-	err := r.db.QueryRowContext(ctx, q, hash, org, org).Scan(&s.SubjectID, &s.OrgID, &s.Timezone, &s.Active, &s.SessionRevoked, &s.SessionEpoch, &s.SubjectEpoch, &s.AuthEpoch, &expires, &idle, &mfa, &s.CSRFHash, &s.CSRFVersion)
+		"SELECT s.subject_id,s.org_id,o.timezone,u.active,s.revoked,s.subject_epoch,u.auth_epoch,g.auth_epoch,s.expires_at,s.idle_expires_at,s.mfa_until,s.csrf_hash,s.csrf_key_id,s.csrf_version FROM session s JOIN subject u ON u.org_id=s.org_id AND u.id=s.subject_id JOIN organization o ON o.id=s.org_id JOIN authorization_guard g ON g.org_id=s.org_id WHERE s.token_hash=? AND (?='' OR s.org_id=?)",
+		"SELECT s.subject_id,s.org_id,o.timezone,u.active,s.revoked,s.subject_epoch,u.auth_epoch,g.auth_epoch,s.expires_at,s.idle_expires_at,s.mfa_until,s.csrf_hash,s.csrf_key_id,s.csrf_version FROM session s JOIN subject u ON u.org_id=s.org_id AND u.id=s.subject_id JOIN organization o ON o.id=s.org_id JOIN authorization_guard g ON g.org_id=s.org_id WHERE s.token_hash=$1 AND ($2='' OR s.org_id=$3)")
+	err := r.db.QueryRowContext(ctx, q, hash, org, org).Scan(&s.SubjectID, &s.OrgID, &s.Timezone, &s.Active, &s.SessionRevoked, &s.SessionEpoch, &s.SubjectEpoch, &s.AuthEpoch, &expires, &idle, &mfa, &s.CSRFHash, &s.CSRFKeyID, &s.CSRFVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return s, fault.Unauthenticated
 	}

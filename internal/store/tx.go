@@ -10,6 +10,7 @@ import (
 
 	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/organization"
+	"github.com/r404r/team-ledger/internal/sensitive"
 	"github.com/r404r/team-ledger/internal/value"
 )
 
@@ -48,12 +49,27 @@ func (r *Repository) WithTx(ctx context.Context, org string, fn func(organizatio
 			return safeError(err)
 		}
 	}
-	t := &transaction{reader: reader{tx, r.Backend}, tx: tx, org: org}
+	t := &transaction{reader: reader{tx, r.Backend}, tx: tx, org: org, commandMACKey: r.commandReference(), generationMACKey: r.generationReference()}
 	if err = fn(t); err != nil {
 		return err
 	}
 	return safeError(tx.Commit())
 }
+func exactReference(reference sensitive.KeyReference, fallback string) sensitive.KeyReference {
+	if reference.KeyID == "" || reference.Version == 0 {
+		return sensitive.KeyReference{KeyID: fallback, Version: 1}
+	}
+	return reference
+}
+
+func (r *Repository) commandReference() sensitive.KeyReference {
+	return exactReference(r.CommandMACKey, "legacy-command-receipt")
+}
+
+func (r *Repository) generationReference() sensitive.KeyReference {
+	return exactReference(r.GenerationMACKey, "legacy-assessment-generation")
+}
+
 func (t *transaction) bindTime(at time.Time) any {
 	if t.backend == "sqlite" {
 		return at.UTC().UnixMicro()
@@ -130,7 +146,7 @@ func (t *transaction) SaveReceipt(ctx context.Context, org, subject, op, key str
 	if org != t.org || err != nil || rev < 1 || strconv.FormatInt(rev, 10) != r.Result.Revision {
 		return fault.Invalid
 	}
-	_, err = t.tx.ExecContext(ctx, t.sql("INSERT INTO command_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_id,result_revision) VALUES(?,?,?,?,?,1,?,?)", "INSERT INTO command_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_id,result_revision) VALUES($1,$2,$3,$4,$5,1,$6,$7)"), org, subject, op, key, r.Digest, r.Result.ID, rev)
+	_, err = t.tx.ExecContext(ctx, t.sql("INSERT INTO command_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_id,result_revision,digest_key_id) VALUES(?,?,?,?,?,?,?,?,?)", "INSERT INTO command_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_id,result_revision,digest_key_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)"), org, subject, op, key, r.Digest, t.commandMACKey.Version, r.Result.ID, rev, t.commandMACKey.KeyID)
 	return safeError(err)
 }
 func (t *transaction) Audit(ctx context.Context, a organization.Audit) error {
