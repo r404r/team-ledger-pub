@@ -92,6 +92,15 @@ async function open() {
   await settled()
   return page
 }
+async function openGate() {
+  const page = mount(IdentityGate, {
+    attachTo: document.body,
+    slots: { default: '<main data-protected-surface>合成保护页面</main>' },
+  })
+  pages.push(page)
+  await settled()
+  return page
+}
 function action(page: VueWrapper, name: RegExp) {
   const found = page.findAll('button').filter((item) => item.isVisible() && name.test(item.attributes('aria-label') ?? item.text()))
   expect(found, `Accessible action ${name}`).toHaveLength(1)
@@ -155,6 +164,35 @@ describe('shared protected identity interaction', () => {
     expect(identityState(page)).toBe('authenticated')
     expect(page.find('nav').exists()).toBe(true)
     expect(page.text()).toContain(SAVED_NAME)
+  })
+
+  it('keeps the authenticated surface mounted while an internal route session check is pending', async () => {
+    const page = await openGate()
+    expect(identityState(page)).toBe('authenticated')
+    const checking = api.defer('GET', '/api/v1/session')
+
+    history.pushState({}, '', '/security/grants')
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    await settled()
+
+    expect(identityState(page)).toBe('authenticated')
+    expect(page.find('[data-protected-surface]').exists()).toBe(true)
+    expect(page.text()).not.toContain('正在核对服务端会话')
+    checking.resolve(200, initialSession); await settled()
+    expect(identityState(page)).toBe('authenticated')
+    expect(page.find('[data-protected-surface]').exists()).toBe(true)
+  })
+
+  it('still destroys the retained surface when an internal route check rejects the session', async () => {
+    const page = await openGate()
+    api.reply('GET', '/api/v1/session', 401, { code: 'UNAUTHENTICATED' })
+
+    history.pushState({}, '', '/security/grants')
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    await settled()
+
+    expect(identityState(page)).toBe('expired')
+    expect(page.find('[data-protected-surface]').exists()).toBe(false)
   })
 
   it.each([401, 503])('keeps consumers closed after session HTTP %s until an explicit fresh check', async (status) => {

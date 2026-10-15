@@ -83,10 +83,12 @@ function cancelOperation() {
   controller?.abort()
   controller = null
 }
-function beginOperation(next: Phase): Operation {
+function beginOperation(next: Phase | null): Operation {
   cancelOperation()
-  protectedGeneration.value += 1
-  phase.value = next
+  if (next !== null) {
+    protectedGeneration.value += 1
+    phase.value = next
+  }
   controller = new AbortController()
   return { generation, controller }
 }
@@ -126,11 +128,13 @@ function expireSession() {
   logoutCSRF = null
   phase.value = 'expired'
 }
-async function checkSession() {
+async function checkSession(preserveProtected = false) {
   const previous = session.value
-  const operation = beginOperation('checking')
-  // Destroy protected instances and abort their operations before checking a new context.
-  await nextTick()
+  const preserve = preserveProtected && previous !== null && phase.value === 'authenticated'
+  const operation = beginOperation(preserve ? null : 'checking')
+  // Explicit checks destroy protected instances first. Route checks retain the
+  // current shell until the server proves that the identity context changed.
+  if (!preserve) await nextTick()
   if (!isCurrent(operation)) return
   try {
     const response = await fetch('/api/v1/session', {
@@ -277,7 +281,7 @@ async function changePassword() {
 }
 function routeChanged() {
   returnTo.value = knownReturnRoute()
-  if (phase.value === 'authenticated' || phase.value === 'checking') void checkSession()
+  if (phase.value === 'authenticated' || phase.value === 'checking') void checkSession(true)
 }
 function resume() {
   if (phase.value === 'authenticated' || phase.value === 'checking') void checkSession()
@@ -327,7 +331,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div class="identity-actions">
-        <button type="button" @click="checkSession">重新核对会话（清空当前页面）</button>
+        <button type="button" @click="checkSession()">重新核对会话（清空当前页面）</button>
         <button v-if="canLogout" type="button" @click="logout">注销本会话</button>
       </div>
       <div class="identity-tools">
@@ -367,7 +371,7 @@ onBeforeUnmount(() => {
       <div class="identity-actions">
         <button v-if="canLogout" type="button" @click="logout">注销本会话</button>
         <button v-if="phase === 'logout-failed'" type="button" @click="logout">重试注销本会话</button>
-        <button v-if="['expired', 'changed', 'unavailable', 'mfa-failed'].includes(phase)" type="button" @click="checkSession">重新核对会话</button>
+        <button v-if="['expired', 'changed', 'unavailable', 'mfa-failed'].includes(phase)" type="button" @click="checkSession()">重新核对会话</button>
       </div>
       <form v-if="identityMode === 'local' && ['logged-out', 'expired', 'changed', 'unavailable', 'logout-failed', 'mfa-failed', 'login-failed'].includes(phase)" @submit.prevent="localLogin">
         <label for="local-username">账号<input id="local-username" v-model="username" name="username" autocomplete="username" required minlength="3" maxlength="64"></label>
