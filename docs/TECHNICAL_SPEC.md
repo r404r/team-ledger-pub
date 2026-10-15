@@ -1,0 +1,1325 @@
+# TeamLedger · 整体最新技术文档
+
+- 当前修订日期：**2026-10-15**。本文件与源码同属 `team-ledger`，是当前架构、HTTP语义、安全边界和运行设计的唯一公开技术说明。
+- 当前实现基线：Go模块化单体、Vue、SQLite/PostgreSQL、本地keyd、local/OIDC互斥身份模式、同库独立audit receiver及Docker Compose独立部署。
+- 历史Task ID用于说明实现阶段；历史私有计划、审查会话、本机路径及旧文档commit台账不属于public文档。实现事实以本仓库源码、v12迁移、永久测试和当前文档为准。
+- 功能/page/OP/AC登记见[功能规范](FUNCTIONAL_SPEC.md)，开发与验证门禁见[开发规则](DEVELOPMENT_RULES.md)，Docker操作见[README](../README.md)。
+
+## 1. 架构、部署与信任边界
+
+**选择：Go模块化单体API＋Vue＋SQLite或PostgreSQL＋应用层envelope encryption；同部署本地`teamledger-keyd`持有root/keyring，API不读长期key文件。** AI worker保持独立受限进程。每部署一个DB后端。
+
+### 1.1 上下文与数据流
+
+R7历史实现使用受控外部Transit adapter；DEV-018已用本地keyd替换生产KMS依赖，保留并收窄envelope/AAD/用途分离接口。DEV-019本地账号固定代码C [`c8b4da4`](https://github.com/r404r/team-ledger/commit/c8b4da4e93920e272bec7a0462f3ccbfe797aaa9)已完成双库/API/Docker验证；DEV-020已实装Compose内置同库audit receiver。本地keyd和receiver均为同一安装包组件，不抵御整机root。
+
+```mermaid
+flowchart LR
+    browser["授权人员浏览器<br/>审计页/业务页/有限下载"]
+    subgraph app["边界 A：浏览器与应用"]
+        proxy["反向代理 / TLS"]
+        api["Go API<br/>当前授权、业务事务、有限导出<br/>live / ready"]
+        localAuth["local模式<br/>fresh maintenance bootstrap＋账号/密码<br/>Argon2id＋keyd pepper；无MFA"]
+        listener["内部 worker routes<br/>mTLS；拒 cookie/Authorization"]
+        proxy --> api
+        localAuth --> api
+        api --- listener
+    end
+    subgraph facilities["边界 B：可选外部身份／同部署独立审计进程"]
+        idp["oidc模式专用<br/>可选可信OIDC IdP"]
+        auditStore["DEV-020已实装：Compose独立audit receiver<br/>同库append-only hash chain；mTLS + Ed25519 receipt"]
+    end
+    subgraph localkeys["边界 C：同部署本地密钥设施；DEV-018已固定"]
+        keyd["teamledger-keyd<br/>Unix socket；wrap / unwrap / rewrap / mac / verify<br/>maintenance stage / activate / mac_staging"]
+        rootFile["CSPRNG RAW32 root file<br/>keyd UID / 0400"]
+        keyring["认证加密versioned keyring<br/>当前7 wrapper＋9 MAC＝16 domains"]
+        offlineKeys["DEV-021已实装：两份独立AES-256-GCM可移动副本<br/>软件拒同filesystem device；完整inventory＋pair只读verify<br/>物理/地理分离由运维确认；不进入DB备份"]
+        rootFile --> keyd
+        keyring --> keyd
+    end
+    subgraph storage["边界 D：每次部署只选一个后端"]
+        db["SQLite持久盘 或 PostgreSQL服务<br/>v12员工主数据、调薪批次与canonical授权已实装验证"]
+        outbox["同库 audit_outbox / receipt / job / result<br/>业务事实与投递意图原子提交"]
+        archive["每archive随机DEK的认证分块备份包<br/>DEK经keyd backup_archive包装<br/>SQLite VACUUM或PG exported snapshot/custom dump"]
+        db --> outbox
+        db --> archive
+    end
+    subgraph isolated["边界 E：独立受限进程/命令"]
+        worker["assessment-worker<br/>无DB / KEK / cookie"]
+        forwarder["audit-forwarder<br/>claim/fence/retry/验签ack"]
+        maintenance["key-rewrap / backup restore<br/>签名批准、停写、CAS、隔离目标"]
+    end
+    provider["批准的allowlist HTTPS provider<br/>生产仍未批准"]
+    browser -->|"HTTPS / cookie / CSRF；local或oidc"| proxy
+    browser -.->|"仅oidc：state / nonce / PKCE"| idp
+    api -.->|"仅oidc：发现/JWKS/code exchange"| idp
+    api -->|"先业务授权；Unix socket＋peer UID"| keyd
+    api --> db
+    listener <-->|"内部TLS"| worker
+    worker -->|"批准的最小输入/输出"| provider
+    forwarder -->|"claim/fence"| outbox
+    forwarder -->|"mTLS无正文事件"| auditStore
+    auditStore -->|"append-only ledger"| db
+    auditStore -->|"签名receipt"| forwarder
+    forwarder -->|"验签后CAS ack"| outbox
+    maintenance -->|"local source/target KEK unwrap / wrap"| keyd
+    maintenance --> db
+    offlineKeys -.->|"仅密钥副本verify/probe；不是DR切流"| maintenance
+    archive -->|"只进入隔离目标；成功核对后由部署切流"| maintenance
+```
+
+DB/备份持有人看得到必要metadata但看不到敏感正文或root/keyring；这不是端到端加密。本地keyd阻止API UID直接读取长期key，但已攻陷的获准API可经允许domain取得明文，keyd不验证employee/grant。host root、离线副本持有人或获准调用方失陷均在方案C边界外；worker仍无DB/key/cookie。
+
+### 1.2 两种部署形状（互斥备选）
+
+```mermaid
+flowchart TB
+    subgraph sqlite["方案 A：SQLite单机独立部署"]
+        sproxy["TLS代理"]
+        sapi["Go API<br/>identity mode=local|oidc"]
+        sfwd["audit-forwarder"]
+        srecv["audit receiver<br/>独立UID；应用隔离"]
+        skeyd["本地 teamledger-keyd"]
+        skeys["root 0400＋keyring＋lock"]
+        sdb["同机DB / WAL<br/>业务＋receiver ledger"]
+        sworker["可选assessment-worker"]
+        sbackup["DB备份；不含keys"]
+        sproxy --> sapi
+        sapi --> sdb
+        sfwd -->|"mTLS event / signed receipt"| srecv
+        srecv -->|"同文件；无可信角色隔离"| sdb
+        sapi <-->|"Unix socket"| skeyd
+        skeys --> skeyd
+        sapi <-->|"内部API"| sworker
+        sdb -->|"一致备份"| sbackup
+    end
+    subgraph postgres["方案 B：PostgreSQL部署"]
+        pproxy["TLS代理"]
+        papi["同OS主机一或多个Go API进程<br/>identity mode=local|oidc"]
+        pfwd["audit-forwarder角色"]
+        precv["audit receiver<br/>独立DB角色"]
+        pkeyd["该主机唯一teamledger-keyd"]
+        pkeys["唯一root＋keyring＋lock"]
+        pdb["PostgreSQL<br/>业务schema＋append-only ledger"]
+        pworker["可选assessment-worker"]
+        pbackup["PG备份/PITR；不含keys"]
+        pproxy --> papi
+        papi -->|"TLS / 业务角色"| pdb
+        pfwd -->|"mTLS event / signed receipt"| precv
+        precv -->|"最小INSERT/SELECT角色"| pdb
+        papi <-->|"Unix socket"| pkeyd
+        pkeys --> pkeyd
+        papi <-->|"内部API"| pworker
+        pdb -->|"一致备份"| pbackup
+    end
+```
+
+每次部署只选一种DB后端。当前独立profile限定一个API OS主机；多个API进程共享唯一keyd/socket/key directory。跨主机key material一致性须另设计。DB backup不打包root/keyring。
+
+仍不需要Kubernetes、Redis或消息中间件。DEV-019的内置账号已消除local模式的外部身份依赖；DEV-020同库独立audit receiver已实装。可选OIDC和AI provider仍是显式外部集成；DEV-018已消除外部KMS依赖。
+
+## 2. Go/Vue 责任与依赖方向
+
+实际组合根包含`cmd/teamledger-keyd`和`cmd/keyctl-local`；`cmd/api`、identity、key-rewrap、backup及MAC消费者使用本地keyd，生产Vault adapter与URL/token/CA配置已删除。API以`crypto_control`核对generation/digest/active key map；包装轮换执行stage/A1、activate/A2、DB ack、keyd ack和全库引用为零后的retire。backup恢复只写隔离目标，先通过keyd解包随机archive DEK并探测数据库业务wrapper样本；DEV-021另提供完整双介质inventory恢复门禁。
+
+R2固定C实际路径：[organization契约](https://github.com/r404r/team-ledger/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_contracts.go)、[service](https://github.com/r404r/team-ledger/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_service.go)、[逐owner权限](https://github.com/r404r/team-ledger/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_authority.go)、[queries](https://github.com/r404r/team-ledger/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_queries.go)、[graph](https://github.com/r404r/team-ledger/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/graph.go)、[cursor](https://github.com/r404r/team-ledger/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/cursor.go)；[HTTP handler](https://github.com/r404r/team-ledger/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/httpapi/structure.go)与[store](https://github.com/r404r/team-ledger/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/store/structure.go)承接现有事务。上述固定代码已实际push，不再用漂移main定位代替版本。查询尽量使用窄`GraphState`/employee关系/SQL候选，不为目录和history读取全org图；写与tree的窗口图仍由组织模块负责。
+
+R3当前源契约：`internal/interview/{contracts,commands,reads,export,service,state}.go`、`internal/store/interview.go`/`interview_tx.go`、`internal/httpapi/interviews.go`、`web/src/InterviewPage.vue`/`interviewDTO.ts`及`internal/authz/object*.go`。当前空库由`internal/store/migrations/*_v12.sql`安装；`*_v6.sql`仅保留历史迁移校验，不是当前安装入口。
+
+R4及员工调薪批次当前源：`internal/compensation/`内contracts/policy/commands/chain/reads/cursor/export、batch、salary range及xlsx实现；`internal/store/compensation*.go`、`internal/httpapi/compensation*.go`、`internal/value/financial.go`、`web/src/CompensationPage.vue`/`CompensationBatchPage.vue`/`CompensationTermsEditor.vue`/`compensationDTO.ts`/`compensationAPI.ts`及`cmd/api/finance.go`。当前空库同样使用v12 baseline；`*_v7.sql`仅保留历史迁移校验。
+
+R5当前代码源：`internal/compensation/bonus*.go`、`internal/store/bonus*.go`、`internal/httpapi/bonus.go`、`web/src/BonusPage.vue`/`bonusDTO.ts`、`cmd/bonus-hmac`及`cmd/api/finance.go`。当前空库使用v12 baseline；`*_v8.sql`只保留历史迁移校验。
+R6a/R6b当前代码源：`internal/assessment/`、`internal/store/assessment*.go`、`internal/httpapi/assessment*.go`、`web/src/FollowupPage.vue`/`assessmentDTO.ts`、`internal/authz`、`internal/providerapproval`及`cmd/assessment-worker`。当前空库使用v12 baseline；`*_v9.sql`/`*_v10.sql`只保留历史迁移校验。
+
+
+| 拟定 Go package | 职责 / 依赖 |
+| --- | --- |
+| `cmd/api`、`cmd/assessment-worker` | API组合根；identity mode严格取local或oidc；worker无DB/keyd/cookie |
+| `cmd/audit-receiver`、`cmd/audit-forwarder`、`cmd/audit-bootstrap` | 同库receiver ledger/签名receipt、outbox claim/验签/CAS ack及一次性本地PKI bootstrap；独立UID与最小DB权限 |
+| `cmd/teamledger-keyd` | Unix socket；读取root/keyring、持有persistent lock，按peer UID/op/domain执行inventory窄操作和maintenance状态机；无业务授权推断 |
+| `cmd/keyctl-local` | 初始化/离线artifact验证及generation-bound双介质export/isolated restore；必须与keyd竞争同一持久lock，normal startup不建key |
+| `internal/httpapi` | handler/DTO/CSRF；调用service，不读root/keyring、不自己解密 |
+| `internal/identity` | 互斥local/OIDC adapter、session、OIDC step-up及local credential生命周期；登录不创建授权 |
+| `internal/authz` | capability/scope/category/grant/purpose/MFA唯一判定；必须在调用keyd前通过 |
+| `internal/organization` | 组织/员工/assignment/reporting |
+| `internal/interview` | 面谈状态、版本、行动与来源 |
+| `internal/compensation` | 薪资/批次/奖金业务 |
+| `internal/assessment` | 规则、job、worker、人审 |
+| `internal/sensitive` | schema/AAD/DEK及keyd client窄接口；不读key文件、不推断授权 |
+| `internal/audit` | 安全元数据、业务事务outbox、receiver canonical frame/ledger/receipt；无正文/prompt（F-SEC-001） |
+| `internal/store/sqlite`、`internal/store/postgres` | 两种方言的 repository/guard/事务实现、SQL错误归类（F-DB-001） |
+| `internal/value` | UUID、业务日期、Money/decimal 与有界校验；不放万能框架/全局 mutable context |
+| `cmd/identity`、`internal/configfile` | 受控OIDC bind/unbind；local fresh-bootstrap、subject/account create/reset/disable、mode-switch维护CLI；secret只经0600 regular input file，不接受argv/env/stdin |
+
+依赖方向保持handler→service→authz/sensitive/audit→repository。组合根向`internal/sensitive`注入仅Unix-socket keyd client，不注入root bytes；外部IdP/provider适配器独立。业务service不调用keyd绕过授权，keyd也不读取业务DB来猜权限。
+
+### 2.1 Vue 路由、DTO 与状态
+
+| 页面 ID | 建议前端路由 | 模块/按需 DTO |
+| --- | --- | --- |
+| P-ORG-01 / P-ORG-02 | `/orgs/:org_id/tree` / `/orgs/:org_id/employees` | tree/as_of、目录 cursor；PII labels 独立许可，不带金额/笔记 |
+| P-ORG-03 | `/employees/:employee_id/:tab?` | profile/history；tab 拆独立查询与权限，不一次加载全部敏感资料 |
+| P-INT-01 | `/interviews`、`/employees/:employee_id/interviews`、`/interviews/:id` | 当前选择/列表/安排与详情；独立metadata、可见版本/heads、行动、有限操作hint及NDJSON内存输出 |
+| P-COMP-01 | `/employees/:employee_id/compensation`、`/orgs/:org_id/compensation-adjustments` | employee as_of/schedule/change chain；批次list/detail、Salary Range、XLSX隔离candidate/apply、冻结核对、显式submit/blocked重试/conflict重做及activated correction；special显示当前业务日所属年与上一年次数；Money/decimal一直为字符串 |
+| P-BONUS-01 | `/employees/:employee_id/bonuses` | targets/awards/payment/anomaly 分列、有限 extension |
+| P-AI-01 | `/employees/:employee_id/followup` | R6a policy/facts与R6b job/result/source review、人审发布已接通；生产provider未批准时外传disabled |
+| P-SEC-01 / P-SEC-02 | `/security/grants` / `/security/audit` | 可委派 authority 和安全 grant DTO / sanitized cursor audit |
+
+共同 login/MFA/denied/unavailable/conflict 弹层不是员工门户；DSN/密钥配置在受控运维，不提供任意 SQL 管理页。TypeScript 的 `MoneyDTO.amount_minor`/revision 使用字符串，转换金额只用 exact 整数/decimal，不用 `Number`。`/session` 只影响按钮/导航提示，handler 仍逐请求授权。
+
+R2-R5页面保持；R6a FollowupPage与R6b最小输入/job/result/source review、人审发布均已接通，P-SEC-02独立audit页面也已交付。页面只显示获准事实/覆盖与明确生产阻断；真实provider质量、外传许可及生产设施未批准时调用disabled，不把“生产未启用”误写成机制未实装。
+
+全局仅保留安全 session/capabilities、非敏感筛选与 request generation；敏感 DTO 在对应页面短时内存，禁止 localStorage/sessionStorage/IndexedDB、service worker、跨页 Pinia缓存、分析 SDK/console/trace 截取正文。路由离开/登出/401/403/404/epoch变化清空；取消 fetch并以 generation＋employee ID 丢弃乱序旧响应，撤权提示不得被晚回包重新显示。`Cache-Control: no-store`；笔记/AI仅文本呈现，禁止模板解释/未经清洗 `v-html`。[S4] 这些降低残留，不承诺回收截图/下载或浏览器已获得明文。
+
+## 3. 共同值、协议与失败
+
+### 3.1 类型与输入上限（本 task 建议）
+
+- ID：服务端随机生成规范小写 UUID 字符串，不透明/不复用；body 不能指定 `org_id` 来改变 owner。路径 ID 从 DB 解析 canonical owner，再匹配 session范围。跨org引用不靠客户端声明；employee-owned 关系同时核对员工。
+- `Date`：真实 Gregorian `YYYY-MM-DD`，有效期半开 `[valid_from, valid_to)`；`null valid_to` 为未结束。`Timestamp`：RFC3339 UTC `Z`，最多六位小数，写入统一微秒；reject多余精度而非静默截断。业务日期从组织明确 IANA timezone 推导，不依赖浏览器本地时间；计划/实际/录入/批准时间分开。
+- `revision`/`expected_revision`：正 int64 的十进制字符串；创建 singleton 用 `"0"` 表示预期不存在，此后从 `"1"` 起。`basis_revision` 指 employee compensation aggregate，`expected_graph_revision` 指组织图，不能用 proposal revision 替代。state转换枚举见第6节。
+- Money共同wire为`amount_minor`规范非负int64字符串、currency及scale；薪资v12只接受CNY/JPY、scale0，`amount_minor`必须匹配`0|[1-9][0-9]*`，任何小数点/指数/正负号（含`100.0`）拒绝。整数表示元/日元且不经float。Bonus仍用独立未决policy；salary可零，payment/reversal须正；无FX。
+- exact decimal量化为薪资Money只用decimal/integer实现的`ROUND_HALF_UP`。验收向量100.49→100、100.50→101、100.51→101、0.5→1、9007199254740993.5→9007199254740994；量化后超int64拒绝。Money输入本身绝不舍入；Compa公式未批前没有该计算入口。
+- JSON `snake_case`、UTF-8、拒未知/重复字段/非法枚举；普通body≤256KiB、profile/extension≤16KiB、worker目标输出≤64KiB、嵌套≤8。结构变更/薪资纠错≤100；DES-003批次最多500名唯一员工，`.xlsx`压缩体≤10MiB、展开总量≤50MiB、ZIP entry≤10,000，超过即在解析前/流式计数时拒绝；生产扩大上限必须先完成容量/锁时长验证。
+- 字符串limits默认UTF-8 bytes；一般原因≤4096、姓名各≤256、staff code规范化后1..64、财务理由≤4096。敏感正文/原因/身份/凭证不入URL/log。一般列表默认50最大100，R3列表默认20/详情默认100；所有查询有界，有限sort/完整范围。
+
+### 3.2 响应、分页、cursor 与幂等
+
+成功普通查询 `200`，创建`201`，状态/patch/put`200`，assessment排队`202`，无可领job`200`且 `job:null`。写响应含安全 `id/status/revision`；只有本次满足读取要求才返回已准许的payload投影，不因为创建就泄露其他域。GET metadata仍要scope/capability；不存在或不可读 `404`。
+
+列表形状 `{"items":[],"next_cursor":null,"as_of":"2026-10-10","consistency":"current"}`；cursor为服务端认证的opaque token，绑定主体/org/安全filter metadata/as_of/sort/last-key/相关epoch，15分钟有效。姓名q只以独立用途、版本化key的HMAC绑定，不放原文/裸hash；下一页body重发同q再比digest，不能从cursor获得搜索词。cursor key保留至相应短期token到期，缺key/版本变化要求安全刷新而非放松绑定。metadata按 `(recorded_at,id)` 或目录`id`明确稳定keyset，不默认姓名/金额排序；每页重新授权，无隐藏类别count/总数，不跨页承诺永久snapshot。
+
+目录OP-ORG-04统一为只读POST查询，全部筛选在JSON body；q≤256 UTF-8 bytes，仅PII授权scope内有界解密filter，不建明文姓名镜像/未声明blind index。body/q不得进浏览器URL/history/跨页store、客户端分析、代理/access/debug日志、error或audit；关闭请求体/敏感header日志与trace采集，TLS传输并no-store。只保存安全filter metadata/用途HMAC，短时页面内存退出或撤权清空。POST查询需session/CSRF，不是业务mutation，不要求Idempotency-Key或生成业务receipt；敏感read audit/release顺序不变。每页至多500授权候选，search_incomplete和scan cursor明确范围，超限要求收窄。
+
+所有业务 mutation 使用 `Idempotency-Key`（随机UUID）。作用域 `(org_id,subject_id,op_id,key)`，记录命令canonical digest/结果ID/安全状态；重复相同命令重新授权后返回原安全结果，异内容`409/IDEMPOTENCY_MISMATCH`。salary/approval/payment事实键长期随事实保留，草稿命令键建议保留7日（启用前与保留政策确认）；不承诺任意过期重试去重。敏感输入digest用独立用途HMAC，不把低熵金额裸hash变数据库字典；canonical包含操作、对象、expected revision、全部显式字段，日期/decimal按协议规范化。重放不能绕过当前grant，也不重复审计为新批准。
+
+付款另有 employee范围 `business_payment_key`（受控来源＋外部事实ID，完整键在不可变payment payload中加密）；派生版本化HMAC索引随事实保留，在第3.2.1节维护/独立密钥恢复门禁成立时防同一业务事实跨请求key重复，不承诺缺key/损坏索引仍可写。命中业务键后，按当前授权解密原payload，逐字段比较规范事实employee/kind/Money/paid_date/award/original/ref等，不含B/transport key/request time，也不复用包含B的receipt digest；换command key/更新B同事实仍原ID，异事实冲突。第一次记录后断连可同key确认；先当前授权与业务事实查重，不因B变化新增付款。HMAC等值关系/频次为已声明metadata风险；worker另用attempt/fence。
+
+### 3.2.1 HMAC索引版本、维护与恢复
+
+付款索引key、请求payload digest key、身份lookup key、AI generation key、cursor key分别用途隔离且版本化，保存受控key_id/version，不把KEK rewrap当HMAC换键。AI source digest例外：它按§8.2固定为结构JSON的unkeyed SHA-256，既不引用MAC key/version也不参与换键。receipt用其记录的digest key版本复核，不拿新key与旧digest误比；必需旧版本独立保留/备份至相关事实、receipt和可恢复备份依赖全部结束，禁止启动时丢失就随机生成“替代key”。
+
+付款唯一性在可重建`bonus_payment_business_index`投影，非immutable payment事实字段：`(org,employee,domain,key_version,digest)`唯一并复合FK到同employee payment。`hmac_index_state`记录domain/active key_id/version、epoch、ready/migrating/blocked、snapshot/checkpoint与staging manifest。digest为独立付款域HMAC-SHA256，输入明确版本＋length-framed org/employee/受控来源/外部ID；不用分隔拼接，key_version不作为业务身份。ready时先核对active版本/完整性/key可用，再计算当前digest查重；唯一索引＋共同guard在同版本防竞争。新事实及index/receipt/audit同Tx，commit重验index epoch。
+
+**历史R5初版证据**只支持受控停写换键、外部manifest及单Tx索引切换，不做双版本在线写；其具体旧key-file/CLI流程不进入DES-007目标。目标仍保留完整staging索引、事实集合/摘要/checkpoint验证与停写原则，但keyd `mac_staging`、A1/A2及DB ack顺序唯一以§7.4为准。
+
+目标恢复必须核对用途独立MAC key版本、active epoch/维护状态、完整index manifest、原加密业务键和receipt依赖。缺key/索引/版本或维护未完成即`503/HMAC_INDEX_UNAVAILABLE`；旧key保留verify_only到事实/receipt/备份依赖结束。identity、local username、Staff Code和bonus payment lookup通过各自受控入口停写全量重建，CSRF换键先撤旧session，cursor缺key只安全失效；生产轮换与中断恢复仍须在目标部署演练。
+
+当前维护顺序如下；`mac_staging`只读staged key，在线`mac`在维护 generation 中拒绝写。CSRF不重建索引，而是在activate前撤销旧version全部live session。
+
+```mermaid
+flowchart LR
+    approval["批准manifest<br/>domain＋target key ID/version"]
+    stage["keyd stage<br/>唯一staged generation"]
+    a1["DB A1 receipt<br/>crypto_control=staged"]
+    source["全量canonical source<br/>identity.mapping/local username/<br/>加密Staff Code/bonus fact"]
+    rebuild["mac_staging重算<br/>集合数/owner/target核对"]
+    activate["keyd activate<br/>仍停止在线MAC写"]
+    cas["单事务旧digest CAS<br/>切换index/owner"]
+    a2["DB A2＋keyd acknowledge<br/>DB stable ack"]
+    ready["恢复在线mac写<br/>旧key仅verify/保留"]
+    revoke["CSRF例外：单事务撤session<br/>subject/org epoch＋安全audit"]
+    approval --> stage --> a1 --> source --> rebuild --> activate --> cas --> a2 --> ready
+    a1 --> revoke --> activate
+```
+
+identity subject重建只从AAD绑定`mapping_id/org/subject`的`identity.mapping.v1`密文恢复exact canonical issuer/sub；local username从自身认证加密source恢复；Staff Code从`pii.employee_identifier.v1`恢复。三者不从当前digest、email、group或展示字段猜测。集合漂移、缺source、错manifest、错误target key ID/version、CAS冲突或任一解密/MAC失败均停止，不部分切换。cursor最长15分钟，active变化允许旧token安全失效；local password credential保存pepper key ID/version并以历史`verify`核对，成功后才惰性升级。
+**DES-007/008目标key inventory（穷举；新增family须改表和恢复manifest）**：
+
+| domain / type | caller与唯一允许操作 | 持久引用、退役与恢复probe |
+| --- | --- | --- |
+| `pii_payload` / wrap | API `wrap/unwrap`；maintenance `rewrap`；覆盖profile/identifier/education/org-unit与legal-entity label/position/structure schema | payload存key id/version/dek id；所有在线/备份wrapper消失后decrypt_only可退；固定合成DEK round-trip |
+| `interview_payload` / wrap | 同上，仅interview UID/domain policy；覆盖note/action/reason schema | 同上，跨domain/schema拒绝 |
+| `assessment_payload` / wrap | assessment API `wrap/unwrap`；maintenance `rewrap` | input/result存key/version/dek；按来源/结果保留退役；跨assessment domain拒绝 |
+| `financial_payload` / wrap | 同上，仅financial获准UID；覆盖terms/range/proposal/batch line/correction/import raw+rows/bonus/memo schema | 同上，Money/raw rows不进probe/log；跨schema拒绝 |
+| `identity_transaction` / wrap | identity API仅wrap/unwrap随机transaction DEK | oidc_transaction存key/version/dek/wrapper；proof到期且备份无依赖后退役；合成state payload round-trip |
+| `identity_mapping` / wrap | identity bind/read与maintenance reindex仅wrap/unwrap canonical issuer/sub source | subject_identity存payload ref；映射/备份全失效后退役；exact owner/schema round-trip |
+| `backup_archive` / wrap | backup/restore maintenance UID；每archive随机DEK | archive header存key/version/dek/wrapper；保留archive清单决定退役；只probe合成DEK，不送archive正文 |
+| `staff_code_lookup` / MAC | organization API `mac`；maintenance `mac_staging` | owner/index存exact key ID/version；停写全量重建、旧key verify_only；固定规范化合成code known-answer |
+| `bonus_payment_lookup` / MAC | compensation API `mac`；maintenance `mac_staging` | 不可变payment fact与active/staging index均存exact key ID/version；按§3.2.1重建；固定合成business key known-answer |
+| `identity_subject_lookup` / MAC | identity API及identity-maintenance UID可对active `mac`；rotation maintenance另用`mac_staging` | mapping source/index存exact key ID/version；从全部mapping加密source重建，inactive/historical也须齐全；owner/digest/active全集相等才CAS |
+| `command_receipt` / MAC | 各service仅对canonical command `mac` | 每个持久receipt存exact key ID/version。receipt无到期/重建policy，故通用stage/activate一律拒绝；在专用历史verify或完整重建协议交付前此domain固定，不允许产生重放歧义 |
+| `assessment_generation` / MAC | assessment API仅对canonical generation `mac` | input/job存exact key ID/version。generation是去重事实且当前无安全重建source，故通用stage/activate一律拒绝；source digest仅存SHA-256值，无key rotation依赖 |
+| `csrf_token` / MAC | HTTP API只用当前active `mac/verify` | session存exact key ID/version；rotation停写并按旧exact reference原子revoke全部live session/推进epoch后才activate；页面reload/多tab统一401重登录 |
+| `cursor_token` / MAC | API按页面domain子上下文`mac` | token≤15分钟且只在当前active下验证；key变化允许旧token立即失效；固定安全filter known-answer |
+| `local_username_lookup` / MAC | local identity API `mac`；maintenance `mac_staging` | account/identity存exact key ID/version；从`identity_mapping` wrapper加密ASCII canonical username重建，全集/CAS同identity lookup；固定合成username known-answer |
+| `local_password_pepper` / MAC | local identity API `mac`并按credential exact reference调用历史`verify` | credential存pepper key ID/version＋Argon2id PHC；成功登录惰性升级已实现，但credential dependency maintenance入口尚未提供，故通用stage/activate拒绝；不持久化password或MAC digest |
+
+API生成每次payload/transaction/archive DEK并AES-GCM加密正文，keyd只包装DEK；session opaque token只存SHA-256 hash。root/keyring artifact覆盖长期对称key；OIDC client secret、TLS/receipt签名私钥及批准公钥另列runbook。历史对称key-file配置clean cutover删除。
+
+
+### 3.3 错误契约
+
+```json
+{"code":"CONFLICT","request_id":"synthetic-request","reason":"REVISION_STALE","field_errors":[{"field":"expected_revision","code":"STALE"}]}
+```
+
+上例只有合成安全结构，不是契约源。稳定主码：`401 UNAUTHENTICATED`；`404 NOT_FOUND`；`403 FORBIDDEN`；`409 CONFLICT`；`422 INVALID_INPUT`；`503 UNAVAILABLE`（DB/keyd/key generation/MAC索引/必要审计不可用）。其他HTTP framing保持原契约；错误不得含SQL/key/prompt/hidden counts。
+
+授权拒绝必须先于keyd可用性判断，不能借不可用响应枚举敏感对象。UI冲突后人工重取；SQLite busy/PG死锁整Tx rollback为`503/WRITE_BUSY`，不无限重试或把基础设施失败伪装revision冲突。
+
+### 3.4 R2已实现HTTP窄契约（不是第二份DDL）
+
+具体字段源为§2链接的`structure_contracts.go`/`structure.go`；以下均有`/api/v1`前缀、当前session/purpose、no-store，POST含CSRF/Origin/Fetch Metadata。未知/重复字段和不适用于该action的有限字段拒绝，不隐式补关系。
+
+| 路由 | 已实现输入与结果边界 |
+| --- | --- |
+| POST `/orgs/:id/teams` | `code`为1..64 ASCII `[A-Za-z0-9_.-]`；必填`lifecycle:{valid_from,valid_to}`半开日期（null终点），可选`label`非空≤256 UTF-8 bytes并加密；UUIDv4 Idempotency-Key。201 `{id,graph_revision,auth_epoch}`，非team revision；无隐式parent |
+| POST `/orgs/:id/structure-changes` | `expected_graph_revision`正十进制字符串、可选`reason`≤4096 bytes并加密、`changes`1..100原子项。201同安全结果另`items:[{kind,id}]`；新命令图CAS，失败无部分写 |
+| GET `/orgs/:id/tree` | 必填`as_of`，可选canonical `root_team_id`、`depth`1..10默认10、`limit`1..100默认100、`include_labels`布尔。nodes＋edges＋employees使用同一个累计snapshot预算≤limit；先完整metadata预算再解密获准label，超界拒绝要求收窄，不静默截断 |
+| POST `/orgs/:id/employees/query` | body `as_of,team_id,employee_id,lifecycle,q,cursor,limit,include_profile`；lifecycle仅active/inactive/all；limit默认50最大100。q≤256 UTF-8 bytes且须include_profile=true；返回当前许可IDs/可选PII、next_cursor/search_incomplete，不产生业务receipt |
+| GET `/employees/:id/organization-history` | 仅`from,to,cursor,limit`；from/to同时省略或成对合法Date，解释为**UTC recorded_at `[from 00:00Z,to 00:00Z)`**，不是effective_date/as_of过滤；默认50最大100，按`(recorded_at,id)`keyset |
+
+结构item的action为`add/end/replace/lifecycle`；kind为`team_parent/membership/position/reporting_line/team_lifecycle/employee_lifecycle`。add/replace含显式lifecycle，replace另含旧`ref`；end仅kind/ref/end_date。team_parent含team_id/parent_team_id；membership含employee_id/team_id/is_primary=true；position含employee_id/is_primary=true/position与可选team_id；reporting_line含employee_id/manager_employee_id/reporting_kind（administrative/dotted）；lifecycle仅对应team_id或employee_id和新区间。R2拒绝非primary任职；不提供第二任职policy捷径。
+
+所有授权使用服务器捕获的组织IANA**当前业务日**，响应`authorization_date`与业务`as_of`分开。tree只释放安全team/employee IDs与授权team label，绝不包含employee profile。detail/directory/history的当前PII许可独立；metadata投影省略profile/profile_revision/position正文/reason；history reason另需org PII，position需该employee PII。SQL先以当前可读scope约束候选再LIMIT；每页至多500候选解密，额外第501条只peek不解密，search_incomplete及scan cursor表达扫描未完成。
+
+cursor用途分域HMAC并有独立cursor key，15分钟；绑定caller/org/subject epoch、当前业务日、auth epoch、graph revision、完整安全query（含as_of/limit）及q用途HMAC与last key。下一页重发原body/q，不能从cursor取raw q；q不进入URL、浏览器持久storage、日志或审计。日界/图/权限/query变化、到期均安全失效，不承诺跨页永久snapshot。
+
+### 3.5 R3已实现HTTP与导出窄契约
+
+所有业务路径带`/api/v1`、当前cookie/有限purpose、no-store；POST有CSRF、Origin/Fetch Metadata与UUIDv4 Idempotency-Key。JSON拒未知/重复key、缺必填字段、null代布尔/数组、非法typed ref/时刻；nullable字段显式null，数组始终`[]`，next_cursor始终null或token。revision是规范十进制字符串。
+
+| 路由 / 契约 | 当前已实现边界 |
+| --- | --- |
+| GET employee interviews | from/to为成对Date半开窗口，按actual_started_at、未发生时scheduled_at过滤；有限status、cursor、limit默认20/1..100；SQL当前授权scope先于LIMIT，只metadata；permissions只本列表IntR及employee-level可新建IntW，不以exact已有interview grant暗授新建 |
+| POST employee interviews | 五必填：scheduled_at、typed participants（≤20，同org）、backfilled布尔、nullable actual_started_at/actual_ended_at；普通scheduled，明确backfilled+过去有序actual可直接completed；不建grant |
+| POST interview transitions | 六必填：action start/complete/cancel、expected_revision、nullable actual times、backfilled、reason；取消reason非空并独立加密，读reason另需shared NoteR；终态不重开，scheduled complete须显式补录 |
+| GET interview detail | include_sections有限三个category列表、include_actions布尔、category/cursor/limit1..100默认100；IntR metadata独立，正文逐NoteR、行动逐ActR。只有当前head NoteR才返回section/note的head_id及head revision/current pointers；exact version-only无head_id，即便该版本恰好current也不透露指针。permissions只当前可见对象/类别，release重验 |
+| POST interview note-versions | 九必填：nullable head_id、category、expected_head_revision（初次0）、text、edit_reason、save_draft/publish action、nullable supersedes_version_id、source_refs、confirm_minimized布尔。已有head append须同head supersedes和非空理由；head CAS。text≤12288、reason≤4096 UTF-8 bytes，实际JSON加密payload≤16384 bytes |
+| GET note-version | 规范version ID、无query；独立当前NoteR，不要求目录/IntR；head_id是仅有当前head NoteR才出现的optional string，无权时省略而非空/null，直接读/详情/导出一致；source对无源read者省略，无永久作者例外；释放前重验整个已准备投影 |
+| POST interview action-items | 六必填：expected_revision（interview）、minimal_shared_text≤12288、typed owner、nullable due_date、source_refs、confirm_minimized；实际payload≤16384；非终态新建，推进interview revision，不改其状态历史 |
+| POST action transitions | action start/complete/cancel、expected_revision、safe_blocker_text≤4096；wire complete对应done，不保留done action别名；仅新事件加密blocker，原最小共享正文/due保留 |
+| POST sensitive-exports（面谈分支） | `{objects:[{kind,id,expected_revision}],format:"ndjson"}`，kind只interview/note_version/action_item，1..100去重对象；逐对象解析同org的canonical employee所有权，可跨已获准employee。逐对象read＋export类别grant与近期MFA。≤8MiB是最终编码含newline/header/terminal预算，不是正文估值；并发原key准备仅保留胜出receipt ID，必要重编码所有event，UUID等长预算不变 |
+
+source_refs只`{kind:"note_version",id,expected_version}`，≤10且已published/同employee；跨category必须当前source read、现有目标grant的source批准与人工confirm_minimized。字段present/null规则及DTO由代码契约唯一维护，不复制一份JSON schema。
+
+流式事件header/object/complete或partial均有**同一个export_id**；正常encode前赋值，预算和输出复用同一EncodedJSON。并发同key另一请求先提交时使用胜出receipt ID，必要重编码全部event；UUID等长、预算不变。prepare审计/安全receipt先commit再header，每chunk守卫重验当前权限/版本并审计。prepare receipt不含正文；原key/body重放也先原对象当前read/export/MFA及digest，然后保持原export ID、重新授权读取。revision变化或撤权不把旧receipt变成放行票据。partial只有ACCESS_LOST/REVISION_STALE/AUDIT_UNAVAILABLE/DEPENDENCY_UNAVAILABLE/WRITE_FAILED等有限安全原因，write/short write/flush/ctx取消不假称complete。
+
+OP-SEC-05按purpose和对象类型分派：面谈、金融、PII profile及AI result均只接受显式≤100对象/8MiB NDJSON，独立read＋export＋MFA，prepare及逐chunk release重验，不构造跨模块混合正文；不提供全文笔记搜索，日期/状态/授权版本分页不泄隐蔽数量。
+
+### 3.6 R4已固定HTTP、明确policy及金融有限导出
+
+`comp_revision`是员工薪资aggregate的规范非负int64字符串，初次无批准为`"0"`；proposal/term/event revision仍为正字符串。term/event的revision来自各自真实不可变version/sequence，不拿B替代。OP-COMP-01指定`as_of`，future_limit默认20/最大100；原生reader按(org,employee,effective_date) PK定位nearest past LIMIT1与future LIMIT≤100，最多101投影行，释放点相同有界窗口/aggregate版本重验，不全量读取员工排程。OP-COMP-02普通proposals/approvals给成对UTC `from/to`，窗口筛recorded_at而非生效日期；scope先SQL LIMIT，cursor绑定筛选/当前权限与版本。approved history的`valid_to:null`不是可改原term端点；当前/未来区间来自可重建schedule。
+
+第二轮修正的clean契约已实装：ProposalView/提案列表/写结果/选定proposal导出只含当前确切snapshot，不内嵌所有revisions。完整不可变修订另走同OP-COMP-02显式`record_kind=proposal_revisions`：必填proposal_id，仅另允许cursor/limit，默认20/最大100，不接受from/to/status；顶层revisions只本页revision DESC，proposals含唯一获准当前head、approvals空，next_cursor明确继续更旧页；普通模式revisions空。底层同proposal `revision<before ORDER BY revision DESC LIMIT≤101`，peek不解密；释放再验相同有界metadata/current head。cursor另绑定mode/proposal/head/当前授权，不跨对象或变化后拼接。页面只保留一页，完整原史不删、不把部分称全部，人工重查才接受新head。批准历史只取已分页获准approval的有界scope events，不全量加载employee事件。当前范围、版本和限制以本节、源码与永久测试为准，不代生产发布。
+
+DES-005扩展同一OP-COMP-02的`record_kind=batch_adjustments`：只允许`effective_year,cursor,limit`，返回该employee指定年份已激活且`increase_amount>0`的`mode=adjustment`原始batch event，按`(effective_date,event_id)` DESC keyset，含normal/special、business_code、increase和当前correction_status；correction事件和0增量`no_change`行不作为次数行。首响应另给exact count，cursor绑定employee/year/当前授权与comp revision；不得与from/to/status/proposal_id混用。P-COMP-01按服务端组织当前业务年Y和Y−1分别调用，不把最近20条当完整历史。
+
+完整body/required/null/one-of/array bounds由代码唯一契约维护；普通body≤256KiB、terms.components≤20、correction.members≤100、reason/decision_reason≤4096 UTF-8 bytes。initial/adjustment的members明确空数组；submit的decision_reason必须空字符串，approve/reject/withdraw明确理由。提交/批准freeze R/B，409后必须人工重载及重新确认；不自动补闭包或rebase。
+
+`TEAMLEDGER_COMPENSATION_POLICY_FILE`是protected/versioned严格JSON。v12薪资固定CNY/JPY scale0、monthly/gross、ROUND_HALF_UP且无Branch默认币种；值不一致拒启动。Bonus口径独立未决。缺policy则服务disabled；启用另要求本地keyd financial domain、目标KEK版本及DB期望generation一致ready。
+
+`TEAMLEDGER_COMPENSATION_BATCH_POLICY_FILE`保持独立/默认disabled并绑定salary policy revision；只含固定service authority、技术上限/TTL、template、special受控原因目录。XLSX仅接收Money Text，压缩包/XML安全错误整次拒绝；业务行错误形成加密`invalid`候选及有限错误，不改draft；`valid`候选须返回受控解析行供应用前预览，再显式apply并以base revision替换全草稿。adjustment manifest冻结每行Staff Code owner及identifier/employment/assignment/terms/range revision、before currency/scale0、目标生效日和全批`increase_totals_by_currency`。submit以固定manifest进入`submitted_preparing`并在单事务锁员工、range和薪资聚合后重验；依赖不可用持久化`activation_blocked`供相同manifest人工重试，事实冲突持久化`activation_conflict`并要求重新导入。activated correction必须包含该batch每员工的原countable event；服务沿active链生成首项真实term before ref、后续member-key引用及完整after terms模板，append反转/替换和后继闭包，不改原批次且不重复计入近两年次数。无Branch currency/FX/grand-total/budget/approval。
+
+金融`category=financial`、许可purpose=`compensation_management`、密文AAD purpose=`financial`；compensation.read/propose/approve与sensitive.export独立，全部近期MFA，关系绑定禁止。个人exact对象只允许compensation_proposal/event/term；exact proposal提供其历史修订与对象hint，不授aggregate/new proposal。exact event省略共享group reason/decision/members且不反向授权batch/line/sibling；before/after term正文逐项独立当前read/export。
+
+批次读取/导出要求org-scope FinR覆盖全部employee，否则整体404并省略count/摘要/manifest；导出另须Export，不须CompW。adjustment摘要唯一为稳定排序`increase_totals_by_currency:[{currency:"CNY",scale:0,amount_minor:"..."},…]`，累计全批`increase_amount`并保留出现但合计0的币种；correction省略该字段。禁止grand total、FX和跨币种金额排序。
+
+OP-SEC-05批次请求只接受单个完整frozen batch，不能选择行或跳过无权员工；8MiB最终编码预算必须在首个正文byte前验证。prepare和逐chunk/final重验；撤权/断连/revision变化后不再释放chunk，记录partial/aborted且不称complete，已释放bytes不可追回。其余金融对象仍遵循有限object规则。
+
+
+## 4. 逻辑数据字典、索引与约束
+
+本节完整逻辑目标保留；实际DDL以本仓库migration为唯一源，不在文档复制生产DDL。必要metadata明文、敏感payload密文、typed复合owner FK；v10 AI、v11 audit/outbox及v12员工主数据、Salary Range、调薪批次均已实装，当前状态以源码和永久测试为准。
+
+### 4.1 组织与面谈
+
+| 实体 | 字段/关系（除共同字段） | 必要索引 / 不变量 |
+| --- | --- | --- |
+| `organization` / `organization_guard` | 当前部署唯一active `org_id`就是corporate-group根/全部法分公司的所有权边界；timezone、lifecycle、graph/auth guards | SQLite/PG均以DB约束＋bootstrap事务拒绝第二active org；Branch是其下legal entity而非org。未来多集团须新设计隔离，不得另建Staff Code namespace绕开全集团唯一 |
+| `employee` / `employee_lifecycle` | active/inactive合法区间、profile_head_id、employee_guard_id | `(org,id)`；不以姓名作key；停用不删历史 |
+| `employee_profile_version` | employee_id、version_no、payload_id、supersedes_id、recorded_at；employee另存profile_revision/head | `(org,employee,version_no)`唯一；头指同employee版本；OP-ORG-05创建，OP-ORG-08 append完整替换payload＋profile头CAS，不改org graph |
+| `employee_business_identifier` / `employee_identifier_owner`（v12已实装） | identifier含employee_id、kind=`staff_code`、valid_from/to、encrypted exact text payload、lookup key/version/digest、revision；owner永久绑定规范Staff Code digest→employee_id | staff code接受NFC UTF-8 text 1..64，保留大小写、内部空格和前导零，拒首尾空白；唯一active org即整个集团，`(org,kind,key_version,digest)`跨全部历史只能绑定一个employee。本人可换号/rehire复用旧号且区间不重叠；owner永不转移/删除 |
+| `legal_entity` / `work_location`（v12已实装） | legal entity稳定code、`kind=branch_company`（界面业务名`法分公司`）、加密display name/lifecycle；location固定code/lifecycle/catalog revision | legal entity `(org,code)`唯一且kind不可变；location只允许`Shanghai`、`Wuxi`、`Tokyo`，大小写固定；未知值拒绝，停用不删除 |
+| `org_unit` / `org_unit_parent_history`（v12已实装） | type严格为`business_group`、`division`、`department`，含code、加密label、生命周期及typed父子有效期 | `(org,type,code)`唯一；只允许BG→Division、Division→Department；不得跳级/第四层；完整窗口无环/单父 |
+| `employment_spell`（v12已实装） | employee、legal_entity、work_location、valid_from/to、kind hire/rehire/transfer、recorded/change refs、revision | employee/date；同一时点仅一个primary spell；rehire保持新区间和同employee；first/current日期分开投影 |
+| `education_level` / `education_record`（v12已实装） | immutable seed严格`Master=3`、`Bachelor=2`、`Diploma=1`；record含employee、level、institution/field/award date加密payload、recorded/supersedes | 未知level拒绝；Highest按rank、award date、stable ID排序，不用latest替代 |
+| `job_assignment`（v12已实装canonical assignment/position） | employee、department、family nullable、level nullable、`position_payload_id` nullable、valid_from/to、change/supersedes refs、revision、is_primary恒true | employee/from、department/from；同一时点最多一个；同时是组织membership、position和job assignment的唯一事实。无position明确unclassified；family/level缺失不可匹配salary range；secondary/重叠拒绝 |
+| `salary_range` / `salary_range_payload`（v12 DEV-016已实装） | legal_entity/location/family/level/currency、valid interval、revision；加密min/mid/max | currency仅CNY/JPY，金额为scale0非负整数且`min≤mid≤max`；完整维度含currency，同一时点最多一个有效range。写事务先按稳定顺序锁legal entity，同entity并发写串行后再查重叠；activation另锁并重验所冻结range。保留end/replacement史；ratio不存储、不计算 |
+| `org_unit` v12 baseline边界 | baseline仅建BG/Division/Department及canonical assignment | 不建team/team_parent/team_membership/position_assignment兼容表、mapping或legacy ref；v11数据不导入/merge |
+| `reporting_line` | employee_id、manager_employee_id、kind administrative/dotted、区间、change_id | employee/kind/from、manager/from反查；同org、非self；administrative每时点最多一个且无环，是Direct Manager与HOD的唯一共同事实；不建独立HOD表。dotted不硬套无环 |
+| `structure_change` / `structure_change_item` | graph_before/after、actor、operation type、被替代关系refs、区间、reason payload | `(org,recorded_at,id)`；历史更正保留原关系，由有效关系投影取代，不悄悄删原change |
+| `employee_guard` | employee_id、revision、comp_revision、bonus_revision、source_epoch | `(org,employee)`唯一；跨薪酬/来源并发基准 |
+| `interview` / `interview_participant` | employee_id、scheduled_at、actual_started_at/ended_at、backfilled、status、revision、reason payload；participant subject/employee FK | employee/scheduled、employee/status；参与者唯一；actual/recorded分开，参与者不是grant |
+| `interview_note_head` | interview_id、employee_id、category、draft_version_id、published_version_id、revision、acl_epoch | `(org,interview,category)`唯一；draft/published指同分区/employee版本；普通编辑不改category |
+| `interview_note_version` | head_id、version_no、draft/published事实、supersedes_id、payload_id、author、recorded_at、content_digest | `(org,head,version_no)`唯一；immutable，每次修改新版本；发布不覆盖已发布事实 |
+| `action_item` / `action_item_event` | interview/employee、owner、due_date、todo/in_progress/done/cancelled、revision、shared payload、source_ref_ids；transition事实 | employee/status/due、interview/id；owner与source同org；不得因面谈完成自动关闭 |
+| `source_reference` | owner kind/id、source kind/id/version、employee_id、category、approved_slice_id、source_epoch | `(org,source_kind,source_id,version)`逆向索引；引用不包含正文；严格typed FK关系而非任意字符串跳转 |
+
+历史关系原事实与有效投影有明确对应；structure change允许add/end/replace及lifecycle原子typed set，原始事实不能被更正区间抹掉。授权只取当前有效投影。position/title、姓名、联系方式默认加密；org-unit code/必要relation type等metadata也只对授权scope公开。
+DEV-015的v12采用**全新baseline而非v11前向迁移**。SQLite要求不存在的新DB文件，PostgreSQL要求空的专用schema/database；安装事务一次创建R2-R7仍需实体及v12 canonical org/employee/financial实体并写schema version/checksum。发现v1-v11 schema、业务表或未知对象即拒绝`SCHEMA_VERSION_UNSUPPORTED`，不改旧库、不自动drop、不运行mapper。开发fixture只通过v12 synthetic seed/API重建。
+
+v12数据schema不含team→department、membership/position→assignment、profile v1或密文AAD转换逻辑；OP-ORG-02/03路由和旧organization command从binary移除。DEV-017已将通用授权domain/store/API/UI清洁切换为department/job_assignment：DB强制department kind与exact immutable relation owner，业务日coverage按canonical assignment求值，不加载全department roster。历史固定代码/revision仍供证据与Git追溯，不构成运行兼容承诺。用户未来明确通知重要环境时，另起PLAN记录当时schema/data baseline，再为**该通知之后**的变更设计升级/merge/rollback。
+
+OP-ORG-10是v12唯一跨员工主数据/组织任职命令：一个1..100项typed set可同时处理identifier、employment、education、job_assignment（含membership/position）及administrative/dotted reporting和employee lifecycle。请求携带graph/catalog及每个affected employee revision；服务端先规划全部owner/endpoints，按§6.1锁org graph/auth→subjects→employee UUID→facts，逐owner重验OrgR/OrgW及PII、全窗口/目录/Staff Code owner/单一assignment/reporting无环，然后在**一个事务**写全部facts、canonical projection、graph/catalog/employee revisions、auth/source epochs、一个command receipt、audit/outbox；任一项失败全部rollback。OP-ORG-03在v12不再是writer，不能把两个HTTP请求拼成“原子”。
+
+Staff-code HMAC唯一性按唯一集团`org_id`的永久owner维护：创建/换号/rehire查完整owner mapping；digest属于本人仅可加不重叠区间，属于他人永久拒绝。物理索引含key version；换键必须停写、以旧完整索引逐条解密/规范化后重建全部owner与identifier digest，跨版本验证normalized code→同一owner一对一，再原子切唯一active版本并删除旧写资格；不存在两个可写key namespace。批次冻结resolved employee/identifier/owner/revision/date，不把明文工号放普通metadata。
+
+R2 v5实际字典补充：
+
+| 实体 / 实际列 | 事实与投影边界 |
+| --- | --- |
+| `team`；`team_lifecycle_history` / `employee_lifecycle_history` | team code、当前valid_from/to、label_payload_id；lifecycle历史含id/object/change_id/supersedes_id。追加历史并更新当前窗口，原employee v4窗口初始化为历史，不补造旧change |
+| 四类关系表 | 原id/owner/valid_from/valid_to/change_id/supersedes_id及position payload不可改；`effective_to/end_change_id`、`superseded`是有效投影。end不重写原valid_to；replace追加新事实并指旧ref，旧事实保留且不能重新活化 |
+| `structure_change` / `structure_change_item` | actor subject、UTC recorded_at、graph_before/after、reason_payload_id；ordinal0..99、typed action/kind/relation与owner/date/替代refs。typed owner触发器/FK防错org关系，审计历史可追溯原与生效投影 |
+| `organizational_payload` | team_id / employee_id+position_id / change_id的exact owner、record_id/version_id、object_kind/purpose/schema、format_version/algorithm、dek_id/kek_id/kek_version、wrapped_dek、sealed_bytes（nonce/ciphertext/tag包）及created_at；immutable，复合owner FK约束不可交换密文对象 |
+| `subject_employee` | `(org,subject)`唯一、`(org,employee)`唯一；显式批准一对一不可转绑，对应关系不是角色/grant，不由email/name推导 |
+| `structure_command_receipt` | subject/op/key、32-byte digest与version1、result_json、result_team_id或result_change_id、graph_revision/auth_epoch、`authority_targets_json`。存原受影响owner的capability/category/kind/id，重放不靠已结束旧任期或旧图CAS |
+| v5 authorization / `audit_event` | capability/authority/grant新增exact team FK；grant用有限relation_kind及reporting_line_id/membership_id/`relation_actor_employee_id` typed绑定，reporting target为既有employee_id，membership scope为team_id。audit新增`target_employee_id`，与actor subject/维护UID/host及target subject分离 |
+
+R3 v6实际字典补充（上方逻辑目标命名与当前表名不混称）：
+
+| 实际实体 | 当前事实 / 投影与约束 |
+| --- | --- |
+| `interview` / `interview_participant` / `interview_event` | employee-owned status/revision/计划实际/补录；author/recorded/计划/参与者原事实不可改。typed同org participant与有界ordinal，事件phase唯一、终态唯一；行动新建造成aggregate revision间隔不伪造额外状态事件 |
+| `note_head` / `note_version` | 每interview/category一个head；独立revision/acl_epoch、typed draft/published同owner指针。immutable version_no/status/author/recorded/payload/supersedes/digest/source_epoch，追加更正不覆盖旧draft或published |
+| `action_item` / `action_item_event` | shared、typed owner、原due/文字payload/作者不可变；state/revision投影与immutable事件分开。transition仅新blocker payload，不反复复制原正文 |
+| `interview_payload` | finite note三个category/action/reason object_kind与`interview.note.v1`/`interview.action.v1`/`interview.reason.v1`；purpose=interview、schema/format1、AAD exact org/employee/record/version；独立KEK envelope，不改旧PII AAD |
+| `source_reference` / `access_grant_source_approval` | typed owner_note_version或owner_action_event one-of与源note_version复合owner/category/published FK、≤10。source只追溯，不授权；approval依原grant/authority批准事实，无第二套审批人/时间镜像 |
+| v6 `access_grant` / authority / assignment | 有限17 R3组合/purpose及nullable typed对象列，object FK/canonical lineage/category不能退化为全employee。旧NULL scope grant保留，旧列原值保持 |
+| `interview_receipt` / audit / OIDC proof | 原actor/op/key用途digest、安全result JSON无正文；扩8 INT与有限export审计/operation。OIDC仅增加两种有限step-up意图，原proof/旧receipt与v1-v5 checksum保留 |
+
+§4.2薪资与金融授权、奖金/v8、assessment v10、audit/恢复v11及v12员工/批次/授权均已实装。本地keyd、local/OIDC canonical identity source、长期MAC索引重建、CSRF换键撤session、同库独立receiver和离线key恢复由DEV-018至DEV-022交付；真实生产身份、介质责任、容量和恢复目标仍需部署批准。
+
+### 4.2 薪资、奖金与有限扩展
+
+| 实体 | 字段/关系 | 索引 / 不变量 |
+| --- | --- | --- |
+| `compensation_proposal` / `compensation_proposal_revision` | employee、kind initial/adjustment/correction、effective_date、state、revision、basis_comp_revision、before_term_id、draft terms/reason payload、correction_group_id | employee/state/recorded；draft可追加修订并CAS头；submitted冻结内容；terminal不可改 |
+| `compensation_approval` | proposal_revision FK、employee、approver、approved_at、basis_comp_revision、decision payload | `(org,proposal_revision)`唯一；不可更新/删除；默认approver≠proposer |
+| `compensation_event` | approval_id或batch_line_activation_id严格one-of、kind initial/adjustment/correction_replacement/correction_reversal、effective_date、before_term_id（initial可null）、after_term_id（reversal后无terms可null）、corrects_event_id/group、sequence、reason payload | employee/effective/sequence；before/after FK同时同employee；批准event immutable；batch event必须回指activated batch line；reversal是批准撤销标记而非负金额 |
+| `compensation_terms_version` | employee、approval/event或batch activation FK、version_no、payload_id、schema_version | payload恰含一个CNY或JPY scale0的税前固定月薪组件（month/monthly/gross）；employee每时点仅一币种。奖金/浮动/加班/一次性/非固定津贴不进该组件；不可覆盖 |
+| `compensation_correction_group` / `correction_member` | employee、proposal/approval、basis_revision、mode replace/reverse、original_event_id、replacement_or_reversal_event_id、replacement_before_ref、显式依赖refs | `(org,group,original_event)`唯一；一个员工；同次原子批准；替代图无环，无重复active替代，依赖闭包完整 |
+| `compensation_schedule_projection` | employee、valid_from/to、selected_term_id、selected_event_id、projection_revision、derived_group_id | employee/valid_from唯一；无重叠、无歧义；可重建/改端点，不改原批准事实 |
+| `compensation_adjustment_batch`（v12 DEV-016） | cycle_year、不可变business_code、normal/special、legal_entity、normal默认日、state、revision、manifest_digest、creator及批次专属service subject | `N/S-{year}-{seq}`；draft、activation_blocked/conflict、activated、withdrawn；当前revision CAS |
+| `compensation_batch_number_counter` / `compensation_batch_correction_counter` | org、cycle_year、type、next_sequence | adjustment分配N/S，activated batch correction分配NC/SC；最少四位且自然扩展；counter与创建事务共同提交 |
+| `compensation_batch_payload` / `compensation_batch_line` | revision化加密规范行、employee、result、ordinal；payload冻结Staff Code/组织/Range/terms basis及revision | 每revision≤500且employee唯一；CNY/JPY scale0，before＋increase=after；0=`no_change`；摘要运行时按币种checked重建 |
+| `compensation_batch_import_candidate` | batch/base revision/subject、XLSX digest、加密解析payload、state valid/invalid/applied、line_count、24小时expiry | 不保存原XLSX；invalid保存安全errors且不可apply；candidate本身不改draft |
+| `compensation_batch_activation` / `compensation_batch_event` / `compensation_batch_state_history` | manifest、固定service subject、激活时间、生成event关联、状态轨迹 | salary event/term/schedule、activation、receipt/audit/outbox同一最终事务；block/conflict由失败后的安全CAS记录 |
+| `compensation_batch_correction` | NC/SC编号、原batch、manifest、发起subject、activated_at | 复用个人完整typed correction闭包，在同一compensation transaction追加replacement/reversal并保留来源事实 |
+| `bonus_target` / `bonus_target_version` | employee、period_start/end、draft/confirmed/withdrawn、revision、payload（目标口径/amount或ratio/reason） | employee/period/status；version历史；target非债项/非payment |
+| `bonus_award` / `bonus_award_revision` / `bonus_approval` | employee、target_id nullable、period、proposal状态/revision、corrects_award_id nullable、payload、immutable approval | employee/state/period；批准revision唯一；corrects复合FK同employee；有效替代投影每原award最多一个批准后继、无环且只有链尾计入有效批准额，不改原approved事实 |
+| `bonus_payment` | employee、award_id nullable仅unmatched、kind payment/reversal、original_payment_id nullable、paid_date、payload（含完整business key）、command_id | employee/paid_date、award索引；immutable，reversal FK同employee/原kind payment；业务key查重经独立派生索引 |
+| `bonus_payment_business_index` / `hmac_index_state` | domain、key_id/version、digest、employee/payment FK；active版本/epoch、ready/migrating/blocked、snapshot/staging manifest | `(org,employee,domain,key_version,digest)`唯一；索引派生可重建，不改原payment；维护时拒写、完整单版本active，第3.2.1节跨版本门禁 |
+| `bonus_reconciliation_projection` / `bonus_anomaly_fact` | original_award/payment refs、effective_award_id、projection_revision、anomaly enum unmatched/unapproved_award/payment_before_approval/overpay/currency_mismatch/scale_mismatch、detected/resolved refs | employee/award、payment/anomaly；effective_award_id沿明确批准替代链派生，每payment/reversal仅归集一次，原关联不改；异常事实保留，无假FX余额 |
+| `compensation_extension_version` | employee、schema_type/version、supersedes_id、payload_id、aggregate_revision | employee/type/version；有限schema、append-only；inherit compensation grant |
+| `command_receipt` | subject/op/key、aggregate owner、payload_hmac及digest key_id/version、result_id/status、recorded/expires | `(org,subject,op,key)`唯一；命令/business fact与receipt同Tx；旧digest用其版本key复核，不静默换key |
+
+薪资terms不在明文列存currency/amount/rate；生效日期和批准关系是必要metadata。before指当日拟定链中前一有效approved terms，而非客户端任意数；查询返回解密后的完整before/after及原审批/替代图。
+
+R4 v7实际新增aggregate/proposal及immutable revision/approval/event/terms/payload、correction group/member、可重建schedule及金融receipt。`compensation_event.created_term_id`是生成列：reverse恒null，其余等于after_term_id，用复合owner FK仅允许非reverse创建其自身terms；reverse的after_term_id引用本次完整模拟后该日剩余terms或null，不新建terms、不被当排程项。member的after与同组event exact after复合绑定；新旧term都同employee/org。schema physical drift/immutable triggers与两库真实升级消费者一起验证。
+
+
+密文 schema v1（拒绝任意额外JSON）：
+
+| 类别 | 明确载荷字段 / 限制 |
+| --- | --- |
+| `pii.profile.v1`（仅历史v11代码；v12不存在） | 历史display_name payload；v12 baseline不含decoder/data |
+| `pii.profile.v2`（v12） | `local_name`、`english_name`分别可选但至少一项非空，各≤256；有限work_contact/profile_summary/edit_reason |
+| `pii.employee_identifier.v1` / `pii.education.v1`（v12） | identifier含staff_code并由集团永久owner digest绑定；education严格Master/Bachelor/Diploma及可选institution/field/award_date；exact employee AAD、有限字段/大小、append-only |
+| `pii.org_unit_label.v1`（v12） | `{label}`非空≤256 UTF-8 bytes；AAD绑定exact org-unit/type |
+| `pii.legal_entity_label.v1`（v12） | `{display_name}`非空≤256 UTF-8 bytes；只用于`kind=branch_company`，AAD绑定exact legal entity |
+| `pii.job_assignment_position.v1`（v12） | `{title,position_code?,description?}`有限长度；AAD绑定exact org/employee/assignment/department |
+| `pii.structure_reason.v1`（v12） | `{reason}`≤4096 UTF-8 bytes；AAD绑定exact structure change |
+| `interview.note.v1` | text、edit_reason、显式approved structured facts/slice refs；category在不可变上下文，不由text变更 |
+| `interview.reason.v1` | cancel reason必填≤4096 UTF-8 bytes；只属于对应transition event，按shared NoteR读取 |
+| `interview.action.v1` | minimal_shared_text、safe_blocker_text；私有source引用不把原文复制进shared |
+| `compensation.terms.v1` | v12薪资恰一个`monthly_base_salary`：Money为CNY或JPY/scale0，unit=month、pay_frequency=monthly、tax_basis=gross、rounding=ROUND_HALF_UP；拒奖金/浮动/加班/一次性/非固定津贴组件及额外币种/口径。同一terms不得双币种 |
+| `compensation.salary_range.v1`（v12） | min/mid/max为规范非负int64字符串，统一绑定record的CNY或JPY/scale0/month/monthly/gross；`0<mid`、有序且无额外currency/scale字段。ratio policy未批时不在payload中 |
+| `compensation.proposal.v1` / `bonus.target.v1` / `bonus.award.v1` / `bonus.payment.v1` | terms或显式target/award/payment Money、reason、必要凭证ref、纠错说明；不能把凭证原文/金额作日志字段 |
+| `compensation.batch_line.v1` / `compensation.correction_member.v1`（目标） | adjustment同币种scale0；correction显式target/dependency、source kind/owner/head/witness及replacement，禁止自动补链/换币/budget/approval |
+| `compensation.batch_import_raw.v1` / `compensation.batch_import_rows.v1`（目标） | 前者为受冻结policy大小限制的原始Excel bytes；后者为按冻结template解析的canonical rows JSON，逐字段沿batch line契约；AAD绑定exact batch/candidate，invalid candidate也保持同一context，正文/digest不进日志 |
+| `compensation_memo.v1` | `memo`必填≤2000 Unicode字符、`source_reference`可选≤200，整体≤16KiB；拒未知字段，不从备注计算金额 |
+| `identity.mapping.v1` / `identity.transaction.v1` / `identity.local_username.v1` | mapping为canonical exact issuer URL＋sub UTF-8及owner subject；transaction为nonce/verifier/action/return/binding；local username为账号owner绑定的canonical ASCII source。AAD owner slots按下方registry；不得进入日志/普通审计 |
+| `assessment.input.v1` / `assessment.result.v1` | 最小已批准结构事实/片段；result仅facts/support_needs/followups/source citations/caveats；无score/rank/诊断/隐藏推理 |
+
+### 4.3 身份、权限、AI与审计
+
+| 实体 | 字段/关系 | 索引 / 不变量 |
+| --- | --- | --- |
+| `subject` / `subject_identity` | v12存approved org/subject/active、lookup MAC id/version/digest及`identity.mapping.v1`加密canonical issuer/sub payload ref；不存明文。DEV-006仅HMAC无source是历史证据，不进入v12空库 | lookup唯一；owner永不转移。换MAC前解密全部active/inactive source，验证ID/owner全集与旧index一一对应再CAS；缺一保持blocked，不从email/group推断 |
+| `session` / `session_auth` / `oidc_transaction` | v12新建session保存随机token hash、subject/org、absolute/idle/MFA、CSRF hash/version、subject epoch/revoked；session_auth另存created/verified auth_time、部署批准ACR/AMR和identity digest；transaction存state/binding hash及nonce/verifier AEAD、有限mode/action/return、previous/expected identity/epoch、consume/issue事实 | 同owner复合FK；8h absolute、有效请求idle≤30m且不超absolute；10m proof先原子消费后外部I/O，一次性guarded issue；每次新transaction写入只按expiry有界清理≤256已到期记录，与insert同Tx，保留未到期含在途/已consume proof；session/CSRF轮换和logout/unbind审计原子；不可从hash回读cookie/CSRF |
+| `identity_mode_state` / `local_account` / `local_credential` / `local_login_throttle` / `local_bootstrap_receipt` | mode固定`local|oidc`及revision；account存UUID、subject owner、active、versioned username digest及加密canonical source；credential存Argon2id PHC、pepper key/version、revision；throttle按username digest记录失败/retry_at；receipt绑定request/input digest与原安全IDs、`bootstrap_policy.v1` | fresh DB仅一次性bootstrap可同Tx建首org/subject/account及固定最小权；其后账号只绑定既有active subject。模式不匹配启动拒绝，切换须全session revoke＋auth epoch推进＋审计；username owner不转移；未知账号也走同throttle/fake PHC |
+| `capability_assignment` / `access_grant` | subject、有限capability、scope kind为`org`、`department`或`employee`、category/object/purpose/validity；grant另有relation ref/authority/revision | relation ref仅`reporting_line`、`job_assignment`或null；当前关系/assignment及主体/对象/scope资格逐请求核对；结束/替代不跟随successor |
+| `delegation_authority` | 批准者、manager subject、capability/category/purpose、scope kind为`org`、`department`或`employee`、validity/MFA/policy | 与当前management capability/grant取交集；不自授、不从职位推导；v12无team兼容 |
+| `authorization_guard` | org auth/policy epoch，subject auth epoch（global主体需按顺序锁） | 唯一guard；当前授权权威在DB，epoch缓存不是权限真相 |
+| `interview_policy_version` / `interview_policy` / `followup_window` / `assessment_command_receipt` | v9起：employee、revision、显式cadence/anchor/timezone/due/pause/purpose、ai_mode；v10可选standing policy并由API scheduler扫描到期窗口 | employee唯一当前policy＋immutable版本；employee/policy_revision/window_start唯一；无配置不建伪月度窗口；多实例由generation唯一键去重 |
+| `assessment_standing_policy` / `approved_assessment_input` | v10实装：service主体、批准人、audience、expires、provider policy、template；proposed/approved/consumed/invalidated结构输入、generation/source digest、有限facts JSON | 常设策略不授grant；requester不得自批；generation唯一；源/grant变化不复活旧输入 |
+| `assessment_job` | v10实装：employee/window/input/provider/audience、generation/source digest、queued/leased/completed/failed/cancelled、attempt/fence/token hash/lease/deadline/error | `(org,generation)`唯一；有效token/fence/期限CAS；当前generation一个accepted result |
+| `assessment_job_receipt` | v10实装：worker、OP-AI-05/07、idempotency key、digest、job/result | immutable；claim相同key稳定返回同lease token，result断连重放返回原result；异内容拒绝 |
+| `assessment_result` / `assessment_result_revision` / `assessment_payload` | v10实装：draft/published/discarded/invalidated、append revision、source digest及独立envelope密文 | job completed不等于published；human edit append；面谈/行动/笔记/grant变化同事务invalidated |
+| `audit_event` / `audit_outbox` | v12 baseline把每个事务审计事件与同库outbox意图原子写入；outbox持pending/inflight/acked、attempt、claim token/期限及独立receipt ID/digest。event只含request/actor/object/category/op/purpose/outcome、UTC时间与安全metadata，无正文/金额/prompt；actor kind限application/local_maintenance/service等v12类型 | `audit-forwarder`有界claim/fence/retry，以mTLS HTTPS发送并验证独立Ed25519 receipt后持久ack；崩溃/超时可重领且旧claim不能确认。应用层append-only与独立receipt不能抵御业务DB和外部审计设施同时被控制；真实设施保留/告警/抗管理员强度仍需部署验收 |
+| `audit_receiver_chain` / `audit_receiver_ledger` | receiver按deployment持有sequence/head hash，并独立追加event/receipt ID、payload digest、sequence/previous/entry hash、received_at、signer key ID及完整signed receipt bytes；不含业务正文 | head、ledger与receipt同Tx；同ID同digest逐byte重放，异digest冲突；ledger trigger拒UPDATE/DELETE。PG receiver角色只读schema version并对专属表SELECT/INSERT、对chain UPDATE；API/forwarder无ledger写权；离线maintainer仅以ledger/outbox SELECT证明signer退役条件。SQLite只有应用/trigger隔离，不冒充文件持有人不可篡改 |
+| `audit_receiver_status` | 单例`id=1`、当前deployment、ready与checked_at；只含设施状态 | forwarder每5秒以同一mTLS客户端探测receiver ready并UPSERT；API只读且要求`ready=true`、heartbeat≤15秒，missing/false/stale均503；切换deployment覆盖单例，不接受旧deployment残留冒充 |
+
+**历史固定版本证据（不适用于v12 baseline）**：v3曾追加`session_auth`并保留v1/v2 bytes，v4曾为旧维护事件增加`legacy_unattributed`分型，v11曾追加audit outbox。v12只从空目标创建当前表和新事实，不导入、保留或解释这些旧行；未来重要环境通知后的新基线再决定升级、merge与rollback。
+
+### 4.3.1 独立授权的批准 authority 与资格（DEV-003实装契约）
+
+委派authority是受控批准事实：集团org、manager subject、有限capability/category/purpose、typed org/department/employee scope、validity/MFA及批准provenance。HTTP仅引用已有`authority_id`，不能上传说明创建权利。target必须active且有对应职责capability；management另须`access_grant.manage` capability/grant、security_administration purpose及当前MFA，并与authority求交；不得自授或委派管理能力。
+
+Org覆盖本集团；department只覆盖exact department；employee只覆盖exact employee。relation-bound grant只引用exact `reporting_line|job_assignment`，由subject_employee核对actor/scope/当前资格；关系不自动赋权，end/replace后successor或rehire新ID不匹配。金融能力永远不能relation-bound。
+
+数据库用department/job-assignment复合FK表达scope/ref；SQLite/PG在guard内按当前日核对事实状态、主体资格及capability/grant/authority交集。v12全新baseline没有team scope、team_membership ref、mapping或legacy decoder；未知组合拒绝。
+只撤PII而metadata读grant仍有效时，已有ORG-06继续200 metadata-only（无PII/私有revision、不KMS）；metadata也失去才404。在途已进入解密的请求仍按release Tx重验撤权/epoch，不把降投影与允许释放旧正文混淆。
+
+
+### 4.4 DB约束与应用跨行职责
+
+DB必须执行 PK/NOT NULL、复合org/employee FK、有限state/kind/category CHECK、revision>0、date起<终、非self的可表达CHECK、receipt/business-key/approval/generation唯一索引。所有可引用子表必须有匹配unique composite key，不用“全局UUID难碰撞”代替ownership FK。typed source ref用具体关系表/FK或有限source kind分别校验，不能仅存多态字符串而宣称DB已有FK。
+
+应用在guard锁下负责：区间包含/重叠与全窗口图、当前关系、权限交集、AEAD schema内Money/同币种检查、完整纠错依赖/投影、状态机、reversal累计、来源完整性。两库共同基线不靠PG exclusion/RLS才成立；PG可加等价约束纵深但SQLite仍要同样拒绝。敏感amount在密文里，DB CHECK不能校验金额，应由真实服务在解密/授权后检查并防直写权限。普通业务DB角色不能绕过API；DBA/宿主篡改不属于应用不变量保证，独立审计与恢复核对另覆盖。
+
+## 5. 唯一 HTTP 操作注册
+
+共**51个稳定OP ID**：ORG10、INT8、COMP11、BONUS8、AI8、SEC6；v12中OP-ORG-02/03退休且无路由，因此可调用49项。固定C仍覆盖当时43项；DES-003/004目标尚无代码。
+
+### 5.1 权限与输入记号（适用于每一行）
+
+- `O`：v12 grant的org/department/employee scope由DB owner和当前canonical assignment求交；department exact不继承。操作数据类别必须explicit object/scope grant（`G`）；`P`由`X-Access-Purpose`指定有限policy purpose。
+- 所有行同时满足行内capability＋scope/category/G＋当前资格＋purpose＋所需MFA。`OrgR/OrgW`、`PIIR/PIIW`、`IntR/IntW`、`FinR`、`CompW/CompApprove`等保持既有定义；CompApprove只用于个人薪资proposal，不用于normal/special批次。service-only `BatchActivate=compensation.batch.activate`只能由batch policy固定非人类subject及明确authority使用，不能relation-bound、委派给人类或由CompW/CompApprove推导。
+- 人类金融路径要求FinR、financial G和近期MFA；批次service另验固定authority。实际IdP/service identity未批准，或本地keyd financial domain/generation未ready时路径disabled。
+- `R`、`B`、`I`及原子rollback语义保持；新对象/错误不得泄露未授权正文。
+- 所有适用失败含格式、授权、keyd/version/budget及audit失败；授权先行，不能用keyd状态枚举对象。
+
+### 5.2 公开组织与面谈
+
+| OP ID | 方法 / 路径 | 能力、类别与读取要求 | 关键输入 | 成功投影 / 版本、幂等与主要失败 |
+| --- | --- | --- | --- | --- |
+| OP-ORG-01 | GET `/orgs/:org_id/tree` | OrgR/O/G/P；label另exact PII read | as_of、root_department_id nullable、depth1..3、limit1..100、include_labels | graph/auth revision、当前授权日、bounded BG/Division/Department nodes/edges/employee IDs及可选labels；无employee profile/team层 |
+| OP-ORG-02 | **v12移除** | — | — | 路由不存在；不保留team创建shim |
+| OP-ORG-03 | **v12移除** | — | — | 路由不存在；canonical员工/任职/reporting组合写只经OP-ORG-10 |
+| OP-ORG-04 | POST `/orgs/:org_id/employees/query` | OrgR/O/G/P；profile/search另PIIR/G；cookie CSRF | JSON as_of/department_id/employee_id/lifecycle/q/cursor/limit/include_profile；team_id拒绝 | 200 IDs/准许PII/scan状态；SQL current scope先于LIMIT，≤500解密＋peek |
+| OP-ORG-05 | POST `/orgs/:org_id/employees` | OrgW＋OrgR＋PIIW＋PIIR/O/PII G/P | minimal profile、lifecycle、无隐式manager/department/assignment | 201 employee/profile revision；I；PII schema/区间失败；v12后续结构/任职只经OP-ORG-09/10 |
+| OP-ORG-06 | GET `/employees/:employee_id` | OrgR/O/G/P；profile/identifier/education另PIIR/G | as_of、include枚举profile/identifiers/employment/education/assignment/reporting；未知include（含独立`hod`）拒绝 | 指定日唯一获准projection及profile/employee/catalog/graph revisions；reporting DTO用同一administrative fact同时提供`direct_manager`和展示别名`hod`，ID/revision必须相同；无PII省略对应字段/版本，不含薪资 |
+| OP-ORG-07 | GET `/employees/:employee_id/organization-history` | 当前OrgR/O/G/P；profile/identifier/education/position/reason逐类PIIR | 成对recorded from/to、kinds有限枚举、cursor/limit | typed immutable/effective历史、fact IDs/revisions/替代refs；manager/HOD同一administrative reporting事件只返回一次，不含薪资 |
+| OP-ORG-08 | PATCH `/employees/:employee_id/profile` | PIIW＋PIIR/O/PII G/P | expected_profile_revision、完整v2 local/English name/contact replacement、edit_reason | 200 append profile version；I；v12仅v2，未知/旧schema拒绝 |
+| OP-ORG-09 | GET `/orgs/:org_id/workforce-catalogs`、POST `/orgs/:org_id/workforce-catalog-changes` | GET需OrgR org scope，labels另PIIR；POST另OrgW，labels另PIIW＋PIIR | GET kind/as_of/history/cursor/limit；POST须expected_catalog_revision＋expected_graph_revision、1..100 create/end/replace legal_entity/job_family/career_level或BG/Division/Department/typed parent；Location/education只读seed | POST固定锁graph→catalog并重验两revision；任意成功推进catalog，org-unit/parent/lifecycle另推进graph；返回两revision。未知/旧rev/非法父子/越界引用整组拒绝 |
+| OP-ORG-10 | POST `/orgs/:org_id/workforce-changes` | 每affected employee及reporting endpoint OrgW＋OrgR；identifier/education/profile核对及position payload另PIIW＋PIIR | expected graph/catalog及每employee revisions、1..100 typed add/end/replace identifier/employment/education/job_assignment/admin-or-dotted reporting/employee lifecycle；I | 201一份change/receipt及facts/graph/catalog/employee revisions/epochs；全org永久staff-code owner、spell、canonical assignment/position、manager环和fixed refs同一guard Tx；任一失败零事实。独立HOD kind、secondary/重叠、旧revision拒绝 |
+| OP-INT-01 | GET `/employees/:employee_id/interviews` | IntR/O/metadata G/P | from/to Date半开计划窗口、status、cursor/limit默认20 | 可见metadata/revision及有限list permissions；scope先于LIMIT，无正文/隐蔽count；不要求目录read |
+| OP-INT-02 | POST `/employees/:employee_id/interviews` | IntW＋IntR/O/metadata G/P | scheduled_at、typed participants、backfilled、nullable actual start/end | 201 scheduled或明确backfilled completed/recorded事实；I；不自动grant，跨org/时间422 |
+| OP-INT-03 | POST `/interviews/:id/transitions` | IntW＋IntR/O/metadata G/P | action start/complete/cancel、R、actual times/backfilled、reason | 200 status/revision；I；终态409，scheduled complete须明确补录；cancel reason加密，取消不关actions |
+| OP-INT-04 | GET `/interviews/:id` | IntR metadata；每section逐NoteR、actions逐ActR | include_sections/actions、有限category/cursor/limit | metadata/events＋只准许版本/heads/actions/permission hints；exact version不露head或其他history，reason另shared NoteR |
+| OP-INT-05 | POST `/interviews/:id/note-versions` | NoteW＋NoteR；publish另NotePub/MFA；source另当前read/批准 | category、nullable head_id、expected_head_revision初次0、text/edit_reason、save_draft/publish、supersedes/source refs/minimized | 201 immutable version/head revision；I；已有head明确supersedes/reason，终态后更正不重开；不接audience/grant、不写grant、category不改、旧head409 |
+| OP-INT-06 | GET `/note-versions/:id` | 独立NoteR/O/版本category G/P；不要求IntR/目录read | 无query | 当前获准历史version/author/recorded/reason；无源read省略source，作者不自动放行 |
+| OP-INT-07 | POST `/interviews/:id/action-items` | ActW＋ActR/O/shared G/P；source另read/批准 | interview R、minimal_shared_text、typed owner、nullable due_date、source_refs/minimized | 201 action＋interview revision；I；终态不新建，当前源/最小化或crossowner拒绝；不改面谈状态事件 |
+| OP-INT-08 | POST `/action-items/:id/transitions` | ActW＋ActR/O/shared G/P | action start/complete/cancel、R、safe_blocker_text | 200 action status/revision；I；complete→done，done/cancelled不重开，旧R409；原due/文字/源保留 |
+
+### 5.3 公开薪酬与奖金
+
+| OP ID | 方法 / 路径 | 能力、类别与读取要求 | 关键输入 | 成功投影 / 版本、幂等与主要失败 |
+| --- | --- | --- | --- | --- |
+| OP-COMP-01 | GET `/employees/:employee_id/compensation` | FinR/O/financial G/P/MFA | as_of、future_limit≤100 | 当日及未来获批terms；薪资仅CNY/JPY scale0的month/monthly/gross，不做Branch默认或FX；无terms明确未建立 |
+| OP-COMP-02 | GET `/employees/:employee_id/compensation/changes` | FinR/O/financial G/P/MFA；proposal及原修订同样须object grant | approvals/proposals按recorded；proposal_revisions需proposal_id；batch_adjustments只收effective_year；cursor/limit | 有界历史；batch行保留自身CNY/JPY币种，correction/0不另计次数，不做跨币种合计 |
+| OP-COMP-03 | POST `/employees/:employee_id/compensation/proposals` | CompW＋FinR/O/G/P/MFA | kind/date/B/before、after terms/reason；correction members | initial/adjustment遵循salary policy且adjustment同币种；个人correction replace可显式人工CNY↔JPY完整terms，不FX，须完整处理所有后继 |
+| OP-COMP-04 | PATCH `/compensation/proposals/:id` | CompW＋FinR/O/G/P/MFA | R、B、draft字段/完整纠错members | 新draft revision；对个人换币及全部后继重验闭包；非draft不可编辑 |
+| OP-COMP-05 | POST `/compensation/proposals/:id/transitions` | submit/withdraw CompW；approve/reject CompApprove；均FinR/O/G/P/MFA | action、R、B、decision reason | submit与approve重验CNY/JPY scale0、固定口径和换币完整闭包；self-approval/basis错误拒绝 |
+| OP-COMP-06 | GET `/compensation-adjustment-batches`、GET `/compensation-adjustment-batches/:batch_id` | org-scope FinR/G/P/MFA及全员工覆盖；不要求CompW | cycle_year/type/limit、batch_id | 详情完整返回≤500行、按币种increase摘要及special Y/Y−1次数；全批解密前/后授权门禁；无grand total/FX |
+| OP-COMP-07 | POST `/compensation-adjustment-batches` | org-scope CompW＋FinR/G/P/MFA；salary policy enabled | cycle_year、normal/special、legal_entity、normal default_effective_date；I | 同Tx分配N/S编号、批次专属service subject及空draft R1；调用者不选currency/编号 |
+| OP-COMP-08 | POST `/compensation-adjustment-batches/:id/imports?revision=R` | org-scope CompW＋FinR/MFA | XLSX body＋base R；I | 安全包/XML错误422；字段/行语义错误201 invalid candidate/errors；valid candidate已规范并校验金额关系、日期/月及当前Special原因，返回应用前lines且draft不变；TTL 24小时 |
+| OP-COMP-09 | PATCH `/compensation-adjustment-batches/:id/draft` | org-scope CompW＋FinR及全员工覆盖 | R＋candidate_id，或R＋完整lines；I | invalid/expired candidate拒绝；解析Staff Code/组织/range/terms并replace-all到新draft revision，返回完整混币摘要；任一失败旧draft不变 |
+| OP-COMP-10 | POST `/compensation-adjustment-batches/:id/transitions`；POST `/:id/corrections` | CompW＋FinR/全覆盖/MFA；无CompApprove | submit/withdraw＋R/manifest，或reason＋完整typed correction lines；I | submit以固定service subject整批单Tx激活，503/block、basis/conflict零部分事实；correction分配NC/SC并复用完整closure原子追加 |
+| OP-COMP-11 | GET `/orgs/:org_id/salary-ranges`、POST `/orgs/:org_id/salary-range-changes` | GET需org-scope FinR/G/P/MFA；POST另需CompW | GET完整维度/date；POST expected revision＋1..100 add/end/replace及整数min/mid/max | CNY/JPY scale0固定口径；同完整维度有效期不重叠，同Branch双币种合法；服务端不计算Compa Ratio |
+| OP-BONUS-01 | GET `/employees/:employee_id/bonuses` | FinR/O/G/P/MFA | period_start/end、record_kind targets/awards/payments/extensions、record_id optional、分列cursor/limit | 无record_kind是一次有界对账视图：每列不得超过本次limit，返回可见targets/含draft及原批准史的awards、payments/reversals/anomaly、唯一链尾批准额及同口径balance，超界要求选择类型；指定record_kind使用数据库keyset页遍历该类型完整immutable历史，不加载/受阻于其他类型，typed页不跨页重算balance/anomaly。有限extension当前/历史版本＋aggregate revision；无跨币种总余额、不把extension日期强套bonus period |
+| OP-BONUS-02 | POST `/employees/:employee_id/bonus-targets` | BonusTargetW＋FinR/O/G/P/MFA | period_start/end、B、target payload、initial_state draft/confirmed | 201 target/revision、bonus revision；I；仅BonusW不得创建/确认目标，target不变award/payment |
+| OP-BONUS-03 | POST `/employees/:employee_id/bonus-awards` | BonusW＋FinR/O/G/P/MFA | B、target_id optional、period、Money/reason、corrects_award_id optional | 201 draft/revision；I；target/correction refs跨org/员工拒绝，不暗生payment |
+| OP-BONUS-04 | PATCH `/bonus-awards/:id` | BonusW＋FinR/O/G/P/MFA | R、B、allowed draft payload/refs | 200新draft revision；I；非draft409 |
+| OP-BONUS-05 | POST `/bonus-awards/:id/transitions` | submit/withdraw BonusW；approve/reject BonusApprove；均FinR/O/G/P/MFA | action、R、B、decision reason | 200state/bonus revision/approval refs；I；默认拒自批；批准纠错只可替代当前有效approved链尾，分叉/环/旧B拒绝；替代及支付归集/异常/audit同Tx |
+| OP-BONUS-06 | POST `/employees/:employee_id/bonus-payments` | PayW＋FinR/O/G/P/MFA | B、business_payment_key、kind、positive Money、paid_date、award_id nullable、original_payment_id仅reversal、凭证ref/reason | 201 immutable payment/reconciliation；I＋永久业务key；异常如实保存，不拒真实超额/币种异常，非法reversal/跨org422 |
+| OP-BONUS-07 | POST `/bonus-targets/:id/transitions` | BonusTargetW＋FinR/O/G/P/MFA | action confirm/withdraw、R、B、reason | 200state/bonus revision；I；terminal不重开，仅BonusW不得维护目标，不自动award/payment |
+| OP-BONUS-08 | POST `/employees/:employee_id/compensation/extensions` | CompExtW＋FinR/O/G/P/MFA | B（comp aggregate）、schema_type/version、supersedes_id optional、payload | 201 append extension/comp revision；I；仅CompW不得维护扩展，unknown schema/fields/oversize422、旧basis409 |
+
+### 5.4 AI、受限内部worker与安全
+
+| OP ID | 方法 / 路径 | 能力、类别与读取要求 | 关键输入 | 成功投影 / 版本、幂等与主要失败 |
+| --- | --- | --- | --- | --- |
+| OP-AI-01 | PUT `/api/v1/employees/:employee_id/interview-policy` | PolicyW＋IntR/O/metadata G/P/MFA；standing service另须当前request/read资格及配置provider policy | R（首次0）、cadence/anchor/timezone/due/window/pause/purpose/ai_mode/required fields；periodic可带service/audience/expires/provider/template | 200 policy revision；I；policy/window/standing/receipt/audit原子。standing不授grant；缺项时periodic为blocked |
+| OP-AI-02 | GET `/api/v1/employees/:employee_id/interview-status` | IntR/O/metadata G/P；actions另ActR、笔记完整度另shared NoteR | window_id，或成对from/to，或有界当前policy窗口 | deterministic facts、coverage及disabled/awaiting/blocked/ready；无AI推断 |
+| OP-AI-03 | POST `/api/v1/employees/:employee_id/assessments/request` | `assessment.request`＋`assessment.read`及当前employee scope/purpose | window_id；调用端不能提交自由来源正文 | 201 proposed结构输入；stable generation/source digest；不排队、不调用provider |
+| OP-AI-04 | POST `/api/v1/employees/:employee_id/assessment-inputs/approve` | 独立`assessment.input.approve`＋`assessment.read`；MFA；不能是requester；provider policy/audience有限且当前 | input_id、provider_policy_id、audience | 201 queued job；input approved＋job＋audit原子；过期/失效/自批拒绝 |
+| OP-AI-05 | POST `/internal/v1/assessment/jobs/claim` | mTLS证书digest映射的worker allowlist；拒cookie/Authorization；无DB/KEK | 空严格JSON、worker header、Idempotency-Key | 200一个lease/minimal DTO；attempt/fence/token/expiry；claim receipt同key稳定重放，旧lease不复活 |
+| OP-AI-06 | POST `/internal/v1/assessment/jobs/heartbeat` 或 `/fail` | 同一mTLS worker、有效token/fence/期限 | lease；fail另有限error code | 200 bounded续期或204安全失败/重新排队；过期/旧fence 409 |
+| OP-AI-07 | POST `/internal/v1/assessment/jobs/result` | 同一mTLS worker、有效lease/fence；当前job/source未取消 | lease、有限summary/claims、仅当前window精确citation | 201 encrypted draft＋job completed；accepted receipt同key稳定重放；伪引用/旧lease拒绝 |
+| OP-AI-08 | GET `/api/v1/employees/:employee_id/assessment-jobs`、GET/POST `/assessment-results/:id` | GET需`assessment.read`；POST edit/publish/discard均另须`assessment.publish`；employee scope/purpose、全部当前来源read及审计 | result_id、expected_revision、action edit/publish/discard、edit document | 当前有权任务/解密draft；edit append revision；publish/discard终态；最终Tx重验publish/source/grant，改变后invalidated且不复活 |
+| OP-SEC-01 | GET `/session` | 有效session、自身安全摘要；employee目录上下文仍另须OrgR | 可选canonical employee_id；面谈用无employee通用session | 当前有限hints/epoch/MFA/identity_available/CSRF内存及sensitivity_valid_until；无原始credentials；面谈动作以自身List/Detail当前提示为准 |
+| OP-SEC-02 | POST `/access-grants` | GrantW/管理scope/P=security_administration/MFA＋真实现有authority；source批准另源NoteR | 原13必填字段（object_ref已改nullable typed）；可选approved_source_refs≤10；expected_revision为org auth epoch | 201安全grant/epoch；I；typed类别/owner/职责当前核对，source批准限employee/已published/同owner；不授角色、不自批；audit/receipt/epoch同Tx |
+| OP-SEC-03 | POST `/access-grants/:id/revoke` | GrantW/管理scope/P/MFA | R、expected_auth_epoch、safe reason | 200revoked/epoch；I；已撤销相同命令重放，旧revision409；current relation立即检查 |
+| OP-SEC-04 | GET `/audit-events` | AuditR/独立audit scope/G/P=`security_administration`/近期MFA；不隐含金融read | safe actor/object/op/time filters、cursor/limit | sanitized events/outcomes；缺MFA直接API拒绝；无Money/note/prompt |
+| OP-SEC-05 | POST `/sensitive-exports` | 当前独立read＋Export/类别grant/O/P/MFA；batch另要求org-scope FinR和全员工覆盖，不要求CompW | 单个完整frozen batch或既有有限objects；format=ndjson、I | batch不可选行；≤500行且首byte前验证8MiB。流中撤权/断连可partial/aborted并停止后续chunk；两币种/adjustment increase摘要原样，correction无金额摘要，不造grand total |
+| OP-SEC-06 | GET `/access-grants` | GrantW/明确delegated管理scope/G/P=`security_administration`/MFA；非默认AuditR/PIIR | subject/scope/category/purpose、state current/revoked/expired、grant_id optional、cursor/limit | 200范围内grant列表/详情、revision、有效期/撤销状态、可委派authority摘要；不返回所指对象正文/PII，范围外grant与不存在同404 |
+
+### 5.4.1 DEV-003独立授权查授撤 wire 契约
+
+本小节在v12只保留当前查授撤wire；旧DEV-003/R2行为由固定历史revision说明，不进入新baseline。人类grant只接受各OP明确能力/category/purpose，scope严格`org|department|employee`，relation只`reporting_line|job_assignment`。team/legacy_team/team_membership输入在通用schema校验即拒绝；无旧row、mapping或receipt decoder。
+
+- `/session`与列表authorities返回原批准scope及其与当前management capability/grant的规范去重`delegable_scopes`；表单只能据交集新签。
+- GET `/access-grants`保留subject/scope/category/purpose/state/grant_id/cursor/limit与安全DTO；范围外/不存在同404，不返回正文/PII。
+- POST新签body只接受`scope:{kind:"org"|"department"|"employee",id}`；relation_bound=true只接受exact reporting_line/job_assignment且owner一致；false要求null。team/team_membership、BatchActivate与exact compensation_batch拒绝。
+- POST revoke继续按grant revision/auth epoch、当前management∩authority/MFA及有限reason，receipt/grant/epoch/audit原子。
+- 不确定命令只重放v12原key/body：先重验同subject/org、当前manage/MFA/authority/覆盖与digest，再查receipt；异内容或无receipt按当前命令语义拒绝，不存在v11 body确认分支。
+- v12 cursor只经keyd `cursor_token` MAC domain/version，不存在`TEAMLEDGER_CURSOR_KEY_FILE`。15分钟token绑定主体/org/filter/as_of/epochs/last-ID；篡改、过期、换主体/filter/epoch刷新。cursor key不与CSRF/receipt共用，版本和probe按§3.2.1 inventory。
+- R3可选`approved_source_refs:[{kind:"note_version",id}]`≤10，仅目标note.publish/相应category或action.write/shared、已published同employee来源；批准者须当前源read与目标管理权。v12将字段省略/null/[]规范为同一空数组并参与v12 canonical digest。
+- Grant列表增加有限object_kind/object_id筛选并绑定v12 cursor；安全DTO不带正文，当前management与receipt确认顺序不变。
+
+
+### 5.5 Supporting协议路由（不是额外业务OP）
+
+身份Supporting协议都以`/api/v1`为前缀，不增加51个业务OP；启动时只启用DB固定mode对应路由，另一模式不fallback。匿名`GET /health/live`只证明进程handler存活；`GET /health/ready`实际检查当前v12 schema/DB、identity配置与DB mode一致、PII/interview/assessment/financial wrapper、审计outbox积压及DEV-020 receiver heartbeat。forwarder每5秒经mTLS探测receiver并写DB单例状态；missing/false或超过15秒均503，积压超过1000或最老超过5分钟同样503。除live外每个请求都重复检查key state与identity mode，运行中mode切换立即使旧进程503，须按新mode重启。响应只有有限状态，不返回DSN、token、key id或正文。
+
+| 方法 / 路由 | 输入与前提 | 成功 / 拒绝边界 |
+| --- | --- | --- |
+| GET `/auth/login` | 仅`oidc` mode；单值可选`return_to`，无测试trust/客户端IdP token入口 | 302真实受信authorization URL与独立`__Host-teamledger_oidc_binding`；设施disabled则503；local mode拒绝且不fallback |
+| GET `/auth/callback` | 仅`oidc` mode；一次性code/state与同浏览器binding；协议例外不以普通body CSRF替代PKCE/nonce | 成功才轮换opaque session/CSRF并302批准站内路径；401/403 MFA_REQUIRED/503均不签新cookie，不把code/token返回或写日志 |
+| POST `/auth/local/login` | 仅`local` mode；strict JSON `{username,password}`、Origin/Fetch Metadata、TLS；密码按§7.1.2原始bytes | 成功签8h/30m session/CSRF；不存在/disabled/错误/限流统一401且无另一模式fallback；DB/keyd/audit故障503 |
+| POST `/auth/local/password` | 仅`local` mode；当前cookie/CSRF/Origin/Metadata，strict `{current_password,new_password}` | 重验当前密码，原子换credential、推进epoch、撤销全部session及审计；成功204并清当前cookie，须重新登录 |
+| POST `/auth/step-up` | 仅`oidc` mode；当前cookie/CSRF/Origin/Fetch Metadata，`{action,return_to}`；action有限pii.write/access_grant.manage/note.publish/sensitive.export及compensation.read/propose/approve（含批次） | 200受信HTTPS authorization_url与binding；local mode或无可信MFA为`403/MFA_REQUIRED`，意图不授业务权、不自动重提命令 |
+| POST `/auth/logout` | 两种mode；同current cookie/CSRF/Origin/Metadata/JSON，body仅`{}`，无mutation query/未知字段 | 同敏感release guard原子revoke**本session**＋safe audit后204并清cookie；非subject全会话登出/IdP全局登出。失败不可假确认 |
+
+`return_to`有限`/`、`/security/grants`、canonical员工/组织R2路由、R3面谈路由、`/employees/<id>/compensation`及`/compensation/adjustment-batches[/<id>]`；只各自定义安全query，无任意host/fragment/PII/转义path。cookie Secure/HttpOnly/Lax/Path=/、无Domain，callback no-referrer/no-store。`identity_available`只配置hint。`sensitivity_valid_until`为服务端下一组织IANA日界、会话绝对/idle、MFA及未来grant生效/失效的保守最早期限；UI到期销毁并显式重验，不承诺在线撤权推送。
+
+## 6. 事务、历史与并发算法
+
+### 6.1 统一锁顺序与两阶段敏感处理
+
+为容易实现/复核，初版每次业务mutation/敏感release的短事务**先锁组织authorization guard**（同组织串行；负载成本明确，不宣称高吞吐），仅结构/lifecycle图命令再取organization graph guard；随后按canonical UUID升序锁subject guards（actor/被授予人/worker），再employee guards；需要业务编号时再按`kind,scope`锁allocator/counter guard；最后aggregate/profile/head/job/result/grant guards按`kind,id`排序。OP-ORG-08只取授权/subject/employee/profile guards，不取图guard或bump graph_revision。任何路径均不得把counter提前到authorization/subject前；PG/SQLite、job/请求和成功/冲突路径相同。
+
+PG在Tx用guard行 `SELECT ... FOR UPDATE`，SQLite用 `sql.Tx`内第一条guard无害UPDATE取得writer再读；不对`sql.DB`散发BEGIN，也不在Tx混用DB方法。[S5] 多组织命令不在本scope，禁止通过跨org复合命令绕锁。所有writer（调度/lease/revoke/graph/approval）同入口同顺序。
+
+1. 请求认证/CSRF/类型limit → 仅metadata解析owner → 当前授权（类别、purpose、MFA）→ 获取immutable version/epochs/aggregate基准。
+2. **Tx外敏感预处理**：KMS unwrap所需已授权版本、校验schema/业务计算、创建新随机ID/DEK并encrypt/wrap。KMS/provider网络不跨长期写事务，不能先无权解密。短时间预处理建议上限30秒，超时重新开始；不缓存明文DEK为全局权限捷径。
+3. 短Tx按统一顺序锁 → 重新读取session/subject/org epochs、current relation（当前business date而非as_of）、grant有效期/MFA、来源head和B/R → 完整业务校验；预处理基准不符丢弃payload返回409或授权拒绝，不自动改before。
+4. 原子写业务事实/history/投影/receipt/revision＋audits＋source invalidation，commit成功才能报告成功。commit错误/取消不能回成功；幂等结果可供断连后重查。所有错误rollback，释放预处理明文/新DEK（Go GC不保证物理内存零化，需控制内存/禁core dump）。
+
+授权epoch变化不能只更新缓存。grant新增/撤销、subject停用、管理关系生效、policy变更在同Tx bump有关epoch、写audit、invalidated派生当前指针。未来到期/经理变更到日后，即使scheduler晚，authorization也每次取当前date/expiry，因此不会等定时撤权才拒绝。epoch是防TOCTOU/version cache工具，不是“epoch同就不查时限”的许可。
+
+### 6.2 敏感读取、审计与撤权线性化
+
+读操作先授权/取immutable密文metadata，Tx外unwrap/decrypt并准备有界响应。随后release Tx同顺序锁组织/主体/员工/source guards，重新授权及版本/epoch/当前时间，写成功敏感读取audit并commit，**commit前不输出任何正文/响应头**。这次commit是授权披露的线性化点；revoke用同guard，若revoke先commit则读拒绝；若read先commit而撤权后到，已批准输出可能仍到达。不能承诺追回已送浏览器/provider的明文。
+
+同库audit写失败则不release，`503/AUDIT_UNAVAILABLE`。若未来部署声明“独立抗管理员审计”，敏感read/export还需**不同信任域存储**的receipt确认后才release（网络在DB Tx外）；DES-008 Compose receiver与业务共用DB，明确不满足该声明。业务mutation连同audit/outbox原子commit，receiver投递失败不回滚已批准事实；达到部署配置的backlog门限后暂停后续敏感操作，不降级为“无需receipt”。没有不同信任域设施时不声称抗DBA篡改。
+
+授权拒绝只记录最小actor/request/op/purpose/outcome，不记录未经许可对象详情/失败正文；拒绝审计安全入口不调用keyd。审计写入不可用时仍不解密/不放行，给客户端原安全拒绝并向无正文运维告警路径报告缺失，不用503代替拒绝泄露内部对象。成功变更/读取的强制审计要求不因此弱化。
+
+DEV-002首条已验证拒绝故障的安全错误与request ID关联；R7又为正常事务事件实现同库durable outbox及签名receipt投递协议。DES-008固定Compose本地receiver、bootstrap与同库ledger；DEV-020已用真实双库和Compose进程验证该设施，仍不等于不同信任域或生产发布。
+
+#### 6.2.1 Compose本地audit receiver（DES-008固定，DEV-020已实装）
+
+唯一投递路径是`业务事务→audit_event＋audit_outbox→audit-forwarder→mTLS receiver→同DB receiver ledger＋signed receipt原子commit→forwarder验签→outbox claim-token/fence CAS ack`。API不得直写receiver ledger或自行伪造receipt；receiver不得读取业务正文、业务表或outbox。PG receiver角色仅获`schema_version` SELECT、receiver ledger SELECT/INSERT及chain SELECT/INSERT/UPDATE；forwarder无ledger写权，只另获status heartbeat写权；离线audit maintainer仅获ledger/outbox SELECT；API通过独立NOLOGIN membership只读status。ledger的UPDATE/DELETE由trigger拒绝。SQLite profile复用同一文件，只提供独立进程/UID、严格接口与trigger的事故隔离，DB文件持有人仍可篡改，不能称为权限隔离。
+
+请求是≤16KiB的strict canonical JSON v1，包含`deployment_id,event_id,event_digest,event`；receiver对canonical event bytes重算SHA-256并拒绝不符。唯一键`(deployment_id,event_id)`：同digest逐byte返回已持久化原receipt，不新增sequence或重签；异digest返回409且不写。新事件事务锁定deployment chain head（PG `FOR UPDATE`；SQLite writer lock），分配`sequence`与`previous_hash`。`entry_hash=SHA-256("TEAMLEDGER-AUDIT-CHAIN" + 0x00 + "V1" + 0x00 + 对deployment/event/digest/sequence/previous/receipt/key/received-at逐项十进制长度加冒号 framing)`；receiver以Ed25519签署不含signature字段的canonical receipt-frame JSON，再把chain head、ledger行和完整canonical signed receipt JSON同Tx提交，commit成功才返回。repository在持久化前逐字段复核receipt与目标ledger行；签名/校验/INSERT/head CAS/commit任一步失败整Tx rollback。
+
+forwarder逐字段重建entry hash、以配置的`key_id→Ed25519 public key` allowlist验证canonical frame签名后，才以原claim token/fence CAS写receipt ID/digest并ack；超时/崩溃后事件可重领，旧claim永远不能ack。receiver重启只读取并返回原signed bytes，不使用新key重签旧事件。signer轮换先发布双public-key trust，再激活receiver新private key；旧private随切换销毁，未ack事件重放不需要它。退役旧public key前，命令以当前DB核对该key关联的pending/inflight为零，并要求运维者显式确认保留备份已无依赖；DB不可达、仍有未ack receipt或缺备份确认均拒绝。缺所需旧公钥时forwarder拒绝验签/ack，不生成替代receipt。
+
+Compose的一次性`audit-bootstrap`在空目录创建本地CA、receiver server/health cert、forwarder client cert和receipt signer。CA private key仅root `0400`且不挂载运行容器；receiver TLS/signing private key分别由receiver UID `0400`持有；forwarder client private key由forwarder UID `0400`持有；公钥/cert `0444`。命令拒绝symlink、hardlink、非空目标及错误owner/mode/type，不在日志输出secret。服务端固定client CA/EKU，forwarder固定server CA/DNS/EKU和receipt trust。`rotate-ca`先发布双CA trust、切换双方leaf及当前CA，实际mTLS确认后`retire-ca`才移除旧CA；`rotate-leaves`只沿用当前CA。所有private key不经DB/环境变量。
+
+receiver只有在v12 schema、DB权限、TLS材料、signer、实际mTLS health client、可回滚chain INSERT及现存chain head对应ledger时ready。forwarder每5秒以同一mTLS配置探测该ready端点，并把成功或失败连同固定deployment ID覆盖写入DB单例heartbeat；API配置同一预期deployment ID且只接受该ID的成功heartbeat，不接受旧部署仍在写入的新鲜状态；状态超过15秒同样关闭ready。因此receiver失败最多在下一次探测后关闭ready，forwarder同时失败则最迟在15秒状态过期后关闭。forwarder投递失败按1秒起的有界指数退避＋稳定jitter重试，最大288秒，不丢弃、不跳过事件；receiver不可用时outbox保留pending/inflight到lease过期重领。积压超过既有1,000条/5分钟门限同样使API not-ready并暂停新的敏感release/credential mutation，普通已提交事实不回滚或伪报未提交。receiver/forwarder重启不得自动替换CA、signer或deployment ID，持久卷缺失即失败启动。
+
+```mermaid
+sequenceDiagram
+    participant API as TeamLedger API
+    participant DB as 同一SQLite/PG
+    participant F as audit-forwarder
+    participant R as 独立audit receiver
+    F->>R: 每5秒mTLS GET ready
+    R-->>F: 204或失败
+    F->>DB: 覆盖单例receiver heartbeat
+    API->>DB: ready要求同deployment成功heartbeat≤15秒
+    API->>DB: 业务事实＋audit_event＋outbox原子commit
+    F->>DB: claim pending（token/fence/lease）
+    F->>R: mTLS canonical event＋digest
+    R->>R: 分配sequence/hash；构造frame并签名
+    R->>DB: ledger＋完整signed receipt同Tx INSERT；commit
+    R-->>F: commit后返回已持久化receipt bytes
+    F->>F: allowlist key＋canonical frame验签
+    F->>DB: 原token/fence CAS ack＋receipt digest
+    Note over F,R: timeout可重放；同event/digest返回原receipt
+```
+
+export在输出前持久prepare audit/逐对象版本清单，依次小批decrypt、每chunk release检查；每chunk视为一次批准披露，不持锁跨网络流。客户端断连或中途撤权记partial/aborted；已输出bytes不可收回。不得提前声明completed，最终delivery outcome是服务端观察到的发送结果，不证明用户确实保存/删除。
+
+### 6.3 全窗口组织图
+
+R2组织全窗口拟图/半开边界保持；当前scope/typed任期/subject_employee同当前日复核，图CAS与事实/投影/密文/receipt/audit/epoch同Tx，未来终止不提前失格、再任职不复活旧ref。R3-R5及R6派生消费者均已交付可达机制并复用该授权边界；来源/grant变化与AI当前结果失效同事务。生产交接/外部provider/设施政策仍未批准，不能据机制交付宣称生产启用或AC-ORG-05全产品通过。
+
+原key/body确认先当前原receipt targets write/read/PII许可与canonical digest；异内容409。原commit后的graph推进、旧ref已结束不妨碍仍获当前原target权限者确认安全原结果；不要求旧graphCAS/旧任期重新有效，不生成“重新授权ticket”。没有receipt的新命令仍完整新写授权、图CAS和窗口校验；失去当前原owner权限不能利用receipt旁路。
+
+### 6.3.1 R2当前授权、加密、原子持久化与读释放
+
+```mermaid
+sequenceDiagram
+    participant UI as Vue / HTTP caller
+    participant API as httpapi / organization
+    participant AZ as current authz
+    participant KMS as 历史R2 KMS adapter
+    participant DB as selected SQLite or PostgreSQL
+    UI->>API: structure command + original key / body
+    API->>AZ: session, purpose, server IANA current day
+    AZ->>DB: current exact scopes / immutable tenure witness
+    alt original receipt exists
+        API->>DB: short guarded Tx
+        API->>AZ: CURRENT original owner read/write/PII targets
+        API->>API: compare canonical digest
+        API-->>UI: original safe result, no old graphCAS / tenure requirement
+    else new command
+        API->>AZ: each affected owner authorization
+        API->>KMS: encrypt finite label / position / reason with exact AAD
+        API->>DB: short Tx: auth guard, graph guard, subject locks
+        API->>AZ: recheck current scopes / epochs
+        API->>API: graphCAS + all interval boundaries including infinity
+        API->>DB: facts + effective projection + ciphertext + graph/auth epoch + receipt + audit
+        DB-->>API: atomic commit or full rollback
+        API-->>UI: committed safe IDs and revisions
+    end
+    UI->>API: tree / directory / detail / history query
+    API->>AZ: CURRENT authority, as_of only business projection
+    API->>DB: narrow state / scoped SQL candidates / immutable metadata
+    opt independently authorized PII
+        API->>KMS: bounded decrypt, exact owner AAD
+    end
+    API->>DB: release Tx: current day, scopes, epochs, graph / head + audit
+    DB-->>API: release commit
+    API-->>UI: safe metadata + only currently authorized payload
+    Note over UI,API: 释放审计commit前不回应；撤权或离页清UI<br/>abort+generation拒绝旧回包复活
+```
+
+
+### 6.4 面谈与笔记
+
+当前interview：scheduled→in_progress / 明确backfilled completed / cancelled，in_progress→completed/cancelled；终态不重开。actual有序且不未来、author/recorded/计划不改，状态phase最多3条；行动新增可有aggregate revision间隔而不生成伪状态事件。cancel reason独立加密且当前shared NoteR才投影。action：todo→in_progress/done/cancelled、in_progress→done/cancelled，完成面谈不关闭行动，终态面谈不新建行动；overdue只原due_date早于当前组织日且行动非终态。
+
+note初次head expected0，已有head明确supersedes与edit_reason后append immutable draft/published；发布另当前NotePub及会话近期MFA，不把旧draft行改status、不覆盖旧发布或改类别。跨category只在独立OP-SEC-02源批准/目标grant后人工创建最小目标正文，发布重验源read/source approval/minimized，原private与ACL不变；无source read省略引用。grant与发布分别返回，不声称组合原子。source/employee epoch真实记录，未有R6消费者不能假称已失效不存在的AI结果。
+
+### 6.4.1 R3独立批准、追加版本及有限导出时序
+
+```mermaid
+sequenceDiagram
+    actor U as 授权操作人
+    participant UI as production Vue / HTTP
+    participant AZ as authz current scope / typed object
+    participant INT as interview service
+    participant KMS as 历史R3 interview Transit
+    participant DB as chosen SQLite or PostgreSQL v6
+    U->>UI: 明确源版本、目标类别与最小读者
+    UI->>AZ: OP-SEC-02 original key / body + approved_source_refs
+    AZ->>DB: 当前GrantW / authority / source NoteR / MFA
+    AZ->>DB: 短guard Tx approval + grant + epoch + receipt + audit
+    AZ-->>UI: 独立安全批准结果；不是发布成功
+    U->>UI: 手工最小正文 + supersedes/reason + minimized确认
+    UI->>INT: OP-INT-05 新版本命令
+    INT->>AZ: 当前target read/write/publish、source read / approval / MFA
+    INT->>KMS: Tx外新DEK / AEAD绑定 / wrap（不复制源正文）
+    INT->>DB: 短guard Tx再验当前授权、source及head CAS
+    INT->>DB: append version/payload/source + head/epoch + receipt/audit
+    INT-->>UI: 201新版本；原private/旧版本与ACL不变
+    U->>UI: 只选已授权旧版本导出
+    UI->>INT: OP-SEC-05 objects / expected revisions + original key
+    INT->>AZ: 每对象当前read + independent export + MFA
+    INT->>KMS: Tx外有界解密；编码前固定export ID
+    INT->>DB: guarded prepare audit/安全receipt先commit
+    INT-->>UI: header prepared
+    loop 每个已授权对象chunk
+        INT->>DB: guarded当前授权/版本重验 + release audit commit
+        INT-->>UI: object，复用预算内同一编码字节/ID
+    end
+    alt 所有write/flush成功且当前终验有效
+        INT->>DB: guarded最终release重验与allowed审计commit
+        INT-->>UI: complete，同export ID
+    else 撤权、版本/依赖变化或write失败
+        INT->>DB: 有界partial/aborted安全审计
+        INT-->>UI: 可发送时partial；不假称完成
+    end
+    Note over UI,INT: 切路由/拒绝/epoch/期限清明文与命令<br/>abort+generation拒旧200；已释放副本不可追回
+```
+
+### 6.5 薪资审批与完整纠错链
+
+proposal draft→submitted/withdrawn；submitted→approved/rejected/withdrawn，terminal immutable。submit冻结proposal revision，approve必须读取冻结版本、comp guard和B；default禁止approver=proposer，不擅设审批级数。initial要求整个拟定过去/未来有效链都无未被替代/撤销的既有初始条款且before=null，不是只看today，也不是要求历史表空；完整合法reverse已排除整链后可重新批准initial，原审批事实仍保留。adjustment的before由拟定生效日前active chain核对，Money/口径完整；未来approved event只进未来schedule，today按as_of取term，不需cron改金额。
+
+批准顺序：当前授权＋FinR→解密冻结payload→锁/重验B/R/全部前项与后继→append approval/event/terms→重建employee schedule→bump comp_revision＋审计/receipt，单Tx。把早期新event插到已经有后继链的位置，如果改变后继before则拒绝普通approval，转显式correction group，不能自动改后继before。
+
+纠错组锁后模拟完整replacement链。个人`correction replace`是唯一允许换币的路径：replacement after可人工提交另一允许币种的完整scale0/month/monthly/gross terms，不从旧金额或FX派生；该例外不适用于initial/adjustment或批次correction。每个后继仍按immutable before identity检查；币种变化使引用旧term的后继必须纳入组并显式给出新before/after，不能自动转换。create、PATCH、submit、approve均重验同一闭包；缺项`409/DEPENDENCY_INCOMPLETE`且零写入。
+
+组内新term用唯一`member_key`和严格one-of `before_ref`；服务端原子分配UUID/验证拓扑，响应映射真实ID。跨币种after是新term，不改旧term或历史。
+
+合成：CNY初始E1、后继E2引用T1。把E1显式replace为人工JPY整数时，E2若未入组则拒绝；完整组须明确E2的新JPY before及after。批准后每date唯一terms，原CNY E1/E2及审批/原因完整保留。rejected/withdrawn不改投影。
+
+显式撤销错误批准用member `action=reverse`：保留original approval/event/terms，追加带原因与同次approval的correction_reversal marker，将原目标event排除有效链，而不是删row或写负工资。replace成员才引入新terms；reverse成员的after引用删除目标后该日剩余有效terms（若全部初始链合法撤销则为null、查询明确“未建立有效条款”）。模拟对全部reverse/replace完成后检查同一依赖闭包：任何保留后继的before不一致仍必须显式替代，不能只撤一条留下断链；删除初始但留有无合法初始的adjustment链拒绝。反向标记本身不当普通调薪排程项，不因recorded_at最新而覆盖剩余terms。
+
+### 6.5.1 R4独立批准与完整纠错时序
+
+下图是**DEV-009当时的R4个人薪资历史切片**。当前R5、R6b、R7、DEV-015员工主数据及DEV-016 Salary Range/normal/special批次均已固定交付；DEV-017 canonical授权进入最终固定交付。真实生产policy/provider/设施仍未批准。
+
+```mermaid
+sequenceDiagram
+    actor P as 有权提出人
+    actor A as 独立有权审批人
+    participant UI as P-COMP-01 / Vue
+    participant S as HTTP / compensation
+    participant AZ as 当前financial授权 / MFA
+    participant K as 历史R4 financial KMS
+    participant DB as SQLite或PostgreSQL v7
+    P->>UI: 明确口径 / before / 日期 / B / reason
+    UI->>S: create或draft edit + 原key/body
+    S->>AZ: 当前read + propose / exact对象与scope
+    S->>K: Tx外新DEK / financial AAD / wrap
+    S->>DB: guard Tx重验R/B / append revision + receipt/audit
+    S-->>UI: draft；有效条款不变
+    P->>S: submit冻结R/B；decision_reason空
+    S->>DB: 当前权 / CAS / immutable submitted revision
+    A->>UI: 独立审阅；明确批准与理由
+    UI->>S: approve + frozen R/B
+    S->>AZ: 当前read + approve / MFA / 不自批
+    S->>K: Tx外读获准冻结payload
+    S->>S: 全过去/未来链；显式全部replace/reverse
+    alt 缺任何下游before identity依赖
+        S-->>UI: 409 DEPENDENCY_INCOMPLETE；不补成员
+    else 完整合法链
+        S->>S: 分配全部UUID / 解析member_key / 模拟唯一schedule
+        S->>K: Tx外加密decision与新terms；reverse不建terms
+        S->>DB: org → subject → employee → aggregate guard
+        S->>DB: 重验当前权/资格/R/B/全链；单Tx facts/schedule/B/receipt/audit
+        S-->>UI: approved；显式重载当前获准结果
+    end
+    UI->>S: as_of/future、提案head、显式revision cursor页与批准历史独立查询
+    S->>AZ: 先scope再有界SQL；revision页绑定当前head；event不隐含term读权
+    S->>K: Tx外仅获准不可变payload
+    S->>DB: release guard当前授权/版本/审计再验
+    S-->>UI: 当前/未来/提案/只读原审批分栏
+    Note over S,DB: reverse保留原approval/event/terms<br/>after指该日剩余term或null；不是新工资
+    Note over UI,S: 409人工重载；不确定只显式原key/body确认<br/>拒绝/路由/期限清空，旧回包不复活
+```
+
+### 6.5.2 DES-003/005/006批次导入、显式提交与单点激活
+
+OP-COMP-07创建事务分配`N|S-{cycle_year}-{sequence}`。counter以org＋year＋type为键，batch、专属service subject、初始state history、command receipt、audit及outbox共同提交；失败回滚counter，成功编号不回收。NC/SC编号仅在已激活批次纠错事务内从独立counter分配。
+
+XLSX入口限制压缩体10MiB、展开50MiB、entry 10,000及500行。XML解析拒绝任何`<f>`元素，包括空共享公式及cached value；Money只接受shared/inline Text和`0|[1-9][0-9]*`，numeric cell、`100.0`、指数、日期serial拒绝。安全包/XML损坏直接422；缺header、行字段或行语义错误加密保存为`invalid` candidate。valid candidate在保存前经`ValidateBatchLines`规范/校验金额关系、Normal默认生效日、Special月份及当前原因目录；响应返回规范行供应用前预览。candidate绑定batch、subject、base revision、用途域`batch-import`的HMAC-SHA-256和24小时expiry；只保存规范解析payload，不保存原文件。
+
+OP-COMP-09显式apply或JSON replace-all时才做员工及业务事实basis解析：Staff Code按共同HMAC lookup命中指定employee，单一有效identifier/employment/job assignment与revision、法分公司/location/family/level、同币种有效Salary Range/revision、当前term/revision全部进入加密行basis。before必须等于当前CNY/JPY scale0 gross monthly fixed term，increase非负，after为checked加法；0标`no_change`。完整draft摘要按币种checked累加，不接受客户端grand total/FX。
+
+OP-COMP-10 submit要求当前revision及服务端manifest。服务先解密全部行、逐人重验当前授权/basis，再在compensation事务中按subject→employee UUID顺序锁定；锁后再次解析basis，随后以批次专属固定service subject复用个人proposal完整批准路径。正数行的event/term/schedule、event↔batch关联、batch activation/state history、receipt、audit/outbox在同一事务提交；0行不生成薪资event。任一步失败都不留下部分薪资事实。
+
+业务basis冲突在回滚后CAS写`activation_conflict`；新candidate或JSON replace-all把它推进新draft revision。503依赖失败CAS写`activation_blocked`，原revision/manifest可人工重试。当前实现没有持久prepare chunks或retire：≤500行在单个最终事务完成；若未来提高上限或需要异步恢复，必须另立PLAN并实测SQLite锁时长与PostgreSQL锁竞争。financial wrapper当前只经本地keyd。
+
+已激活批次纠错端点接收1..500员工的DEV-009 typed correction members，按员工排序锁定并逐组执行完整closure模拟/批准。`NC|SC-{year}-{sequence}`、全部replacement/reversal事实、batch event关联、correction记录、receipt、audit/outbox共同提交；原batch/event/term不更新或删除，且correction不增加normal/special次数。
+
+```mermaid
+sequenceDiagram
+    actor U as 薪酬操作人
+    participant UI as P-COMP-01批次页
+    participant S as compensation batch service
+    participant X as bounded XLSX parser
+    participant AZ as current authz
+    participant K as existing financial wrapper
+    participant DB as SQLite或PostgreSQL v12
+    U->>S: create normal/special
+    S->>AZ: FinR＋CompW＋MFA
+    S->>DB: counter＋batch＋service subject＋receipt/audit
+    U->>S: upload XLSX＋base revision
+    S->>X: package/XML/Text bounds
+    alt structural row error
+        X-->>S: safe errors
+        S->>K: encrypt invalid candidate
+        S->>DB: candidate only；draft unchanged
+    else parse valid
+        X-->>S: canonical rows
+        S->>K: encrypt valid candidate
+        S->>DB: candidate only；draft unchanged
+        U->>S: apply candidate
+        S->>AZ: full employee coverage
+        S->>DB: resolve identifier/employment/assignment/range/term
+        S->>K: encrypt frozen lines
+        S->>DB: CAS new draft revision＋manifest
+    end
+    U->>S: submit＋revision＋manifest
+    S->>AZ: current full-batch authorization
+    S->>K: decrypt approved frozen lines
+    S->>DB: lock service subject＋employees；re-resolve basis
+    alt all current
+        S->>DB: one Tx events/terms/schedule/activation/receipt/audit
+        S-->>UI: activated
+    else basis conflict
+        S->>DB: salary Tx rollback；CAS activation_conflict
+        S-->>UI: re-import/reapply
+    else financial dependency unavailable
+        S->>DB: salary Tx rollback；CAS activation_blocked
+        S-->>UI: same-manifest retry
+    end
+```
+
+
+### 6.6 奖金事实、异常与冲销
+
+target draft→confirmed/withdrawn；confirmed→withdrawn，由BonusTargetW维护并保留confirmed history。award用proposal状态机/独立批准；approved correction由新draft award `corrects_award_id`经同审批，全部原approval保留。既有完整replacement语义明确为：只有新纠错批准才在有效投影排除被替代award，原状态仍approved；draft/submitted/rejected/withdrawn纠错不改变原有效奖励。锁bonus guard、重验B/R，纠错只能引用当前有效approved链尾、同org/employee，拒绝分叉/环/重复替代；每链仅批准后的唯一尾项计入有效批准额，不能把原100和替代120加成220。替代映射、核对投影、异常及audit同Tx；target/award/支付从不自动联动。
+
+支付和reversal的原`award_id`/原payment引用始终不改。仅沿**显式已批准替代链**派生effective_award_id，将祖先及链尾明确关联的净支付各计一次归到唯一有效奖励；A1批准100、已付40，A2完整替代120批准后是approved120/paid40/balance80，而非paid0。再替代或冲销同样沿链归集，不按金额/日期匹配、不重写历史payment。最终奖励与原支付currency/scale不符时保留原币种事实并标异常，不抵新币种余额；unmatched或另一无关奖励不归入。历史查询仍展示原批准额/原关联/时序事实，不能只返回当前投影掩盖更正。
+
+PayW提交实际付款时，复合FK检查award/source/employee同org且caller有权关联。不存在/跨org/跨employee/无权关联拒绝，不自动改成unmatched；调用者可明确`award_id:null`＋最小外部凭证ref如实记录未匹配。关联存在但未approved（含draft/submitted/rejected/withdrawn）记录`unapproved_award`异常，不让payment批准award；币种scale不符/超额亦正常授权与payload通过后**如实记录**payment＋anomaly。批准额只含当前有效approved awards，同币种scale与关联payments按signed Money核对未支付/部分/已支付/overpay；不同口径分桶列异常，无假FX总余额。若后续才批准，保留原payment日期与原unapproved异常；paid_date早于组织时区下approval date标`payment_before_approval`，同日仅有日期不能断言先后，显示时序未确定，不伪造当时已批准。
+
+reversal是新immutable记录，kind=reversal、positive amount、original_payment_id指同employee原payment，不能反向引用另一reversal；沿原付款的币种/scale/award归属核对，累计reversal≤原payment，防重复超冲销。错误币种/员工要先合法冲销原事实再记录正确payment，每项保留凭证/链接；没有修改原payment或auto-FX。business key+receipt、revision、付款/冲销/异常/投影/audit同Tx，旧B拒绝；重复事实先重验授权和payload，再返回原记录，不因当前aggregate新revision误生第二付款。纠正award后按关联投影重新核对，原异常detected事实仍可追到resolved record。
+
+### 6.6.1 R5写入、读取与HMAC索引维护时序
+
+```mermaid
+sequenceDiagram
+    actor U as 授权财务人员
+    participant V as P-BONUS-01
+    participant S as bonus Service
+    participant AZ as authz / 当前会话
+    participant K as 历史R5 financial KMS
+    participant DB as SQLite 或 PostgreSQL v8
+    participant M as bonus-hmac 运维命令 / 执行进程
+    participant T as 固定root-owned批准信任注册表
+    U->>V: 核对employee、对象、金额、日期、原因/凭证并显式确认
+    V->>S: 单一命令 + CSRF + idempotency key + 预期bonus/对象revision
+    S->>AZ: 当前session/MFA/purpose/capability/employee scope
+    S->>K: 仅对已授权敏感payload事务外Seal
+    S->>DB: 短Tx内再次校验guard/revision与HMAC状态=ready且active key匹配
+    alt 合法命令
+        DB-->>S: 原子事实/payload/receipt/audit与新bonus revision
+        S-->>V: 201/200；显式重载，不自动重提
+    else 冲突/迁移/撤权
+        DB-->>S: 409或安全拒绝；无半条事实
+        S-->>V: 清除旧结果/确认，人工重载
+    end
+    V->>S: 有界GET + record_kind + 签名cursor
+    S->>AZ: scope先于查询/解密；cursor绑定授权与revision
+    S->>DB: 分类型上限查询事实
+    S->>K: 仅获准payload逐项Open
+    S->>DB: release guard复核
+    S-->>V: 目标/奖励/支付/扩展 + 派生余额/异常
+    U->>M: 提供批准方Ed25519签名manifest<br/>exact org/key/version/subject/request/期限
+    M->>T: 按approved subject取得固定Ed25519 key；CLI不能替换trust path/key
+    M->>DB: 验签后ready→migrating；固定待处理ID manifest
+    loop 每批
+        M->>K: 解密实际获准payload
+        M->>DB: 以目标key重建staging并记录进度
+    end
+    alt manifest完整且staging验证通过
+        M->>DB: 同Tx写批准subject/digest及执行UID/host的immutable audit<br/>原子切换active key/version；清staging；migrating→ready
+    else 缺key/解密/完整性失败
+        M->>DB: migrating→blocked；不切换active key
+    end
+```
+
+HMAC状态不是可忽略运维标记：所有新增奖金写在事务内读取并锁定当前`ready`状态及配置key id/version；`migrating/blocked`一律停写。重建只替换可派生的exact查找索引，不修改payment/award/target原事实或审批历史；恢复需明确继续原manifest或从验证过的失败状态重新开始，不能把半成品staging当active。
+
+## 7. 可信身份、授权与加密
+
+### 7.1 身份部署模式、session与step-up
+
+`TEAMLEDGER_IDENTITY_MODE=local|oidc`是部署必选且互斥。fresh DB首次成功bootstrap把mode写入`identity_mode_state`；其后配置与DB不一致时API拒绝ready/登录，而非fallback。切换只能由maintenance显式执行，并在同一受控事务撤销全部session、推进所有subject/org auth epoch、更新mode epoch并写必需审计；OIDC与local identity不自动关联，任一模式失败都不得尝试另一模式。
+
+`oidc`模式生产前必须接入实际可信IdP、精确注册issuer/client/redirect URI、JWKS信任/算法allowlist、客户端机密设施、subject绑定/停用流程及MFA声明映射。禁止测试trust身份成为生产登录。建议后端confidential Authorization Code＋PKCE S256，随机一次性state/nonce绑定浏览器短时transaction（10分钟）；token交换仅后端TLS，校验code/state/nonce/iss/aud/azp/签名/exp/iat与预期issuer，拒绝`none`/未知alg，签名轮换通过可信JWKS更新而非任意token URL。[S1][S2] email/title/IdP group不直接升敏感grant。
+
+两种模式都签发cookie `__Host-teamledger_session`：随机256-bit opaque值、DB只hash，`Secure; HttpOnly; SameSite=Lax; Path=/`无Domain；生产同源且TLS。session绝对8小时、idle30分钟，登录/step-up/密码变更轮换或撤销session/CSRF，subject/session撤销实时检查。OIDC access/refresh token不进浏览器；如确需保留仅服务端加密，非必要就不存refresh。redirect只允许站内已知路由，不开放任意URL。
+
+所有cookie mutation及敏感POST校验session绑定CSRF token、Origin与Fetch Metadata。[S3] token只经keyd当前`csrf_token` MAC：规范输入为domain＋原始32-byte session随机值，DB存token hash/key version，`/session`从已验证cookie以**当前同version key**重算。CSRF key rotation必须停写，并在激活前同一DB事务撤销全部旧version session、推进subject/session epoch及写audit；因此不提供历史MAC派生。旧tab/reload/POST统一401并清敏感状态，按当前部署模式重新登录才取得新session/token；多tab不静默换token。OIDC callback仍以state/nonce/PKCE而非普通CSRF。
+
+只有`oidc`模式提供step-up：通过同login流程绑定当前主体＋requested action/return，`max_age`和essential auth_time/实际IdP认可acr请求；回包核验同issuer/sub、auth_time和**已约定可信acr/amr映射**，不是客户端勾选“MFA”或收到任意amr就通过。**沿既有授权设计，合格近期MFA是会话级认证条件，不是一次性动作授权票据**：action只绑定短时认证transaction/AAD及回跳意图；例如为`pii.write`完成MFA的同一会话，可以在仍有完整`access_grant.manage`能力/scope/grant/purpose/批准/当前资格时满足其MFA条件，缺任何业务条件仍拒绝。不得因action值、return或认证成功创建角色/grant或自动提交业务。建议freshness≤10分钟；无可信对应证明则`403/MFA_REQUIRED`且不自造认证器。[S1] `local`模式把`mfa_until`固定为空、不提供step-up route；§5所有要求MFA的操作稳定拒绝`403/MFA_REQUIRED`，不得把密码重输视为MFA。
+
+#### 7.1.1 OIDC身份协议时序（DEV-006候选已实际运行，生产设施另验）
+
+```mermaid
+sequenceDiagram
+    actor human as 授权人员
+    participant vue as 浏览器 / Vue
+    participant api as Go HTTP / identity
+    participant idp as 受信 OIDC IdP
+    participant db as 所选 SQLite 或 PostgreSQL
+    Note over api,db: 先有批准active subject与issuer/sub HMAC映射；实际无human-kind核验；登录不建主体/grant
+    Note over api,db: 映射维护审计另记内核UID / 节点hash操作者与target；不把目标用户当维护人
+    human->>vue: 登录或显式 MFA 验证
+    vue->>api: GET login 或 POST step-up（当前 cookie / CSRF / Origin / Metadata）
+    api->>db: 同Tx清理≤256已到期proof；持久10m state/binding hash、nonce/verifier AEAD、action/return与step-up当前身份
+    api-->>vue: 302 或 HTTPS authorization_url；Host binding cookie
+    vue->>idp: HTTPS授权；PKCE S256 challenge、state、nonce、必要重认证请求
+    idp-->>vue: 一次性 code / state 回调
+    vue->>api: callback code/state 与同浏览器 binding
+    api->>db: proof 原子一次性消费，不因失败复用
+    api->>idp: 后端 HTTPS code exchange + decrypted verifier
+    idp-->>api: 签名 ID token（不交 Vue）
+    api->>idp: 可信 JWKS 获取 / 必要签名轮换
+    Note over api: 校验 issuer/aud/azp/签名/nonce/exp/iat；step-up须同身份与可信acr/全部amr/auth_time
+    Note over api: action绑定认证事务而非业务权限；近期MFA会话复用仍逐请求完整授权
+    alt 当前证明、映射、主体、epoch 与审计均有效
+        api->>db: 短 guard Tx 再验当前资格；原子旧session撤销/新session-auth/CSRF hash/审计
+        db-->>api: commit成功
+        api-->>vue: 新 Host opaque cookie；302 已知站内路径
+        vue->>api: 重新读取会话与当前页面；不自动重提业务
+        api-->>vue: 安全身份hint与本次获准DTO；认证不等于业务权
+    else 证明无效、资格变化或审计不可用
+        api->>db: 必需安全拒绝审计；不签新session
+        api-->>vue: 401 / 403 MFA_REQUIRED / 503，无新身份或业务事实
+    end
+    human->>vue: 注销本会话
+    Note over vue: 请求前销毁页面/表单并取消操作；迟回包不能复活
+    vue->>api: POST logout 当前 cookie/CSRF/Origin/Metadata + 空JSON对象
+    api->>db: 同敏感release guard原子revoke本session + audit
+    db-->>api: commit成功（失败不确认）
+    api-->>vue: 204清cookie；Vue才确认本地注销，不承诺IdP全局登出
+```
+
+当前v3身份proof与业务release/授权变化使用同组织guard，跨组织先排序所有org、再排序subject；网络交换不在SQL事务里。callback后仍重验当前mapping/主体/原session撤销与epoch，不以开始认证时的快照授会话；unlink后重bind不得复活旧cookie。已有C3 grant原回执规则不因身份gate改变。
+
+#### 7.1.2 内置账号/密码协议（DES-008固定；DEV-019固定C `c8b4da4`已实装/验证）
+
+除fresh bootstrap外，local账号不是新的授权主体：maintenance只能把账号UUID绑定到**既有active subject**，登录只建立session，不创建subject、capability或grant。canonical username只接受ASCII，先转小写再匹配`[a-z0-9][a-z0-9._-]{2,63}`；唯一性为全部署。DB保存`local_username_lookup` versioned HMAC索引与`identity_mapping` wrapper加密的canonical source，owner永不自动转移。密码输入按原始UTF-8 bytes处理，不trim、不Unicode normalize，长度12..256 bytes且拒绝NUL；日志、审计、错误和CLI argv均不得带密码。
+
+keyd的`local_password_pepper` key永不离开keyd。MAC规范输入为ASCII `TEAMLEDGER-LOCAL-PASSWORD`、单个`0x00`、ASCII `V1`、原始密码长度的4-byte big-endian及原始密码bytes；API把32-byte MAC结果作为Argon2id输入。PHC固定`m=65536 KiB,t=3,p=1`、随机16-byte salt、32-byte output；credential记录pepper key/version和PHC。DEV-019只接受当前active pepper精确版本，错误/旧version安全拒绝；成功登录惰性升级、旧version verify与退役属于DEV-022，不在本task冒充完成。不存在/disabled账号执行固定有效fake PHC校验并返回相同`401 UNAUTHENTICATED`。
+
+`local_login_throttle`按username MAC digest原子记录连续失败；失败后`retry_at=now+min(2^(n-1),900)`秒，成功原子清零。未知账号也写同类throttle行，因此DB持有人可观察登录尝试的等值关系；响应体、状态和近似计算路径不得暴露账号存在性。审计不可用时bootstrap、subject/account create/reset/disable、mode-switch、password-change和login均fail closed，不签session或确认身份/凭据变更。
+
+维护入口只接受由调用方预建的regular input file，owner必须为maintenance UID、mode `0600`、`nlink=1`且拒绝symlink/hardlink；内容必须是无BOM、无前后空白/尾随换行、无重复/未知字段的UTF-8 fixed-order JSON：`{"username":"…","password":"…"}`。密码不接受argv/env/stdin，CLI不删除调用方文件。`create`要求username未占用且subject active；`reset`、用户自改密码与`disable`均推进credential/subject auth epoch、撤销该subject全部session并写审计；disable保留owner，不能把username交给另一subject。失败事务不得部分更新。
+
+fresh local部署以maintenance profile显式运行`identity local-bootstrap -input-file ... -request-id <UUID>`。input同文件规则且唯一schema为fixed-order `{"timezone":"<IANA>","username":"…","password":"…"}`；CLI生成org/subject/account UUID。命令只在organization、subject、local account、identity mode及bootstrap receipt全部为空时执行，并在一个事务建立唯一active org、首个active bootstrap subject、local account/credential、mode=`local`、`bootstrap_policy.v1`固定的OrgR/OrgW/PIIR/PIIW capability assignments与对应org/metadata/PII grants、maintenance audit/outbox和command receipt；输入不能指定额外能力/category/purpose。固定集合不含金融、面谈、审计查看、导出或grant管理，所有MFA-required路径仍拒绝。相同request ID和同digest在断连后只返回原安全org/subject/account IDs，异digest冲突；任何其他事实已存在时永久拒绝，不补建、不接管。此命令不依赖IdP/邮件/短信/匿名HTTP，失败全回滚且不输出可登录账号。
+
+后续`identity local-subject create -request-id`可经同类protected file创建无账号的active subject；它不授capability/grant。随后`local-account create`绑定该subject；职责仍必须来自既有批准/provisioning事实，“可登录”不等于管理员。bootstrap最小subject只足以建立初始组织目录/员工；需要MFA的grant管理及敏感功能在local模式保持不可用。
+
+```mermaid
+sequenceDiagram
+    actor human as 授权人员
+    participant vue as 浏览器 / Vue
+    participant api as Go identity API
+    participant keyd as 本地keyd
+    participant db as 所选DB
+    human->>vue: 输入username/password
+    vue->>api: POST local login（TLS；无模式fallback）
+    api->>keyd: MAC canonical username / active lookup key
+    api->>db: 查询account/credential/throttle与当前subject/epoch
+    api->>keyd: MAC原始password frame / credential pepper version
+    api->>api: Argon2id校验；未知/disabled走fake PHC
+    alt 有效且未限流、subject active、审计可提交
+        api->>db: 原子清失败计数；签8h/30m session＋CSRF＋audit
+        db-->>api: commit
+        api-->>vue: opaque Host cookie；安全subject hint
+    else 任一失败
+        api->>db: 原子失败计数/retry_at＋安全审计
+        api-->>vue: 相同401；基础设施/审计故障才503
+    end
+```
+
+### 7.2 服务端判定顺序与当前grant
+
+1. session/worker身份有效，subject active、org匹配；外部输入不能选择主体/owner。
+2. metadata取得canonical org/employee/object并核对当前read-scope；不存在/不可读统一404，不先发对象相关MFA挑战。已可见对象缺动作capability才403；写不隐含read。
+3. scope核对org/department/employee；department exact不继承，employee用当前business date的canonical job assignment，不以历史`as_of`取得旧经理资格。
+4. category（metadata/PII/shared/manager_private/hr_confidential/financial/assessment/audit）与typed object/scope grant精确匹配；metadata也受其对象类型read capability限制，不是全域读权；grant未撤销、期限/许可动作有效。
+5. relation-bound资格核对grant的确切typed relation_ref仍在当前有效投影中、主体/对象/scope符合批准资格，并受该关系半开区间限制；无ref、已结束/被替代均拒绝。M1第一任期结束后即使第三任期再次管理同员工，也不能复活第一任期grant，需新任期显式批准的新grant；不依赖scheduler及时撤销。独立grant也必须来自明确批准policy，没有永久author/participant例外。manager/title/ancestor/dotted不自动财务/历史授权。
+6. purpose取有限policy集合且grant许可，再校验操作所需可信MFA条件；AI还必须外传policy/approved input，human/result需所有sources当前read交集；导出额外Export与scope。
+7. 记录org/subject/object/source auth/policy epochs；通过才请求本地keyd。commit/release/dispatch/publication再执行该判定，不只在UI/session缓存做一次。
+
+组织交接/到期/离职撤关系bound grant并bump epoch；new manager不继承history/financial，新交接grant需显式委派批准。自由reason用于加密/安全审计但不能成为授权purpose。普通HR/DBA/IT没有自动FinR/KEK unwrap；employee本人也不自动员工自助。private不豁免适用法律调查/访问/保留，相关流程政策确认后显式登记，不用普通note edit删除原证据。
+
+### 7.3 密文包、AAD与用途隔离
+
+写库前每个immutable payload生成随机256-bit DEK，以AES-256-GCM仅加密该payload一次；DB只存sealed bytes和wrapped DEK。`encrypted_payload`保存owner/purpose/schema、DEK/KEK id/version、唯一`dek_id`及包revision。长期key按§3.2.1 domain/type分离，不能跨用途复用。
+
+DES-007 root是CSPRNG RAW32。配置路径位于预设root-owned锚点下；Linux从锚点FD用`openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_MAGICLINKS)`逐层打开并核对owner/mode。最终目录`0700`；`root.key`0400，`keyring.bin`/`.lock`0600，均keyd UID、regular、`nlink=1`。同FD读取前后`fstat`；root exact32 bytes。固定inode只保证本次快照，不声称防host root。
+
+`keyctl-local init`在已验证父dirfd下建同filesystem随机临时目录，创建上述三文件，fsync文件/目录，以`renameat2(RENAME_NOREPLACE)`发布并fsync父目录；目标已存在或不支持no-replace即拒绝。normal startup不创建/修复。
+
+Keyring认证包含magic/format/**material_generation**/previous digest/随机128-bit update salt/密文/tag。每次material更新以HKDF-SHA-256(root, update salt, `TEAMLEDGER-KEYRING`＋format＋generation)派生只用一次的AES-256-GCM key，以固定nonceSeal一次；salt在链内唯一，AAD绑定完整header。明文entry按domain/type/key UUID/version排序，包装key状态仅`staged|active|decrypt_only`，MAC key为`staged|active_write_verify|verify_only`；每domain/type恰一active或明确disabled。
+
+所有密码上下文使用`CF1`：`"TLCF"[4] | version u16=1 | field_count u16 | fields`。field=`tag u16 | type u8 | length u32 | value`，整数network order。type仅null=0/bytes=1/UTF8-NFC=2/UUID=3/u64=4/enum-u16=5/digest32=6；null长度0，UUID为RFC4122网络序16 bytes，其余固定8/2/32。tag严格递增唯一；拒未知type/tag/version、非规范长度/顺序、重复、尾随、非NFC及总长>64KiB。optional必须既定tag＋null，不可省略或以empty代null。
+
+Payload AAD=`"TEAMLEDGER-PAYLOAD\\0" || CF1`，tags固定：1 org UUID、2 object-kind enum、3 owner-binding嵌套CF1 bytes、4 record UUID、5 immutable version/revision u64、6 purpose enum、7 schema ID NFC、8 schema version enum、9 `dek_id` UUID。object-kind：1 profile、2 identifier/education、3 org/catalog label、4 assignment position、5 structure reason、6 interview note、7 interview action、8 compensation terms/proposal、9 salary range、10 batch、11 bonus、12 assessment、13 identity mapping、14 identity transaction、15 interview reason；purpose：1 PII、2 interview-shared、3 manager-private、4 HR-confidential、5 financial、6 assessment、7 identity。
+
+owner-binding的nested CF1只接受下表tags；`U`=UUID、`E`=enum-u16、`D`=digest32、`N`=明确null。来源均为同record受FK/immutable约束列，不取请求/header。tag7 schema ID必须逐字等于表中ID，tag8必须等于`.vN`的N。`pii.*`固定purpose1；interview note的category 1/2/3分别固定purpose2/3/4，action/reason固定purpose2；全部compensation/bonus/memo固定purpose5；assessment固定purpose6；identity固定purpose7。object-kind精确映射：profile=1；identifier/education=2；org-unit/legal-entity label=3；job-assignment=4；structure-reason=5；interview note/action/reason=6/7/15；terms/proposal=8；salary-range=9；batch-line/correction/import-raw/import-rows=10；bonus/memo=11；assessment=12；identity mapping/transaction=13/14：
+
+| schema ID | owner-binding exact tags（tag:type=trusted source） | enum / null规则 |
+| --- | --- | --- |
+| `pii.profile.v2` | `1:U=employee_id` | 仅1 |
+| `pii.employee_identifier.v1` | `1:U=employee_id` | 仅1 |
+| `pii.education.v1` | `1:U=employee_id` | 仅1 |
+| `pii.org_unit_label.v1` | `1:U=org_unit_id,2:E=unit_type` | BG=1, Division=2, Department=3 |
+| `pii.legal_entity_label.v1` | `1:U=legal_entity_id,2:E=entity_kind` | branch_company=1 |
+| `pii.job_assignment_position.v1` | `1:U=employee_id,2:U=assignment_id,3:U=department_id` | 三项必填 |
+| `pii.structure_reason.v1` | `1:U=structure_change_id` | 仅1 |
+| `interview.note.v1` | `1:U=employee_id,2:U=interview_id,3:U=head_id,4:U=note_version_id,5:E=category` | shared=1, manager_private=2, hr_confidential=3 |
+| `interview.reason.v1` | `1:U=employee_id,2:U=interview_id,3:U=transition_event_id` | 三项必填；仅cancel event |
+| `interview.action.v1` | `1:U=employee_id,2:U=interview_id,3:U=action_id` | 三项必填 |
+| `compensation.terms.v1` | `1:U=employee_id,2:U=aggregate_id,3:U=source_id,4:E=source_kind` | personal=1, batch=2 |
+| `compensation.salary_range.v1` | `1:U=legal_entity_id,2:E=location,3:U/N=family_id,4:U/N=level_id,5:E=currency` | Shanghai/Wuxi/Tokyo=1/2/3；CNY/JPY=1/2；nullable tag不得省 |
+| `compensation.proposal.v1` | `1:U=employee_id,2:U=aggregate_id,3:U=proposal_id` | 三项必填 |
+| `compensation.batch_line.v1` | `1:U=batch_id,2:U=line_id,3:U=employee_id` | 三项必填 |
+| `compensation.correction_member.v1` | `1:U=batch_id,2:U=member_id,3:U=employee_id,4:U=target_id,5:E=source_kind` | batch_line/event/personal_event=1/2/3 |
+| `compensation.batch_import_raw.v1` / `compensation.batch_import_rows.v1` | `1:U=batch_id,2:U=candidate_id` | schema ID区分原始bytes与canonical rows |
+| `bonus.target.v1` / `bonus.award.v1` / `bonus.payment.v1` / `compensation_memo.v1` | `1:U=employee_id,2:U=record_id` | schema ID区分kind |
+| `assessment.input.v1` | `1:U=employee_id,2:U=window_id,3:U=input_id` | 三项必填 |
+| `assessment.result.v1` | `1:U=employee_id,2:U=window_id,3:U=result_id,4:U=job_id` | 四项必填 |
+| `identity.mapping.v1` | `1:U=org_id,2:U=subject_id,3:U=mapping_id` | 三项必填 |
+| `identity.local_username.v1` | `1:U=org_id,2:U=subject_id,3:U=account_id` | 三项必填；只用于local canonical username |
+| `identity.transaction.v1` | `1:U=transaction_id,2:D=issuer_config_digest,3:N=subject` | pre-login subject必须null |
+
+规范向量V1：org/employee=`00×16`，record=`11×16`，`dek_id=22×16`，revision=1，profile/PII，schema=`pii.profile.v2`/2。AAD共197 bytes，hex：
+
+`5445414d4c45444745522d5041594c4f414400544c43460001000900010300000010000000000000000000000000000000000002050000000200010003010000001f544c434600010001000103000000100000000000000000000000000000000000040300000010111111111111111111111111111111110005040000000800000000000000010006050000000200010007020000000e7069692e70726f66696c652e76320008050000000200020009030000001022222222222222222222222222222222`
+
+其SHA-256为`b683864a1df5921ab2485ca114a406ba7b84b6ee7f59b3e6be9418ad040eb5ef`。取domain=1、`kek_uuid=33×16`、kek_version=1时，TLW1 header至wrapped_len（78 bytes）hex为：
+
+`544c573100010001333333333333333333333333333333330000000122222222222222222222222222222222b683864a1df5921ab2485ca114a406ba7b84b6ee7f59b3e6be9418ad040eb5ef0048`
+
+对应HKDF info（`TEAMLEDGER-WRAP\0`＋header至aad_digest，不含wrapped_len）hex为：
+
+`5445414d4c45444745522d5752415000544c573100010001333333333333333333333333333333330000000122222222222222222222222222222222b683864a1df5921ab2485ca114a406ba7b84b6ee7f59b3e6be9418ad040eb5ef`
+
+实现必须逐byte匹配V1；把schema-version末尾`0002`改为`0001`、改变任一owner/record/dek byte或追加尾随byte均必须拒绝。
+
+Payload包=`"TLP1"[4] | format u16=1 | algorithm u8=1 | nonce[12] | ciphertext_len u32 | ciphertext | tag[16]`，无尾随。每payload随机RAW32 DEK只Seal一次；AAD不含KEK版本，rewrap不重加密。错owner/record/version/purpose/schema/dek及非规范frame拒绝。
+
+Wrapper包=`"TLW1"[4] | format u16=1 | domain u16 | kek_uuid[16] | kek_version u32 | dek_uuid[16] | aad_digest[32] | wrapped_len u16 | wrapped`。wrapper domain固定1 PII、2 interview、3 assessment、4 financial、5 identity-transaction、6 identity-mapping、7 backup；已交付MAC domain保持8..14，DEV-019只在末尾追加15 `local_username_lookup`、16 `local_password_pepper`，不得重编号。v1用RFC5649 AES-256-KWP包装64-byte `DEK || aad_digest`，故wrapped_len=72且无尾随。HKDF-SHA-256 salt=`dek_uuid`，info=`"TEAMLEDGER-WRAP\\0"`＋header至aad_digest exact bytes；AAD digest从可信记录重建。
+
+长期KEK只用于HKDF，派生KWP key只包装一个`dek_id`。payload DEK与keyring更新派生GCM key各只Seal一次，因此v1无usage counter。实现必须固定CF1/TLP1/TLW1 byte-level golden、RFC5649及非规范/跨owner/record/version/purpose/schema/header篡改拒绝向量。
+除代表向量V1外，每个registry schema（含legal-entity label、interview reason及batch import raw/rows）必须有由固定UUID/enum/null生成的AAD golden；逐项错object-kind/purpose/schema/version/owner、raw与rows schema互换及跨wrapper-domain均为拒绝向量。
+
+Key directory内固定`.lock`是keyd UID、regular、`0600`、`nlink=1`的持久inode，初始化后永不rename/unlink。keyd和所有CLI经安全dirfd以`O_RDWR|O_NOFOLLOW|O_CLOEXEC`打开并核对directory entry与FD dev/inode一致，再取得exclusive OFD lock；锁在加载、socket bind及全部发布之前持有到进程退出。keyring不能充当锁。
+
+协议含普通`ready|wrap|unwrap|rewrap|mac|verify`，maintenance UID另有manifest-bound `stage|mac_staging|activate|retire`。artifact验证与A1/A2 receipt由离线`keyctl-local`＋DB maintenance manifest完成，不是keyd网络op。普通wrap/mac只用DB期望active；unwrap/verify可显式历史version。Unix socket以`SO_PEERCRED`和UID/op/domain矩阵约束≤64KiB严格frame；不接受路径/UID/任意purpose/RAW长期key，日志不含秘密。
+
+### 7.4 轮换与恢复清单
+`identity.mapping.v1`之外，local username source使用同一`identity_mapping` wrapper domain但独立schema `identity.local_username.v1`，owner tags为`1:U=org_id,2:U=subject_id,3:U=account_id`；两种schema不得互换。
+
+`material_generation`只在key material/state改变时增长。stage发布G+1后复制并隔离验证artifact A1；维护命令把A1 receipt写入DB manifest，不改keyring。activate发布G+2但保持全域停写；再验证含active metadata的A2。只有A2 receipt、keyd G+2 digest/active map和DB `crypto_control`核对后才ack并恢复写。
+
+包装key target active/source decrypt_only。MAC/index先用A1 target `mac_staging`重建；activate后target active_write_verify/source verify_only，DB停写事务CAS index＋ack。Staff Code从加密identifier、identity从全部加密mapping source重建并验owner全集。CSRF例外：**activate前**单独DB事务撤销全部旧version session、推进epoch并audit；提交成功后才允许keyd activate，崩溃只造成用户需重登，不会接受旧token。
+assessment轮换manifest只列versioned generation MAC引用；source digest无key entry、无staging/CAS，恢复时仅以持久canonical structured JSON重算SHA-256并逐byte核对。
+
+崩溃规则：A1前target不使用；A1 receipt写入可幂等重放；G+2发布而A2/DB ack缺失时保持maintenance/not-ready，只允许同manifest完成A2和ack；DB index CAS后但ack前仍停写。rewrap逐包反向验证＋CAS/checkpoint恢复。旧generation、无A2或并发manifest绝不猜active。
+
+DB backup不含root/keyring。恢复manifest列出完整inventory及非对称信任配置；隔离目标挂载匹配artifact，known-answer探测每个version并核对schema、wrapper/AAD、MAC索引、授权/撤权、job fence和审计。恢复时间线中的旧包装active先decrypt_only，再以A1/A2创建新active。root v1不在线轮换。
+
+```mermaid
+sequenceDiagram
+    participant O as 受控运维者
+    participant M as key lifecycle / backup
+    participant DB as SQLite或PostgreSQL隔离目标
+    participant K as 本地keyd＋root/keyring
+    participant A as 离线artifact＋独立审计
+    O->>M: 固定信任manifest或恢复命令
+    M->>DB: 锁定maintenance / 捕获一致snapshot
+    alt wrapper或MAC轮换
+        M->>K: stage G+1
+        M->>A: 复制并隔离验证A1
+        M->>K: manifest-bound rewrap或mac_staging
+        loop 有界wrapper/index
+            M->>DB: CAS wrapper或staging checkpoint
+        end
+        M->>K: activate G+2；仍停写
+        M->>A: 复制并隔离验证A2
+        M->>DB: CAS active index＋ack G+2
+    else backup / restore
+        M->>K: 挂载匹配artifact；探测inventory
+        M->>DB: 隔离restore并核对schema/事实/checkpoints
+        M->>K: 旧包装active→decrypt_only；stage G+1
+        M->>A: 验证A1；activate后验证A2
+        M->>DB: ack generation；撤旧认证/worker fence
+
+        Note over O,DB: 只有全部成功后部署侧切流；中断不启用
+    end
+```
+
+#### 7.4.1 root/keyring离线副本（DES-008固定，DEV-021已实装）
+
+每次export产生同一`export_uuid`的两份**分别加密**可移动介质A/B；不包含DB backup，也不宣称单独介质可以恢复服务。操作先停止API/worker/forwarder等全部key写入者，再以安全dirfd取得keyd持久`.lock`的exclusive OFD lock；锁持有期间从已验证descriptor读取同一代root/keyring，不通过pathname重开。A/B输出父目录必须具有不同filesystem device ID；应用拒绝同device，但实际物理/地理分离仍由运维确认。每份介质先写同目录临时文件，逐文件及目录`fsync`，再`renameat2(RENAME_NOREPLACE)`并提交父目录`fsync`；提交失败时尝试rename回temp并持久化回滚。持续I/O故障可令回滚结果不确定，此时返回明确indeterminate错误，运维必须保持keyd停止、检查并移除本次指定路径；规范不虚称任意故障下目标必定撤回。随后卸载并在隔离主机只读重新挂载验证。
+
+两份inventory都必须含format version、export UUID、material generation、root SHA-256、keyring SHA-256、**全部key entry**的domain/type/key UUID/version/state（active、staged、wrapper decrypt_only、MAC verify_only等有限状态）和每domain active pointer、每文件size/mode、export UTC、实际离线进程UID、source host identity digest，以及覆盖inventory canonical bytes的独立sidecar digest；不能只列active key而遗漏历史/暂存依赖。Compose中的离线进程UID是实际可验证的执行身份，不把服务UID虚称为人类操作员。A/B除介质标识和密文容器nonce外这些值完全一致。介质全盘/容器加密，解锁口令不与介质同放；A/B断电、分离且不同物理位置保管。导出成功只在两份均完成只读hash、keyring认证、完整entry/state集合/active pointers重算、全domain/version known-answer probe并匹配inventory后确认；任一失败整次export无效，不用单份“部分成功”更新登记。
+
+恢复只在空key directory的隔离主机进行：验证介质密文、inventory/sidecar、文件metadata/hash/keyring认证、完整entry/state集合/active pointers与每个domain/version probe，再原子安装root/keyring/`.lock`；rename后的父目录`fsync`失败执行同一可报告回滚。完整回滚时CLI报告`failed_rolled_back`；回滚rename或持久化失败时报告`failed_indeterminate`及保持keyd停止/检查指定路径动作，不暴露路径或密钥。indeterminate禁止启动恢复keyd。如同时有待恢复DB，必须额外逐byte核对`crypto_control` generation、keyring digest、active pointers/A1/A2 ack及全部wrapper/MAC历史依赖；不匹配不ready、不猜新key。离线副本不含DB、OIDC client secret、audit TLS/receipt signing private key或业务备份，因此没有这些独立资产时不能恢复完整服务；RTO/RPO/灾备目标明确不在当前范围。
+
+DEV-021实现为`teamledger-keyctl-local offline-export|offline-verify-pair|offline-restore`。Compose分离`key-offline-export`与无在线key volume、介质只读的`key-offline-verify` profile；两者仅在全栈停止后复用keyd UID，不把root读取权授给API或普通maintenance。容器格式使用两个不同受保护RAW32介质密钥分别AES-256-GCM认证加密，header绑定format/media ID/nonce/长度；密文payload绑定同一canonical inventory及其SHA-256 sidecar、原始root/keyring/空lock bytes。每个entry probe是以该entry material为key、固定域分离frame为message的HMAC-SHA-256，只存在加密payload内。verify逐份完成AEAD与全部重算后才比较A/B canonical inventory和材料bytes；restore只向不存在目标以同父目录temp directory和`RENAME_NOREPLACE`发布。
+
+```mermaid
+flowchart LR
+    stop["停止全部key写入者"] --> lock["安全dirfd＋exclusive OFD lock"]
+    lock --> snap["固定descriptor读取同代root/keyring<br/>生成generation-bound inventory"]
+    snap --> A["独立filesystem介质A<br/>AES-256-GCM＋RAW32 key；原子发布"]
+    snap --> B["独立filesystem介质B<br/>AES-256-GCM＋RAW32 key；原子发布"]
+    A --> VA["隔离进程只读验证A<br/>AEAD/sidecar/hash/auth/pointer/probe"]
+    B --> VB["隔离进程只读验证B<br/>AEAD/sidecar/hash/auth/pointer/probe"]
+    VA --> ok{"A/B canonical inventory和材料一致"}
+    VB --> ok
+    ok -->|"是"| register["登记有效export UUID；介质分离断电保管"]
+    ok -->|"否"| reject["整次export作废"]
+    register --> restore["选一份已验证archive<br/>不存在隔离目标原子restore"]
+    restore --> probe["真实keyd ready probe<br/>DB另行核对后才可切流"]
+```
+
+## 8. 周期、AI任务、来源与人审
+
+### 8.1 明确日历窗口与确定事实
+
+interview_policy显式 `cadence.unit=day/week/month`、positive count、anchor_date、IANA timezone、due_offset_days、local_due_time、pause intervals；未配置返回unconfigured，不默认monthly。窗口按当地日历从anchor累加（不是30×24h）；month anchor如29/30/31按明确policy clamp到该月末，下一窗口仍从原anchor推导，不能滚成永久28号。DST local cutoff遇不存在时间建议向前到下个合法时点，重复时间取较晚实例；这些是可测试建议，启用前确认并记录tzdb版本，绝不默认浏览器时区。窗口start,end)，持久具体start/end/due UTC与policy revision，政策变更生成新generation并使旧当前结果失效。
+
+统计按实际面谈时间而非recorded_at；backfill标明录入滞后，不能声称当时系统已知。Go计算未安排/已安排未发生/已完成、授权可知字段完整度，以及**归属于实际面谈所在窗口**的nonterminal行动项due/overdue；缺日期/隐藏类别为unknown/partial_access而非“良好/差/员工不配合”。pause interval为当地日期半开区间；与窗口`[local_start,local_end)`有任意交集，或包含该窗口当地`due`日期时，整窗标为paused且不产overdue；恰在窗口开始前结束、且不含due不暂停。无AI/provider也可用规则状态。
+
+### 8.2 来源snapshot与最小化
+
+人工请求不接收任意source/body，只接当前`window_id`。API以调用者当前`assessment.request/read`构造固定`StructuredInput{window,facts,template,source_digest}`；facts沿R6a确定状态，不含姓名、联系方式、职位、原note/action正文、manager_private、hr_confidential、salary/bonus。请求保存`proposed`，不外传。
+
+独立批准调用只接`input_id/provider_policy_id/audience`；批准者必须有`assessment.input.approve/read`且不能等于requester。批准事务将输入置approved并创建queued job/audit。provider allowlist不是grant：API与worker都必须读取owner/mode受保护的有限provider approval JSON（version、policy ID、audience、精确HTTPS endpoint、expires_at）并逐字段匹配；缺失/过期/不匹配即拒绝启用。当前仓库没有真实approval artifact，测试只用task结束即删除的合成文件。
+
+source digest为固定模板结构JSON的SHA-256；generation为带域分离和length frame的HMAC，绑定org/employee/window/policy revision、请求/服务主体、subject/auth epoch、持久`assessment_source_epoch`及完整结构输入。source/grant INSERT/UPDATE在失效旧对象的同Tx递增employee epoch；manual/scheduler写input前按subject→employee guard重验当前session/grant和epoch，变化先提交则创建409，创建先提交则后续trigger立即invalidated/cancel，关闭“变化后插入陈旧input”竞态。HMAC不含scan time/随机input ID；同授权snapshot重启/双scanner稳定。v10对非invalidated input实施partial generation唯一：`consumed`代表当前有效draft/published结果，阻止无变化重复生成；变化后旧历史不阻塞替代generation。employee/object grant精确员工；department grant按当前canonical assignment枚举受影响employee，不能可靠缩窄时同Tx保守失效本org相关input/job/result；org grant直接按本org处理，v12没有team分支。job仅queued/leased active唯一；human读取释放前线性化复核，恢复grant不复活旧result。
+
+### 8.2.1 周期触发与受限常设输入批准
+`periodic_structured_v1`可不带standing policy保存并明确`blocked/automation_not_enabled`。真正ready须OP-AI-01同时保存独立service subject、audience、expires、provider policy和固定template v1；配置过程核对service当前request/read能力，不借配置暗授grant。
+
+API scheduler每30秒扫描`due_at<=now`且未暂停窗口。扫描以`last_scanned_at NULL优先/最旧优先`轮转，每批最多100；无standing的periodic窗口也进入扫描并持久化`automation_not_enabled`，已有generation冲突仍推进heartbeat，故旧100窗不能饿死后续窗口。具standing时使用配置service token重做Security/当前request/read检查，构造相同固定结构输入；`CreateScheduledAssessment`在数据库唯一generation下原子插入approved input和queued job，重启/多实例冲突视为已存在。无有效service/provider/standing时持久更新window为blocked、有限block reason及`last_scanned_at`；扫描存储错误使API受控关闭，不静默吞错。真实provider审批artifact缺失时provider disabled，规则路径继续可用。
+
+job持久input、provider/audience、generation/source digest、attempt/fence/token hash、lease/deadline。worker只有内部mTLS routes；内部API client独占worker client certificate，外部provider使用另一仅server-auth CA client且不得收到内部证书。provider调用在数据库事务外。面谈/行动/笔记/grant mutation触发cancel/invalidated后，旧heartbeat/result CAS拒绝；invalidated/discarded结果在解密前即404，恢复grant不把旧状态改回。周期与人工生成结果都只进入draft。
+
+### 8.2.2 R6b实际控制面与数据面时序
+
+```mermaid
+sequenceDiagram
+    actor H1 as 请求人
+    actor H2 as 独立批准/人审者
+    participant UI as P-AI-01 Vue
+    participant API as Go API + scheduler
+    participant DB as SQLite 或 PostgreSQL v10
+    participant W as assessment-worker
+    participant P as allowlist HTTPS provider
+    H1->>UI: 选择当前window并请求
+    UI->>API: POST assessments/request
+    API->>DB: current auth + proposed structured input + audit
+    H2->>API: POST assessment-inputs/approve
+    API->>DB: 独立批准 + queued job + audit
+    Note over API,DB: periodic模式由30秒scanner生成同一approved input/job<br/>generation唯一键处理重启/多实例
+    W->>API: mTLS claim + Idempotency-Key
+    API->>DB: lease attempt/fence/token hash + claim receipt
+    API-->>W: minimal DTO + opaque token
+    W->>P: strict TLS；唯一配置endpoint
+    P-->>W: finite JSON result
+    W->>API: mTLS result + same lease
+    API->>DB: fence/source检查 + envelope密文draft + accepted receipt
+    H2->>API: GET draft / edit / publish or discard
+    API->>DB: current auth + append revision/status + audit
+    Note over DB: source或grant mutation同事务<br/>cancel queued/leased并invalidate input/result
+```
+
+### 8.3 lease、dispatch与晚到结果
+
+job queued→leased→completed/failed/cancelled；lease到期可重新queued领取（限attempt数需部署明确，建议3），新claim递增attempt/fence、新随机token，DB只token hash。建议lease120秒、heartbeat每30秒、总attempt wall deadline10分钟，heartbeat只当前未过期lease和identity匹配续到bounded cutoff，不让旧token复活。claim按组织→subject→employee→job锁；API解密最小DTO Tx外准备，再claim Tx核对source/policy/auth/generation、写dispatch audit并commit后返回DTO。这是批准交付worker的线性化点。
+
+finalize成功后写accepted receipt（attempt/token hash/source digest/output digest/result ID）供相同result断连重放只返回安全ack，不再插入/改result、不更新lease。该receipt重放仍要求当前worker身份与scope/来源policy；内容不同或旧未accepted attempt即409。lease过期后首次到达的result永远不能因重放分支写入。
+
+worker进程对领取DTO再次遵守输出/网络allowlist，不提供业务工具；provider调用无DB事务。撤权或source变化在dispatch后可能已有provider输入在途，不能回收；API可取消job并拒后续heartbeat/result，结果绝不入当前projection。先commit dispatch审计，断连不意味着provider未调用；重领/retry可能多次provider invocation，因此**不承诺exactly once provider call**。仅保证一个current generation accepted result/current publication；claim receipt避免同请求断连重复领取，但不能使外部调用变原子。
+
+result提交检查当前worker identity、job state、attempt/fence/hash、lease_until（服务端clock）、generation/source digest/epochs/schema/version；解密/加密准备Tx外，finalize Tx再次校验且CAS。claim维护先在同一事务把`deadline_at<=now`的queued关联approved input转invalidated，再把job转failed/`deadline_exceeded`，释放两个active partial uniqueness；即使没有下一项可领取，也先提交该维护再返回`200 {"job":null}`，不因空队列回滚。过期leased按attempt上限重新queued或failed，旧token/fence永不复活。
+
+### 8.4 结果与发布
+
+result draft→published/discarded/invalidated；published→invalidated（由source/policy/ACL变化），不把job completed当已人审。人类edit/publish/discard先做授权与加密准备，最终保存Tx按subject→employee guard重读当前session/grant及`assessment.publish`，锁查result revision/draft后才append/transition/audit，故与撤权/源变线性化。edit另解密当前获准revision，只允许保留其精确citation集合的子集，不覆盖模型草稿；新增或改动引用必须走新输入generation/批准/审核。不得借改稿掺入工资/private/HR正文扩大给读者。只一个employee/window/purpose当前publication slot，重复publish409（同幂等命令返回原事实），新generation需要新的review。
+
+来源更新/撤回、权限/purpose改变同Tx通过source逆向索引标记affected results invalidated、取消queued/leased job/移除当前pointer；read先做状态拒绝和解密准备，释放前再以统一subject/employee guard短Tx重读当前session/grant、result revision/status/source digest并写audit，commit后才可输出正文。该release与source/grant mutation线性化；若release先commit，随后撤权不能追回已批准输出，若mutation先commit则read 404。历史失效正文不作为当前可读摘要旁路；保留metadata/review事实按授权政策。法律删除/更正传播至derived/cache/provider stateful对象需清单/确认，不虚称stateless provider可追回已发数据。provider合同/region/retention/training/ZDR/删除逐项确认，否则不启用。
+
+## 9. 双后端、一致迁移与运行语义
+
+### 9.1 类型/连接/索引/锁差异
+
+| 契约 | SQLite | PostgreSQL |
+| --- | --- | --- |
+| 部署/类型 | 同机持久盘单API owner，STRICT tables；UUID规范TEXT、密文BLOB | 一/多API，UUID原生或适配为同规范ID、密文BYTEA |
+| 日期/时间/布尔 | 日期TEXT校验；UTC微秒INTEGER；boolean INTEGER CHECK | DATE/TIMESTAMPTZ，保存到微秒；BOOLEAN；另存IANA zone而非TIMESTAMPTZ当zone |
+| JSON/金额 | 非敏感规范JSON TEXT；不可把NUMERIC当exact Money | 非敏感JSON/JSONB显式使用；共同密文schema内Money；不互搬两库binary JSON |
+| 每连接设置 | **只在§9.3只读preflight确认exact v12后**才以正常连接启用foreign_keys、busy_timeout、synchronous与WAL；拒绝目标不得切journal/create sidecar | preflight只读role/transaction先识别目标；exact v12后业务role启TLS/pool/statement/lock timeout与UTC |
+| 锁/事务 | 开始Tx后第一条guard写取得单writer；短Tx、writer pool建议1，读池有界；BUSY取消映射安全503 | guard `FOR UPDATE`＋CAS，默认Read Committed也必须遵循guard；不让无锁跨行SELECT决定批准 |
+| 索引 | 第4节unique/复合FK所需父key与子反查、org-leading keyset/窗口/lease索引；尽量共同能力 | 同逻辑索引；partial/exclusion/RLS可选纵深，不能替代共同应用不变量 |
+| 持久化运维 | WAL/checkpoint/磁盘FULL与空间监控；不放共享网络盘 | pool、主从/故障/备份由选定部署能力明确；不默认已HA |
+
+锁定支持的Go/driver/libc/DB实际版本；WAL-reset问题使用官方修复3.51.3+或指定回补，本历史实验引擎为3.53.4，不把旧driver全部视为已修复。RLS如启用，业务role必须非owner/superuser/BYPASSRLS，但共同权限仍在Go。金额/名字无明文排序或全文索引；授权候选只允许有界decrypt/filter。
+
+### 9.2 迁移与备份
+
+v12分三路：①拒绝预检：现有v1-v11/未知目标只读识别后`SCHEMA_VERSION_UNSUPPORTED`，零DDL/bootstrap/cleanup；②安装：SQLite目标path必须不存在，PG专用schema/database必须为空，由独立installer原子建baseline；③正常启动：已合法安装且checksum精确的v12即使已有业务数据也正常打开，绝不因“非空”拒绝。只要求**安装目标**为空，不升级/merge/自动清空。下列v1-v11说明仅是历史证据，不进入v12 binary。
+DEV-003前向v2保留v1 migration字节与checksum，不改历史批准事实；API只核对版本不自动迁移。PG以同一事务内TEMP reference按固定migration求预期结构，与目标真实catalog比对后rollback；需要TEMP权限，不在目标schema建表/修漂移。catalog身份显式text且重复键拒绝，避免PostgreSQL name类型63字节截断合并长约束名。额外初始化成本/TEMP权限是避免第二份手写expected DDL的取舍；两库真实旧数据/故障中断/约束漂移测试、独立migrator重复运行及API启动重启已验，见当前证据；不代替生产角色分离/恢复验收。
+
+R2历史v5迁移保持v1-v4 bytes/checksum并追加组织历史、密文、receipt、typed grant和审计目标；SQLite必要copy/rebuild保留原列，PostgreSQL按真实约束迁移。当前v12 binary不执行这条升级路径，v5文件仅用于checksum和历史兼容测试；当前安装、重启及验收以v12 baseline、源码旁永久测试和§10表为准，不据此宣称生产恢复或容量证明。
+
+R3只新增v6，两方言扩有限typed面谈对象/source批准、事件/密文/receipt及OIDC intent；必要SQLite旧表copy/rebuild完整保旧列，PG按真实v5约束名变更，不改v1-v5 bytes/checksum。有数据v5→v6、原KMS/receipt、真实CHECK/FK/schema漂移/回滚/多连接消费者及最新464.45s all/race/vet绿；四最终binary已build，双库compiled migrate/API原DB重启、精确版本head裁剪/导出/撤权成品及175 Vue已验。此前完整身份CLI bind/unbind与有限敏感扫描保持各自证据边界。标准PG并发all+race曾原生out-of-shared-memory，失败不记绿；最终串行`-p 2`，不减native约束、不加应用重试或调PG容量掩盖。
+
+
+SQLite→PG：维护停写/停止worker dispatch→一致逻辑导出（默认保持ciphertext而非明文）→目标对应迁移→转换公开UUID/date/time/布尔类型并保持AAD/所有版本IDs→复合FK/行数/全窗口图/薪资纠错projection/奖金/anomaly/grant/audit/digest校验及授权合成解密→真实程序/API/UI smoke→批准切换→旧库保留只读并明确回退条件。默认不无停机/双写。只比行数不足以证明迁移。
+
+SQLite备份使用一致Backup API/VACUUM INTO等机制，不能复制活main.db却漏WAL；必须验证空间及checkpoint/备份连接行为。PostgreSQL按批准RPO选择一致逻辑dump或base backup＋WAL/PITR，不把普通文件copy/单dump宣称自动持续恢复。两者备份整包加密、最小访问并保护metadata，与KEK恢复渠道分开；恢复步骤见§7.4。实际后端、方案版本和恢复演练必须绑定，未知RPO/RTO不填承诺。
+
+### 9.3 配置、启动与关键runbook
+
+目标配置保留backend、public origin、OIDC、audit、worker/provider；API只配置`TEAMLEDGER_KEYD_SOCKET`、预期peer UID和获准domain，keyd配置绝对key directory、socket、API/maintenance UID矩阵。API不得获得root/keyring路径；不接受生产KMS URL/token/CA或独立对称key file。
+
+首部署按identity mode分流：`oidc`仍先由受控维护流程建立approved active subject并bind可信issuer/sub；`local`不依赖IdP，必须按§7.1.2运行fresh空库一次性`local-bootstrap`，得到首个最小组织维护subject/account后才启动API。两者都不经匿名HTTP建管理员，不从email/title/group推断能力；local固定bootstrap policy不解锁MFA-required操作。
+
+启动分相：keyd安全遍历并锁定持久`.lock`，验证root/keyring后ready返回material generation/digest及包装/MAC状态。API零写DB preflight比较`crypto_control`和peer/socket；maintenance或不符时not-ready，不自动建key/猜active/切外部KMS。
+
+`TEAMLEDGER_KEYD_DIR`必须绝对且startup前存在；从`/`directory FD开始的每个ancestor须root/keyd-owned且无group/other write，最终目录/文件mode按§7.3。API UID无文件读权，socket目录不可由API写；连接身份只取`SO_PEERCRED`。
+
+历史R3/R7外部Transit URL/token/CA只保留为固定代码证据；DEV-018已迁移生产调用者并删除外部KMS生产路径/secret，不得回退。
+
+DEV-019当前组合根只接受`TEAMLEDGER_IDENTITY_MODE=local|oidc`，删除`disabled`模式。`local`拒绝任何OIDC变量并经keyd提供username/password domain；`oidc`要求完整`TEAMLEDGER_OIDC_ISSUER`/`CLIENT_ID`/`CLIENT_SECRET_FILE`/`MFA_ACR`/`MFA_AMR`及可选`CA_FILE`。redirect由已校验PUBLIC_ORIGIN固定`/api/v1/auth/callback`，须在实际IdP精确注册；仅RS256，HTTPS discovery/JWKS/token、TLS≥1.2、无redirect/不安全TLS/代理fallback、有界timeout。两种模式均无请求级fallback。
+
+OIDC client secret及非对称信任继续使用受保护配置文件；identity lookup、transaction envelope、CSRF、receipt/generation及cursor长期对称key均由keyring/keyd提供。历史client secret之外的identity/transaction RAW32 key-file配置已删除且无fallback；session opaque token仍只存SHA-256 hash，无session key。
+
+历史`-identity-key-file` CLI已删除。v12 OIDC/local identity保存加密canonical source和exact lookup key reference；受控reindex从source重建OIDC及local username索引，不接受调用方raw key path，也不从digest/email反推identity。
+
+受控维护binary`identity bind|unbind`使用受保护DSN/CA/sub文件、approved issuer、existing org/subject/可选employee、request ID及本地keyd socket；identity lookup digest只经keyd MAC并保存exact key ID/version，canonical issuer/sub source以`identity.mapping.v1`认证密文保存。subject必须是active且同owner；可选employee绑定只能引用existing same-org一对一immutable `subject_employee`，不能推断、自动创建、转移、重绑或创建grant。unbind原子停映射、撤匹配会话、推进epoch并审计；rebind不复活旧会话。命令不回显sub、DSN或key，不是公开admin API或bootstrap替代。
+R7审计入口保持历史事实；`key-rewrap`通过本地keyd staged target操作，不接受Vault endpoint/token，并以数据库A1/A2 receipt、generation/digest/active key map及全库wrapper引用计数控制ack/retire。`keyctl-local stage|activate`输出generation/digest/active/staged状态；API在未ack阶段逐请求503。数据库耦合MAC索引使用各自staging/CAS维护入口，CSRF activate先原子撤销对应session；不可安全重建的persistent MAC domain拒绝generic rotation。
+
+Backup命令每次生成随机archive DEK，经keyd `backup_archive`包装；DB archive不含root/keyring且无长期backup-key-file。Restore先经keyd解包archive DEK，再核对archive认证、schema及数据库业务wrapper样本，失败目标不切流；恢复后的API还必须以库内`crypto_control`核对keyd generation/digest/active map。离线key副本使用双RAW32介质独立加密、完整entry/state/pointer/probe inventory、pair verify和不存在目标的原子restore。
+
+PG身份维护窄入口直接以同descriptor已检查的完整PEM CA bytes构造RootCAs，**不再按sslrootcert路径重开**；显式URL/单一verify-full与声明CA，primary及每个TCP fallback均严格hostname/TLS≥1.2，后续pool连接仍用同可信内容。只接受有界纯PEM CA证书bundle，不含junk/私钥/非CA；拒绝Unix socket、service/servicefile、client cert/key/passfile及ambient PGSERVICE，不能借环境SSL文件或凭据改掉受检信任。通用store.Open仍服务API/migrate等原实际调用，并非身份CLI fallback。该窄运维契约不声称提供PG client-certificate设施或全量恢复流程。
+
+身份维护无自报`-actor-subject-id`：repository直接读取kernel effective UID及hostname，记`actor_kind=local_maintenance`、UID及域隔离`SHA256("TEAMLEDGER-MAINTENANCE-HOST" + NUL + version1 + hostname)`，不存明文host。权限来自受控进程DB/identity-key及同UID文件边界，不借target业务grant。application subject=NULL，target subject＋exact identity digest及R2 target_employee_id独立记录，同对应/映射/撤销/epoch/audit Tx；active/owner冲突或audit失败全回滚。这是执行进程本地principal/节点指纹，不是sudo/共享UID背后的真人或个人批准证明；schema无human分类。真实CLI绑定、拒重绑、native UID/host/targetemployee审计已由集成负责人实跑，生产账户责任与独立审计仍另验。
+
+**历史固定v4证据（不适用于v12 baseline）**：v4不改v1-v3 migration bytes，有数据v3→v4仅补审计分型。旧AUTH-BIND/UNBIND没有可恢复的operator证明，原10字段逐值保留、actor_kind=`legacy_unattributed`、target沿原代码记录的subject，UID/node/identity digest保持NULL不猜；当时读取/展示必须按actor_kind解释，不能把legacy subject_id显示成已核验操作者。其他既有业务事件仍是application型/current subject；v4不补造grant、身份批准或审计外部receipt。R7独立审计与恢复机制后来已固定交付，真实生产设施/政策仍待批准。
+
+| 故障 / 操作 | 运行语义与处置，不是已运行命令 |
+| --- | --- |
+| revision/basis/source冲突 | 客户端重取可见当前事实/人工处理；不替用户自动批准/覆盖 |
+| SQLite忙/PG锁超时死锁 | 整Tx rollback，安全503/WRITE_BUSY；查竞争/长Tx/磁盘/连接数；无无限重试或静默丢写 |
+| root/keyring/keyd或generation不可用 | 无权请求仍先auth拒绝且不触发socket；有权敏感操作503/KEY_UNAVAILABLE。缺文件/历史版本不得自动生成、切外部KMS、猜active或修tag |
+| DB磁盘满/连接失效/commit不确定 | 不报告成功；幂等key重查安全receipt；先恢复持久性/检查历史审计，不重复付款事实 |
+| 审计故障 | sensitive release fail closed；已commit批准不伪撤销，outbox保留待投递、明确未完成独立ack；恢复后去重发送并核对 |
+| IdP失效/身份撤销 | 拒新login/必要session策略；subject/grant/session撤销重验；不能本地密码旁路 |
+| provider失败/timeout/最小化失败 | safe failed/blocked，无draft/current publication；规则状态仍可读；输入/输出不得进排障日志 |
+| lease来源变化/旧worker回包 | cancel/invalidated或409/drop；新attempt新fence，旧identity/token不renew |
+| 密钥泄漏/恢复/升级 | 受控停写；隔离恢复全部wrapper/MAC/非对称依赖，旧active转decrypt-only并先备份新key；未知撤权/generation不开流量 |
+
+必须为真实部署版本落实责任人、权限、命令/前置/成功判据/失败回退与演练证据；本文runbook语义不伪造尚无代码的运维脚本。健康200不等于业务恢复，单文件存在不等于key可恢复。
+
+## 10. 生产启用与TDD映射
+
+下表是完整目标与生产启用验收，不以任一历史切片覆盖其余范围。历史设计模型不当产品验收。实际开发按[开发规则](DEVELOPMENT_RULES.md)RED→最小真实GREEN→REFACTOR；测试、DDL、契约和版本证据只在本仓库维护，不复制测试假成功。
+
+| feature / 责任 | TDD核心可观察案例 | 集成/启用必要证据 |
+| --- | --- | --- |
+| F-ORG-001 / organization | 半开边界、过去/中间/未来环、lifecycle包含、scope/current relation、并发typed set；profile创建/读/独立PII更新CAS/immutable旧version | 两真实后端多连接barrier；Vue tree/as_of/directory、profile保存冲突、PII有界search和partial提示 |
+| F-INT-001 / interview | 三分区/version heads、terminal/no重开、action逾期、换经理撤权/来源最小化、旧revision | 两库API拒绝无正文、真实页面重载/乱序response清空、交接E2E |
+| F-COMP-001 / compensation | CNY/JPY scale0规范整数、HALF_UP边界/溢出、同Branch混币；个人显式换币correction完整闭包；range区间唯一；adjustment全批increase分币种摘要、correction无金额摘要、无FX/grand total | 双库/API：Text-cell exact导入与numeric拒绝、换币缺后继零写入、range重叠拒绝、分组溢出；导出全批授权与partial停止；Vue不伪ratio/总额 |
+| F-BONUS-001 / compensation | target/award/payment分列、crossorg refs、异常事实、reversal累计、永久业务key、extension拒绝 | 双库异常/冲销/幂等/atomic rollback、UI不跨币种假余额 |
+| F-AI-001 / assessment | 日历/DST/unknown/partial、source digest/交集ACL、lease fencing、provider失败、人工publish重验 | 双库真实job竞争；可控provider边界；真实provider/model/合同与人审质量另验，不pin自然文案 |
+| F-SEC-001 / identity/authz/sensitive/audit | 授权先于keyd；openat2/no-replace/持久lock；规范byte grammar/AAD/KWP context；inventory；A1/A2/DB ack；MAC staging/index CAS | 两进程/双启动/CLI竞争；inventory probe；byte-level golden与错owner/version/schema；全部轮换崩溃点、重启/rewrap；DB不含keys；旧恢复key只decrypt；真实IdP/审计另验 |
+| F-DB-001 / adapters/ops | PK/FK/owner/CAS/失败回滚、每连接FK、busy/死锁、v12 baseline checksum | SQLite新文件＋PG空schema真实安装；v11/未知目标拒绝零写入、含业务数据的exact v12正常重启；备份恢复、生产构建API/UI smoke与负载目标 |
+
+纵向实施顺序与功能规范一致：安全/双库最小真实读写→组织历史→分区面谈/交接→薪资批准纠错→奖金事实→确定规则/AI人审→生产运行启用门禁；每片已有真实界面/API/存储/授权，不先堆空package再宣称功能。安全与恢复从相关切片落实，末项是上线验收不是此前许可忽略。Go行为table/fuzz/race、双库真实集成、Vue/Vitest和关键浏览器E2E各自证据不互替；分工不跑检查，集成负责人统一验证最终候选，整体task两轮串行实际luna review。
+
+生产密钥来源已由DES-007批准为本地受保护root file＋同部署keyd；DES-008进一步批准两份分离加密可移动介质、本地identity mode与Compose同库audit receiver。DEV-021已固定可执行离线流程；具体保管人、实际介质和解锁职责仍是生产部署决定，不是实现阻塞。IdP仅在可选`oidc` mode需要。容量与AI/保留等业务政策仍待实际启用决定；RPO/RTO/PITR等灾备目标明确scope外。
+
+
+## 11. 未决政策、来源与更新归属
+
+已确定并实装DES-004员工主数据、DES-005调薪批次、DES-006薪资Money、DES-007本地root file＋keyd及DES-008内置身份/同库receiver/离线介质；DEV-015至DEV-022均已固定交付。“已确定/已实装”不等于生产启用。
+
+未决或未实装：24小时candidate TTL业务接受、生产XLSX原文件的系统外保留责任、AI provider/法域/保留政策，以及root/keyring真实介质保管人和口令责任。RPO/RTO/PITR等灾备目标明确scope外。Special原因目录从薪资policy受控加载、未配置为空；500人/10MiB上限已实现；Compa Ratio保持禁用。OIDC canonical identity source、长期MAC/index维护及CSRF换键撤session已实装，但真实生产IdP与介质流程仍需部署验收。
+
+### 11.1 新增协议来源
+
+查阅日期均 **2026-10-10**。以下只支持协议/工具事实，不证明本项目实现、用户接受设计、模型效果或法律合规；实际部署锁定版本并重新核对。
+
+- **S1**：[OpenID Connect Core 1.0 incorporating errata set 2](https://openid.net/specs/openid-connect-core-1_0.html)，§3.1.3.7 token验证、nonce/auth_time、§5.5.1.1 acr；acr意义需RP/IdP约定，`acr_values`请求不等于实际MFA保证。本设计更保守始终验签。
+- **S2**：[RFC 9700](https://www.rfc-editor.org/rfc/rfc9700)，§2.1/2.1.1 exact redirect、code flow/PKCE S256/绑定nonce、防CSRF/open redirect；不自行设计OAuth认证协议。
+- **S3**：[OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html)，stateful synchronizer token、state-changing请求/Origin/Fetch Metadata、SameSite纵深而非独立保证。
+- **S4**：[Vue Security](https://vuejs.org/guide/best-practices/security.html)，非可信模板/HTML风险，具体敏感缓存限制为本项目设计。
+- **S5**：[Go GCM官方实现文档](https://go.dev/src/crypto/cipher/gcm.go)，支持payload及一次性派生key的AES-GCM边界；同一派生key只Seal一次，不把随机nonce碰撞预算留给实现猜测。[RFC 5649](https://www.rfc-editor.org/rfc/rfc5649)定义带完整性检查的AES Key Wrap with Padding，本设计用于32-byte DEK wrapper；代码task须锁定实现并用RFC向量、篡改和上下文错配验证。
+
+未在本规范列出第一方来源或运行证据的数据库、加密、key rotation、backup、AI及法域结论，一律不得标记已验证。未来重大结论或政策变更先更新task计划，再同步本文件、功能规范、源码、契约、迁移和验证；全部当前文档只在本仓库维护。

@@ -1,11 +1,10 @@
 # TeamLedger
 
-- [DEV-002 实装、测试与进度 PLAN](https://github.com/r404r/p-research-hr/blob/main/plans/DEV-002.md)
-- [功能规范](https://github.com/r404r/p-research-hr/blob/main/docs/FUNCTIONAL_SPEC.md) · [技术规范](https://github.com/r404r/p-research-hr/blob/main/docs/TECHNICAL_SPEC.md)
-- [开发与交付规则](https://github.com/r404r/p-research-hr/blob/main/AGENTS.md)
-- [DEV-018 本地 keyd、受保护根密钥与无外部KMS切换 PLAN](https://github.com/r404r/p-research-hr/blob/main/plans/DEV-018.md)
-- 技术架构图、keyd协议及密钥生命周期：[技术规范 §1.1/§1.2、§7.3/§7.4](https://github.com/r404r/p-research-hr/blob/main/docs/TECHNICAL_SPEC.md)。
-- 本初装指南的执行与验证记录：[DEV-023 PLAN](https://github.com/r404r/p-research-hr/blob/main/plans/DEV-023.md)。
+- [公开文档索引](docs/README.md)
+- [功能规范](docs/FUNCTIONAL_SPEC.md) · [技术规范](docs/TECHNICAL_SPEC.md)
+- [开发与交付规则](docs/DEVELOPMENT_RULES.md)
+- 技术架构图、keyd协议及密钥生命周期：[技术规范 §1.1/§1.2、§7.3/§7.4](docs/TECHNICAL_SPEC.md#1-架构部署与信任边界)。
+- Public文档归并范围及验证：[DEV-024 PLAN](docs/plans/DEV-024.md)。
 
 ## Docker 安装与运维
 
