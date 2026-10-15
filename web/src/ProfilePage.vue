@@ -413,14 +413,21 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main :aria-busy="busy">
+  <main class="profile-page" :aria-busy="busy">
     <template v-if="routeKind !== 'away'">
-      <h1>人员资料</h1>
+      <header class="profile-page-heading">
+        <p class="eyebrow">人员主数据</p>
+        <h1>人员资料</h1>
+        <p>建立并维护员工身份资料。任职、组织关系、学历与直属主管在组织模块中独立维护。</p>
+      </header>
 
-      <form @submit.prevent="refresh()">
-        <label for="profile-as-of">业务查询日（as_of）</label>
-        <input id="profile-as-of" v-model="asOf" type="date" required :disabled="busy" />
-        <button type="submit" :disabled="busy">刷新（放弃未保存更改）</button>
+      <form class="profile-query" aria-label="人员资料查询条件" @submit.prevent="refresh()">
+        <label for="profile-as-of">
+          <span>业务查询日 <small>as_of</small></span>
+          <input id="profile-as-of" v-model="asOf" type="date" required :disabled="busy" />
+        </label>
+        <button type="submit" :disabled="busy">刷新资料</button>
+        <p>刷新将放弃当前尚未保存的更改。</p>
       </form>
 
       <p v-if="errorMessage" role="alert">{{ errorMessage }}</p>
@@ -487,85 +494,267 @@ onBeforeUnmount(() => {
         <button v-if="canEdit && !editing" type="button" :disabled="busy" @click="beginEdit">更正资料</button>
       </section>
 
-      <form v-if="session && ((routeKind === 'create' && canCreate) || editing)" @submit.prevent="save">
+      <form v-if="session && ((routeKind === 'create' && canCreate) || editing)" class="profile-editor" @submit.prevent="save">
         <fieldset :disabled="busy">
           <legend>{{ routeKind === 'create' ? '创建人员' : '完整更正个人资料' }}</legend>
-          <label for="profile-local-name">本地姓名（local_name）</label>
-          <input id="profile-local-name" v-model="form.localName" name="local_name" autocomplete="off" />
+          <p class="profile-form-lead">{{ routeKind === 'create' ? '先录入基本身份与联系方式；员工工号和组织任职在创建后独立维护。' : '本次保存将完整替换个人资料；未填写的可选字段不会继续保留。' }}</p>
 
-          <label for="profile-english-name">英文姓名（english_name）</label>
-          <input id="profile-english-name" v-model="form.englishName" name="english_name" autocomplete="off" />
+          <div class="profile-form-section">
+            <div class="profile-section-heading">
+              <h2>基本资料</h2>
+              <p>姓名用于人员识别；至少填写一种适合当前业务的姓名。</p>
+            </div>
+            <div class="profile-form-grid">
+              <label class="profile-field" for="profile-local-name">
+                <span>本地姓名 <small>local_name</small></span>
+                <input id="profile-local-name" v-model="form.localName" name="local_name" autocomplete="off" />
+              </label>
+              <label class="profile-field" for="profile-english-name">
+                <span>英文姓名 <small>english_name</small></span>
+                <input id="profile-english-name" v-model="form.englishName" name="english_name" autocomplete="off" />
+              </label>
+            </div>
+          </div>
 
-          <label for="profile-email">业务邮箱（email，可清空）</label>
-          <input id="profile-email" v-model="form.email" name="email" type="email" autocomplete="off" />
+          <div class="profile-form-section">
+            <div class="profile-section-heading">
+              <h2>工作联系方式</h2>
+              <p>仅记录业务联系方式；两个字段均可留空。</p>
+            </div>
+            <div class="profile-form-grid">
+              <label class="profile-field" for="profile-email">
+                <span>业务邮箱 <small>email · 可清空</small></span>
+                <input id="profile-email" v-model="form.email" name="email" type="email" autocomplete="off" />
+              </label>
+              <label class="profile-field" for="profile-phone">
+                <span>业务电话 <small>phone · 可清空</small></span>
+                <input id="profile-phone" v-model="form.phone" name="phone" type="tel" autocomplete="off" />
+              </label>
+              <label class="profile-field profile-field-wide" for="profile-summary">
+                <span>资料摘要 <small>profile_summary · 可清空</small></span>
+                <textarea id="profile-summary" v-model="form.summary" name="profile_summary" autocomplete="off"></textarea>
+              </label>
+            </div>
+          </div>
 
-          <label for="profile-phone">业务电话（phone，可清空）</label>
-          <input id="profile-phone" v-model="form.phone" name="phone" type="tel" autocomplete="off" />
+          <div v-if="routeKind === 'create'" class="profile-form-section">
+            <div class="profile-section-heading">
+              <h2>生命周期</h2>
+              <p>明确人员记录的业务有效期；结束日可在创建后再维护。</p>
+            </div>
+            <div class="profile-form-grid">
+              <label class="profile-field" for="profile-valid-from">
+                <span>生效日 <small>valid_from</small></span>
+                <input id="profile-valid-from" v-model="form.validFrom" name="valid_from" type="date" required />
+              </label>
+              <label class="profile-field" for="profile-valid-to">
+                <span>结束日 <small>valid_to · 可留空</small></span>
+                <input id="profile-valid-to" v-model="form.validTo" name="valid_to" type="date" />
+              </label>
+            </div>
+          </div>
+          <div v-else class="profile-form-section">
+            <div class="profile-section-heading">
+              <h2>更正依据</h2>
+              <p>说明本次完整更正的业务原因；不会修改任职或组织结构。</p>
+            </div>
+            <label class="profile-field" for="profile-edit-reason">
+              <span>更正理由 <small>edit_reason</small></span>
+              <textarea id="profile-edit-reason" v-model="form.editReason" name="edit_reason" required autocomplete="off"></textarea>
+            </label>
+          </div>
 
-          <label for="profile-summary">资料摘要（profile_summary，可清空）</label>
-          <textarea id="profile-summary" v-model="form.summary" name="profile_summary" autocomplete="off"></textarea>
-
-          <template v-if="routeKind === 'create'">
-            <label for="profile-valid-from">生命周期生效日（valid_from）</label>
-            <input id="profile-valid-from" v-model="form.validFrom" name="valid_from" type="date" required />
-            <label for="profile-valid-to">生命周期结束日（valid_to，可留空）</label>
-            <input id="profile-valid-to" v-model="form.validTo" name="valid_to" type="date" />
-          </template>
-          <template v-else>
-            <label for="profile-edit-reason">更正理由（edit_reason）</label>
-            <textarea id="profile-edit-reason" v-model="form.editReason" name="edit_reason" required autocomplete="off"></textarea>
-            <p>更正将完整替换资料；清空的可选字段不会继续保留。不更改任职或组织结构。</p>
-          </template>
-
-          <button type="submit" :disabled="!validDate(asOf)">
-            {{ routeKind === 'create' ? '创建并重新读取' : '保存更正并重新读取' }}
-          </button>
+          <div class="profile-form-actions">
+            <p>{{ routeKind === 'create' ? '提交后将重新读取新建人员资料。' : '保存后将重新读取已更正资料。' }}</p>
+            <button type="submit" :disabled="!validDate(asOf)">
+              {{ routeKind === 'create' ? '创建人员' : '保存完整更正' }}
+            </button>
+          </div>
         </fieldset>
       </form>
     </template>
   </main>
 </template>
 
-<style scoped>
-main {
-  max-width: 48rem;
-  margin: 2rem auto;
-  padding: 0 1rem;
+<style>
+#app .profile-page-heading {
+  max-width: 52rem;
 }
 
-form, section {
-  margin-block: 1.5rem;
+#app .profile-query {
+  grid-template-columns: minmax(16rem, 28rem) auto;
+  justify-content: start;
 }
 
-fieldset {
+#app .profile-query label,
+#app .profile-field {
   display: grid;
-  gap: 0.5rem;
+  gap: .5rem;
 }
 
-input, textarea, button {
-  font: inherit;
+#app .profile-query label > span,
+#app .profile-field > span {
+  color: var(--ink-800);
+  font-size: .82rem;
+  font-weight: 720;
 }
 
-textarea {
-  min-height: 5rem;
+#app .profile-query small,
+#app .profile-field small {
+  margin-left: .35rem;
+  color: var(--ink-500);
+  font-family: var(--font-mono);
+  font-size: .72rem;
+  font-weight: 560;
 }
 
-dt {
-  margin-top: 0.75rem;
-  font-weight: bold;
+#app .profile-query > p {
+  grid-column: 1 / -1;
+  margin: -.2rem 0 0;
+  color: var(--ink-600);
+  font-size: .78rem;
 }
 
-dd {
+#app .profile-editor {
+  padding: 0;
+  overflow: hidden;
+}
+
+#app .profile-editor fieldset {
+  display: block;
+  padding: 0;
+  border: 0;
+}
+
+#app .profile-editor legend {
+  width: 100%;
+  padding: 1.25rem 1.5rem .35rem;
+  color: var(--ink-950);
+  font-family: var(--font-display);
+  font-size: 1.18rem;
+  font-weight: 780;
+}
+
+#app .profile-form-lead {
+  margin: 0;
+  padding: 0 1.5rem 1.25rem;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--ink-600);
+  font-size: .86rem;
+}
+
+#app .profile-form-section {
+  display: grid;
+  grid-template-columns: minmax(11rem, .34fr) minmax(0, 1fr);
+  gap: 1.5rem;
+  margin: 0;
+  padding: 1.45rem 1.5rem;
+  border: 0;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--surface);
+}
+
+#app .profile-section-heading h2 {
+  margin: 0 0 .35rem;
+  font-size: .95rem;
+}
+
+#app .profile-section-heading p {
+  margin: 0;
+  color: var(--ink-600);
+  font-size: .78rem;
+  line-height: 1.55;
+}
+
+#app .profile-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem 1.25rem;
+  min-width: 0;
+}
+
+#app .profile-field {
+  align-content: start;
+  min-width: 0;
+}
+
+#app .profile-field-wide {
+  grid-column: 1 / -1;
+}
+
+#app .profile-field textarea {
+  min-height: 7rem;
+  resize: vertical;
+}
+
+#app .profile-form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 1rem;
+  padding: 1.15rem 1.5rem;
+  background: var(--surface-muted);
+}
+
+#app .profile-form-actions p {
+  margin: 0 auto 0 0;
+  color: var(--ink-600);
+  font-size: .78rem;
+}
+
+#app .profile-page dt {
+  margin-top: .75rem;
+  font-weight: 700;
+}
+
+#app .profile-page dd {
   margin-left: 0;
   overflow-wrap: anywhere;
 }
 
-.profile-summary {
+#app .profile-summary {
   white-space: pre-wrap;
 }
 
-[role='alert'] {
-  border-left: 0.25rem solid #a12a2a;
-  padding-left: 0.75rem;
+@media (max-width: 760px) {
+  #app .profile-query {
+    grid-template-columns: 1fr;
+  }
+
+  #app .profile-query button {
+    width: 100%;
+  }
+
+  #app .profile-form-section {
+    grid-template-columns: 1fr;
+    gap: 1rem;
+    padding: 1.2rem 1rem;
+  }
+
+  #app .profile-editor legend {
+    padding-inline: 1rem;
+  }
+
+  #app .profile-form-lead {
+    padding-inline: 1rem;
+  }
+
+  #app .profile-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  #app .profile-field-wide {
+    grid-column: auto;
+  }
+
+  #app .profile-form-actions {
+    align-items: stretch;
+    flex-direction: column;
+    padding: 1rem;
+  }
+
+  #app .profile-form-actions button {
+    width: 100%;
+  }
 }
 </style>
