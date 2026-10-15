@@ -24,7 +24,7 @@ const authority = {
   delegable_scopes: [{ kind: 'employee', id: EMPLOYEE }],
 }
 const session = {
-  subject_id: MANAGER, org_id: ORG, auth_epoch: EPOCH, capabilities: ['access_grant.manage'],
+  subject_id: MANAGER, org_id: ORG, auth_epoch: EPOCH, business_date: '2026-10-11', capabilities: ['access_grant.manage'],
   csrf_token: 'synthetic-grant-csrf', grant_authorities: [authority],
   mfa_recent: true, mfa_valid_until: '2027-01-01T00:00:00Z',
 }
