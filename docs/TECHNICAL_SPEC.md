@@ -133,6 +133,8 @@ R6a/R6b当前代码源：`internal/assessment/`、`internal/store/assessment*.go
 
 DEV-025前端视觉基础集中在`web/src/styles.css`并由`main.ts`静态导入；Vite production build生成内容hash CSS/JS，由Go静态服务同源返回。`App.vue`负责品牌栏、sticky主导航和当前路由状态，`IdentityGate.vue`负责认证态会话条及未认证登录卡；9个业务页面继续使用原生语义/ARIA和既有scoped专属布局。无远程字体、CSS框架、图标CDN、分析SDK或运行时主题服务；全局层只改变呈现，不缓存或扩大敏感DTO。
 
+DEV-026把`IdentityGate.checkSession`区分为破坏式显式/生命周期核对和路由后台核对。已有`authenticated`会话收到`popstate`时，后台请求仍使用`no-store`并参与generation/AbortController竞态控制，但不提前增加`protectedGeneration`或切换`phase=checking`；pending期间保持身份壳层，返回相同subject、org及auth epoch时确认继续。401调用统一`expireSession`，context变化/敏感期限失效进入`changed`，transport/非成功响应进入`unavailable`，这些失败路径仍清空session并卸载slot。用户显式“重新核对”、focus/pageshow及pagehide继续采用先销毁后核对语义。
+
 
 | 拟定 Go package | 职责 / 依赖 |
 | --- | --- |

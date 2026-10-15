@@ -10,5 +10,7 @@
 - [DEV-024验证摘要](validation/DEV-024.md) · [双轮审查记录](reviews/DEV-024.md)
 - [DEV-025统一产品UI](plans/DEV-025.md)：设计决定、实装范围和当前进度。
 - [DEV-025验证摘要](validation/DEV-025.md) · [双轮审查记录](reviews/DEV-025.md)
+- [DEV-026人员资料布局与无闪烁导航](plans/DEV-026.md)：问题、设计决定及task进度。
+- [DEV-026验证摘要](validation/DEV-026.md) · [双轮审查记录](reviews/DEV-026.md)
 
 历史私有计划、review会话、本机路径和旧文档commit台账不复制到public仓库；它们不是当前产品契约。当前行为以本仓库源码、迁移、永久测试和上述文档为准。
