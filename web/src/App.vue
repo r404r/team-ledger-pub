@@ -33,21 +33,41 @@ function navigate(event: MouseEvent, path: string) {
   // Both the composition root and the existing profile page consume popstate.
   window.dispatchEvent(new PopStateEvent('popstate'))
 }
+
+function navActive(section: 'profile' | 'grants' | 'audit' | 'organization' | 'directory' | 'interviews' | 'batches') {
+  const path = pathname.value
+  if (section === 'profile') return path === '/' || /^\/employees\/[0-9a-f-]+\/?$/.test(path)
+  if (section === 'grants') return grantsRoute.value
+  if (section === 'audit') return auditRoute.value
+  if (section === 'organization') return /\/(?:tree|organization-history)\/?$/.test(path)
+  if (section === 'directory') return /\/employees\/?$/.test(path) && path.startsWith('/orgs/')
+  if (section === 'interviews') return interviewRoute.value
+  return compensationBatchRoute.value
+}
 onMounted(() => window.addEventListener('popstate', readRoute))
 onBeforeUnmount(() => window.removeEventListener('popstate', readRoute))
 </script>
 
 <template>
   <IdentityGate v-slot="{ expireSession, orgID }">
-    <nav aria-label="主导航">
-      <a href="/" @click="navigate($event, '/')">人员资料</a>
-      <a href="/security/grants" @click="navigate($event, '/security/grants')">授权</a>
-      <a href="/security/audit" @click="navigate($event, '/security/audit')">审计</a>
-      <a :href="`/orgs/${orgID}/tree`" @click="navigate($event, `/orgs/${orgID}/tree`)">组织树</a>
-      <a :href="`/orgs/${orgID}/employees`" @click="navigate($event, `/orgs/${orgID}/employees`)">员工目录</a>
-      <a href="/interviews" @click="navigate($event, '/interviews')">面谈</a>
-      <a :href="`/orgs/${orgID}/compensation-adjustments`" @click="navigate($event, `/orgs/${orgID}/compensation-adjustments`)">调薪批次</a>
-    </nav>
+    <header class="app-shell-header">
+      <div class="app-shell-bar">
+        <a class="brand-lockup" href="/" aria-label="TeamLedger 首页" @click="navigate($event, '/')">
+          <span class="brand-mark" aria-hidden="true">TL</span>
+          <span class="brand-copy"><strong>TeamLedger</strong><small>People operations</small></span>
+        </a>
+        <div class="workspace-state"><span>受保护工作区</span></div>
+      </div>
+      <nav class="app-nav" aria-label="主导航">
+        <a href="/" :aria-current="navActive('profile') ? 'page' : undefined" @click="navigate($event, '/')">人员资料</a>
+        <a href="/security/grants" :aria-current="navActive('grants') ? 'page' : undefined" @click="navigate($event, '/security/grants')">授权</a>
+        <a href="/security/audit" :aria-current="navActive('audit') ? 'page' : undefined" @click="navigate($event, '/security/audit')">审计</a>
+        <a :href="`/orgs/${orgID}/tree`" :aria-current="navActive('organization') ? 'page' : undefined" @click="navigate($event, `/orgs/${orgID}/tree`)">组织树</a>
+        <a :href="`/orgs/${orgID}/employees`" :aria-current="navActive('directory') ? 'page' : undefined" @click="navigate($event, `/orgs/${orgID}/employees`)">员工目录</a>
+        <a href="/interviews" :aria-current="navActive('interviews') ? 'page' : undefined" @click="navigate($event, '/interviews')">面谈</a>
+        <a :href="`/orgs/${orgID}/compensation-adjustments`" :aria-current="navActive('batches') ? 'page' : undefined" @click="navigate($event, `/orgs/${orgID}/compensation-adjustments`)">调薪批次</a>
+      </nav>
+    </header>
     <GrantPage v-if="grantsRoute" @session-expired="expireSession" />
     <AuditPage v-else-if="auditRoute" @session-expired="expireSession" />
     <InterviewPage v-else-if="interviewRoute" @session-expired="expireSession" />
@@ -59,7 +79,3 @@ onBeforeUnmount(() => window.removeEventListener('popstate', readRoute))
     <ProfilePage v-else @session-expired="expireSession" />
   </IdentityGate>
 </template>
-
-<style scoped>
-nav { max-width: 72rem; margin: 1rem auto; padding: 0 1rem; display: flex; gap: 1.5rem; font-family: system-ui, sans-serif; }
-</style>

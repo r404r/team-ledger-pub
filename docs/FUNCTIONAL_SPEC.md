@@ -274,10 +274,10 @@ flowchart TB
 
 | feature ID | 当前完整功能 | 设计状态 | 当前工作实现/检查（非全产品发布） | 最近发布 / 工作revision |
 | --- | --- | --- | --- | --- |
-| F-ORG-001 | 固定Business Group→Division→Department、全集团唯一员工工号/双语资料、雇佣/教育/单一岗位/直属主管(HOD)有效期历史 | DES-003/004完整并获批准 | DEV-015已实装OP-ORG-01/04..10、P-ORG-01/02/03与AC-ORG-01..11；DEV-017已实装department/job_assignment canonical授权 | 员工主数据固定C [`55466fe`](https://github.com/r404r/team-ledger/commit/55466fe6f74d3c0dd56c42f0f2e72c427fb0c40e)，授权切换代码和测试在本仓库 |
+| F-ORG-001 | 固定Business Group→Division→Department、全集团唯一员工工号/双语资料、雇佣/教育/单一岗位/直属主管(HOD)有效期历史 | DES-003/004完整并获批准 | DEV-015已实装OP-ORG-01/04..10、P-ORG-01/02/03与AC-ORG-01..11；DEV-017已实装department/job_assignment canonical授权 | 员工主数据固定C [`55466fe`](https://github.com/r404r/team-ledger-pub/commit/55466fe6f74d3c0dd56c42f0f2e72c427fb0c40e)，授权切换代码和测试在本仓库 |
 | F-INT-001 | 面谈版本、共享/经理私有/HR保密分区、行动项、历史权限与交接 | DES-001/002；DEV-008已交付 | 8 INT OP、P-INT-01、6 AC、typed对象、独立source批准、人工最小化和有限导出已实装 | 当前源码、v6迁移和永久测试 |
-| F-COMP-001 | 个人薪资条款/纠错、salary range、年度normal/special批次导入/显式提交/原子激活及历史 | DES-003/005/006；已交付 | 个人5 OP及Salary Range、N/S/NC/SC编号、加密candidate、冻结basis、原子activation/correction、审计outbox及批次页面已实装 | 个人R4 C [`ca82502`](https://github.com/r404r/team-ledger/commit/ca8250245dae0b4a6b6d36b627209e97e5654a52)，批次C [`c46ed2`](https://github.com/r404r/team-ledger/commit/c46ed2f638d71e28f106d199d54d0f6af01f5624) |
-| F-BONUS-001 | 奖金目标、批准奖励、支付记录与敏感扩展 | DES-001/002；业务口径须显式批准 | 8 OP、P-BONUS-01、目标/奖励/批准/支付/冲销/异常、有限扩展、签名游标及受控HMAC维护已实装 | 固定代码C [`1c769d0`](https://github.com/r404r/team-ledger/commit/1c769d0d5781eaf6cc797c46ab4ffc11d3940c95) |
+| F-COMP-001 | 个人薪资条款/纠错、salary range、年度normal/special批次导入/显式提交/原子激活及历史 | DES-003/005/006；已交付 | 个人5 OP及Salary Range、N/S/NC/SC编号、加密candidate、冻结basis、原子activation/correction、审计outbox及批次页面已实装 | 个人R4 C [`ca82502`](https://github.com/r404r/team-ledger-pub/commit/ca8250245dae0b4a6b6d36b627209e97e5654a52)，批次C [`c46ed2`](https://github.com/r404r/team-ledger-pub/commit/c46ed2f638d71e28f106d199d54d0f6af01f5624) |
+| F-BONUS-001 | 奖金目标、批准奖励、支付记录与敏感扩展 | DES-001/002；业务口径须显式批准 | 8 OP、P-BONUS-01、目标/奖励/批准、支付/冲销/异常、有限扩展、签名游标及受控HMAC维护已实装 | 固定代码C [`1c769d0`](https://github.com/r404r/team-ledger-pub/commit/1c769d0d5781eaf6cc797c46ab4ffc11d3940c95) |
 | F-AI-001 | 定期面谈状态、依据草稿、人审发布、过期/失败处理 | DES-001/002；真实外传政策待批准 | 确定规则、人工proposed→独立approve、standing policy、稳定调度、持久queue/lease/fence/receipt、受限worker、加密draft及人审发布已实装；真实provider质量/外传未验 | 当前源码、v9/v10迁移和永久测试 |
 | F-SEC-001 | 敏感内容库内密文、特殊权限、授权先于解密、密钥/审计/恢复 | DES-001/002/007/008；机制已交付 | 本地root/keyring、local/OIDC身份、同库独立receiver、双介质离线副本、长期MAC/index、identity canonical source及CSRF换键撤session已实装；不防host root | 当前源码、v12迁移、README runbook和永久测试 |
 | F-DB-001 | SQLite/PostgreSQL共同业务语义、对应迁移、冲突及原子性 | DES-001/002；v12 clean baseline已验证 | 审计/outbox/export/rewrap/restore事实、SQLite一致snapshot、PG exported snapshot/custom dump及keyd backup domain已实装 | 当前源码与双数据库永久测试；容量、PITR、RPO/RTO和生产切流另行批准 |
@@ -344,6 +344,8 @@ DEV-006共同身份交互已实装/实跑：未核对/401/设施不可用时不�
 ### 1.5 页面注册、导航与字段分类
 
 本表是 **9个稳定页面ID的唯一注册处**，不复用；路径/HTTP schema由[TECHNICAL_SPEC](TECHNICAL_SPEC.md) OP表唯一注册。登录/MFA/错误对话框是公共交互，不新增员工自助或DSN编辑页。R7已接通第九页P-SEC-02审计路由；本地keyd、内置identity mode和Compose独立audit receiver均已实装，但“页面可达”不等于真实生产IdP、介质责任或独立部署设施已验收。
+
+DEV-025统一9个稳定页面及共同身份壳层的视觉系统：同源hash CSS提供系统字体、企业级颜色/间距tokens、品牌栏、当前导航状态、会话条、响应式表单/卡片/表格、alert/status、键盘focus和reduced-motion。视觉层不改变页面ID、OP、字段、权限、明确确认、错误或敏感数据清空语义；移动端宽导航和宽表只在各自容器滚动，不产生页面级横向溢出。
 
 字段分类：`M` 为受 scope 约束但允许必要明文的结构 metadata（ID、关系、日期、状态、revision、记录时间）；`P` 为加密 PII/姓名/联系方式及敏感职位资料；`N` 为加密面谈/行动文本，按三个分区授权；`F` 为加密薪酬/奖金/原因/凭证/扩展；`A` 为加密 AI 文本与最小输入；`U` 为脱敏授权/审计 metadata。即使是 M/U 也不是公开数据；内容不得因字段名称“备注”变为 M。
 
@@ -935,7 +937,7 @@ flowchart TB
 11. Compose内置receiver是独立进程但与业务共用DB：业务事务先原子写安全事件/outbox，forwarder以mTLS投递；receiver先构造/签名receipt，再将ledger与完整signed receipt在同一事务INSERT/commit，commit后才返回，forwarder验签才确认outbox。服务中断保留事件重试，同event/digest逐byte返回已持久化原receipt；forwarder另以5秒mTLS探测写单例heartbeat，API仅接受本部署ID且成功状态不老于15秒。此同库方案不宣称抵御DBA/host root。
 12. root/keyring离线副本每次同时导出到两份分别加密、分离保管的可移动介质；停止写入并锁定同一generation，inventory包含全部active/staged/decrypt-only/verify-only key entry状态与每domain active pointer，A/B都经隔离只读hash/auth/完整probe后才登记成功。副本不含DB或audit/OIDC私钥，不是完整灾备，当前不承诺RPO/RTO。
 
-输入为互斥identity mode、认证身份、授权条件、敏感对象/版本和受控运维动作；输出为local或OIDC会话、授权内容或安全失败，以及无正文审计/恢复状态。DEV-019 local身份固定代码C [`c8b4da4`](https://github.com/r404r/team-ledger/commit/c8b4da4e93920e272bec7a0462f3ccbfe797aaa9)已完成真实双库/API/Docker验证并push；DEV-020同库receiver已固定交付；DEV-021双份离线密钥介质已实装真实CLI export→pair verify→isolated restore→恢复keyd ready，交付固定中。OIDC客户端和在线keyring lifecycle继续保留。
+输入为互斥identity mode、认证身份、授权条件、敏感对象/版本和受控运维动作；输出为local或OIDC会话、授权内容或安全失败，以及无正文审计/恢复状态。DEV-019 local身份固定代码C [`c8b4da4`](https://github.com/r404r/team-ledger-pub/commit/c8b4da4e93920e272bec7a0462f3ccbfe797aaa9)已完成真实双库/API/Docker验证并push；DEV-020同库receiver已固定交付；DEV-021双份离线密钥介质已实装真实CLI export→pair verify→isolated restore→恢复keyd ready，交付固定中。OIDC客户端和在线keyring lifecycle继续保留。
 
 ### 边界、状态与错误
 
@@ -1015,7 +1017,7 @@ F-SEC-001唯一验收登记：本地root/keyring、包装生命周期、Docker�
 
 **R3当前数据库状态**：v6追加typed面谈对象/source批准、事件/密文/receipt及OIDC intent；有数据迁移保留旧列、旧AAD、旧receipt及原profile/key解密语义。不可变事实与可变head/状态投影分开；授权guard/release/audit、双后端head竞争、compiled migrate/API重启、CLI bind/unbind撤session、敏感marker扫描以及Go/Vue永久测试均覆盖当前边界。SQLite DB/WAL已检查，PostgreSQL物理页/备份未检查；受控测试吞吐不代表生产容量。
 
-**R5固定代码数据库状态**：v8目标/奖励/批准/支付及冲销、有限扩展、密文包、幂等receipt、HMAC状态与staging在SQLite/PostgreSQL采用共同服务语义。支付事实不可变，对账余额/异常从获准事实派生；索引迁移严格`ready → migrating → ready/blocked`停写，先解密并以目标key重建staging，完整验证后原子切换，失败不翻转active key。代码固定于C [`1c769d0`](https://github.com/r404r/team-ledger/commit/1c769d0d5781eaf6cc797c46ab4ffc11d3940c95)，不代生产密钥保管、备份恢复或容量证明。
+**R5固定代码数据库状态**：v8目标/奖励/批准/支付及冲销、有限扩展、密文包、幂等receipt、HMAC状态与staging在SQLite/PostgreSQL采用共同服务语义。支付事实不可变，对账余额/异常从获准事实派生；索引迁移严格`ready → migrating → ready/blocked`停写，先解密并以目标key重建staging，完整验证后原子切换，失败不翻转active key。代码固定于C [`1c769d0`](https://github.com/r404r/team-ledger-pub/commit/1c769d0d5781eaf6cc797c46ab4ffc11d3940c95)，不代生产密钥保管、备份恢复或容量证明。
 
 ### 行为、状态与错误
 

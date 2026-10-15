@@ -70,8 +70,8 @@ docker run --rm hello-world
 
 ```bash
 cd ~
-git clone https://github.com/r404r/team-ledger.git
-cd team-ledger
+git clone https://github.com/r404r/team-ledger-pub.git
+cd team-ledger-pub
 ```
 
 若已经clone，进入该目录即可。以下所有命令都必须在包含`compose.yaml`的`team-ledger`目录执行。确认位置和文件：

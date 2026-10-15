@@ -11,7 +11,7 @@
 
 ### 1.1 上下文与数据流
 
-R7历史实现使用受控外部Transit adapter；DEV-018已用本地keyd替换生产KMS依赖，保留并收窄envelope/AAD/用途分离接口。DEV-019本地账号固定代码C [`c8b4da4`](https://github.com/r404r/team-ledger/commit/c8b4da4e93920e272bec7a0462f3ccbfe797aaa9)已完成双库/API/Docker验证；DEV-020已实装Compose内置同库audit receiver。本地keyd和receiver均为同一安装包组件，不抵御整机root。
+R7历史实现使用受控外部Transit adapter；DEV-018已用本地keyd替换生产KMS依赖，保留并收窄envelope/AAD/用途分离接口。DEV-019本地账号固定代码C [`c8b4da4`](https://github.com/r404r/team-ledger-pub/commit/c8b4da4e93920e272bec7a0462f3ccbfe797aaa9)已完成双库/API/Docker验证；DEV-020已实装Compose内置同库audit receiver。本地keyd和receiver均为同一安装包组件，不抵御整机root。
 
 ```mermaid
 flowchart LR
@@ -122,7 +122,7 @@ flowchart TB
 
 实际组合根包含`cmd/teamledger-keyd`和`cmd/keyctl-local`；`cmd/api`、identity、key-rewrap、backup及MAC消费者使用本地keyd，生产Vault adapter与URL/token/CA配置已删除。API以`crypto_control`核对generation/digest/active key map；包装轮换执行stage/A1、activate/A2、DB ack、keyd ack和全库引用为零后的retire。backup恢复只写隔离目标，先通过keyd解包随机archive DEK并探测数据库业务wrapper样本；DEV-021另提供完整双介质inventory恢复门禁。
 
-R2固定C实际路径：[organization契约](https://github.com/r404r/team-ledger/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_contracts.go)、[service](https://github.com/r404r/team-ledger/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_service.go)、[逐owner权限](https://github.com/r404r/team-ledger/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_authority.go)、[queries](https://github.com/r404r/team-ledger/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_queries.go)、[graph](https://github.com/r404r/team-ledger/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/graph.go)、[cursor](https://github.com/r404r/team-ledger/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/cursor.go)；[HTTP handler](https://github.com/r404r/team-ledger/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/httpapi/structure.go)与[store](https://github.com/r404r/team-ledger/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/store/structure.go)承接现有事务。上述固定代码已实际push，不再用漂移main定位代替版本。查询尽量使用窄`GraphState`/employee关系/SQL候选，不为目录和history读取全org图；写与tree的窗口图仍由组织模块负责。
+R2固定C实际路径：[organization契约](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_contracts.go)、[service](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_service.go)、[逐owner权限](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_authority.go)、[queries](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_queries.go)、[graph](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/graph.go)、[cursor](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/cursor.go)；[HTTP handler](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/httpapi/structure.go)与[store](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/store/structure.go)承接现有事务。上述固定代码已实际push，不再用漂移main定位代替版本。查询尽量使用窄`GraphState`/employee关系/SQL候选，不为目录和history读取全org图；写与tree的窗口图仍由组织模块负责。
 
 R3当前源契约：`internal/interview/{contracts,commands,reads,export,service,state}.go`、`internal/store/interview.go`/`interview_tx.go`、`internal/httpapi/interviews.go`、`web/src/InterviewPage.vue`/`interviewDTO.ts`及`internal/authz/object*.go`。当前空库由`internal/store/migrations/*_v12.sql`安装；`*_v6.sql`仅保留历史迁移校验，不是当前安装入口。
 
@@ -130,6 +130,8 @@ R4及员工调薪批次当前源：`internal/compensation/`内contracts/policy/c
 
 R5当前代码源：`internal/compensation/bonus*.go`、`internal/store/bonus*.go`、`internal/httpapi/bonus.go`、`web/src/BonusPage.vue`/`bonusDTO.ts`、`cmd/bonus-hmac`及`cmd/api/finance.go`。当前空库使用v12 baseline；`*_v8.sql`只保留历史迁移校验。
 R6a/R6b当前代码源：`internal/assessment/`、`internal/store/assessment*.go`、`internal/httpapi/assessment*.go`、`web/src/FollowupPage.vue`/`assessmentDTO.ts`、`internal/authz`、`internal/providerapproval`及`cmd/assessment-worker`。当前空库使用v12 baseline；`*_v9.sql`/`*_v10.sql`只保留历史迁移校验。
+
+DEV-025前端视觉基础集中在`web/src/styles.css`并由`main.ts`静态导入；Vite production build生成内容hash CSS/JS，由Go静态服务同源返回。`App.vue`负责品牌栏、sticky主导航和当前路由状态，`IdentityGate.vue`负责认证态会话条及未认证登录卡；9个业务页面继续使用原生语义/ARIA和既有scoped专属布局。无远程字体、CSS框架、图标CDN、分析SDK或运行时主题服务；全局层只改变呈现，不缓存或扩大敏感DTO。
 
 
 | 拟定 Go package | 职责 / 依赖 |

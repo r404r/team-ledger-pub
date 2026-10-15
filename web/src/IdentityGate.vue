@@ -317,55 +317,67 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section aria-label="共同身份与会话" :data-identity-state="phase" :aria-busy="['checking', 'logging-out', 'mfa-starting'].includes(phase)">
+  <section class="identity-shell" aria-label="共同身份与会话" :data-identity-state="phase" :aria-busy="['checking', 'logging-out', 'mfa-starting'].includes(phase)">
     <template v-if="phase === 'authenticated'">
-      <p>会话已核对。{{ session?.mfa_recent ? '近期 MFA 已由身份设施验证。' : '敏感操作可能需要重新完成可信 MFA。' }} 身份摘要不是业务访问许可。</p>
-      <button type="button" @click="checkSession">重新核对会话（清空当前页面）</button>
-      <label v-if="interviewRoute && identityAvailable" for="interview-stepup-intent">重新验证意图</label>
-      <select v-if="interviewRoute && identityAvailable" id="interview-stepup-intent" v-model="interviewIntent"><option value="note.publish">发布笔记</option><option value="sensitive.export">敏感导出</option></select>
-      <label v-if="compensationRoute && identityAvailable" for="compensation-stepup-intent">财务重新验证意图</label>
-      <select v-if="compensationRoute && identityAvailable" id="compensation-stepup-intent" v-model="compensationIntent"><option value="compensation.read">财务读取</option><option value="compensation.propose">薪酬提出</option><option value="compensation.approve">独立薪酬审批</option><option value="bonus.target.manage">奖金目标维护</option><option value="bonus.propose">奖金奖励维护</option><option value="bonus.approve">独立奖金审批</option><option value="bonus.payment.record">奖金支付事实</option><option value="compensation.extension.manage">薪酬有限扩展</option><option value="sensitive.export">财务敏感导出</option></select>
-      <button v-if="identityAvailable" type="button" @click="stepUp">{{ compensationRoute ? '重新验证财务 MFA' : stepUpAction === 'access_grant.manage' ? '重新验证授权管理 MFA' : stepUpAction === 'interview_policy.manage' ? '重新验证跟进策略 MFA' : stepUpAction === 'note.publish' ? '重新验证笔记发布 MFA' : stepUpAction === 'sensitive.export' ? '重新验证敏感导出 MFA' : '重新验证资料写入 MFA' }}</button>
-      <p v-if="interviewRoute || compensationRoute || followupRoute">MFA 是会话级近期认证；认证后重载并明确重新确认，不自动提交、审批、生成结论或导出。</p>
-      <p v-if="!identityAvailable">可信登录与 MFA 设施未启用，不能在本地完成验证。</p>
-      <form v-if="identityMode === 'local'" @submit.prevent="changePassword">
-        <label for="current-password">当前密码</label>
-        <input id="current-password" v-model="currentPassword" type="password" autocomplete="current-password" required minlength="12" maxlength="256">
-        <label for="new-password">新密码</label>
-        <input id="new-password" v-model="newPassword" type="password" autocomplete="new-password" required minlength="12" maxlength="256">
-        <button type="submit">修改密码并注销全部会话</button>
-      </form>
+      <div class="identity-summary">
+        <span class="identity-indicator" aria-hidden="true"></span>
+        <div class="identity-copy">
+          <strong>会话已核对</strong>
+          <p>{{ session?.mfa_recent ? '近期 MFA 已由身份设施验证。' : '敏感操作可能需要重新完成可信 MFA。' }} 身份摘要不是业务访问许可。</p>
+        </div>
+      </div>
+      <div class="identity-actions">
+        <button type="button" @click="checkSession">重新核对会话（清空当前页面）</button>
+        <button v-if="canLogout" type="button" @click="logout">注销本会话</button>
+      </div>
+      <div class="identity-tools">
+        <div v-if="identityAvailable" class="identity-tools-row">
+          <label v-if="interviewRoute" for="interview-stepup-intent">重新验证意图<select id="interview-stepup-intent" v-model="interviewIntent"><option value="note.publish">发布笔记</option><option value="sensitive.export">敏感导出</option></select></label>
+          <label v-if="compensationRoute" for="compensation-stepup-intent">财务重新验证意图<select id="compensation-stepup-intent" v-model="compensationIntent"><option value="compensation.read">财务读取</option><option value="compensation.propose">薪酬提出</option><option value="compensation.approve">独立薪酬审批</option><option value="bonus.target.manage">奖金目标维护</option><option value="bonus.propose">奖金奖励维护</option><option value="bonus.approve">独立奖金审批</option><option value="bonus.payment.record">奖金支付事实</option><option value="compensation.extension.manage">薪酬有限扩展</option><option value="sensitive.export">财务敏感导出</option></select></label>
+          <button type="button" @click="stepUp">{{ compensationRoute ? '重新验证财务 MFA' : stepUpAction === 'access_grant.manage' ? '重新验证授权管理 MFA' : stepUpAction === 'interview_policy.manage' ? '重新验证跟进策略 MFA' : stepUpAction === 'note.publish' ? '重新验证笔记发布 MFA' : stepUpAction === 'sensitive.export' ? '重新验证敏感导出 MFA' : '重新验证资料写入 MFA' }}</button>
+        </div>
+        <p v-if="interviewRoute || compensationRoute || followupRoute">MFA 是会话级近期认证；认证后重载并明确重新确认，不自动提交、审批、生成结论或导出。</p>
+        <p v-if="!identityAvailable">可信登录与 MFA 设施未启用，不能在本地完成验证。</p>
+        <details v-if="identityMode === 'local'">
+          <summary>账号安全与密码</summary>
+          <form @submit.prevent="changePassword">
+            <label for="current-password">当前密码<input id="current-password" v-model="currentPassword" type="password" autocomplete="current-password" required minlength="12" maxlength="256"></label>
+            <label for="new-password">新密码<input id="new-password" v-model="newPassword" type="password" autocomplete="new-password" required minlength="12" maxlength="256"></label>
+            <button type="submit">修改密码并注销全部会话</button>
+          </form>
+        </details>
+      </div>
     </template>
-    <p v-else-if="phase === 'checking'" role="status">正在核对服务端会话；受保护页面尚未开放。</p>
-    <p v-else-if="phase === 'logged-out'" role="status">服务端已确认撤销本会话，当前页面资料已清空。未请求外部身份站点的全局登出。</p>
-    <p v-else-if="phase === 'expired'" role="alert">会话不存在或已失效，受保护页面与表单已清空。请通过可信身份设施登录。</p>
-    <p v-else-if="phase === 'changed'" role="alert">主体、组织、授权上下文或当前敏感显示期限已改变。旧页面已销毁；请重新核对会话后再操作。</p>
-    <p v-else-if="phase === 'unavailable'" role="alert">无法核对会话，受保护页面保持关闭。可手动重新核对。</p>
-    <p v-else-if="phase === 'logging-out'" role="status">页面资料已清空，正在等待服务端撤销会话的确认。</p>
-    <p v-else-if="phase === 'logout-failed'" role="alert">页面资料已清空，但服务端撤销尚未确认。不能视为已注销；可重试撤销本会话。</p>
-    <p v-else-if="phase === 'mfa-starting' || phase === 'mfa-redirecting'" role="status">正在前往可信身份设施重新验证 MFA。返回后将重新读取会话，不自动提交业务操作。</p>
-    <p v-else-if="phase === 'mfa-failed'" role="alert">未能开始可信 MFA 验证，未获得新的认证证明。页面保持关闭；可重新核对会话后再尝试。</p>
-    <p v-else-if="phase === 'login-redirecting'" role="status">正在前往可信身份设施登录。</p>
-    <p v-else-if="phase === 'login-failed'" role="alert">账号、密码或登录状态无效；请稍后重试。</p>
-    <button v-if="canLogout" type="button" @click="logout">注销本会话</button>
-    <button v-if="phase === 'logout-failed'" type="button" @click="logout">重试注销本会话</button>
-    <button v-if="['expired', 'changed', 'unavailable', 'mfa-failed'].includes(phase)" type="button" @click="checkSession">重新核对会话</button>
-    <form v-if="identityMode === 'local' && ['logged-out', 'expired', 'changed', 'unavailable', 'logout-failed', 'mfa-failed', 'login-failed'].includes(phase)" @submit.prevent="localLogin">
-      <label for="local-username">账号</label>
-      <input id="local-username" v-model="username" name="username" autocomplete="username" required minlength="3" maxlength="64">
-      <label for="local-password">密码</label>
-      <input id="local-password" v-model="password" name="password" type="password" autocomplete="current-password" required minlength="12" maxlength="256">
-      <button type="submit">登录</button>
-    </form>
-    <a v-else-if="identityMode === 'oidc' && ['logged-out', 'expired', 'changed', 'unavailable', 'logout-failed', 'mfa-failed'].includes(phase)" :href="loginURL" @click="login">通过可信身份设施登录</a>
+    <template v-else>
+      <div class="auth-heading">
+        <span class="brand-mark" aria-hidden="true">TL</span>
+        <div><h1>TeamLedger</h1><p>受保护的人员运营工作区</p></div>
+      </div>
+      <p v-if="phase === 'checking'" role="status">正在核对服务端会话；受保护页面尚未开放。</p>
+      <p v-else-if="phase === 'logged-out'" role="status">服务端已确认撤销本会话，当前页面资料已清空。未请求外部身份站点的全局登出。</p>
+      <p v-else-if="phase === 'expired'" role="alert">会话不存在或已失效，受保护页面与表单已清空。请通过可信身份设施登录。</p>
+      <p v-else-if="phase === 'changed'" role="alert">主体、组织、授权上下文或当前敏感显示期限已改变。旧页面已销毁；请重新核对会话后再操作。</p>
+      <p v-else-if="phase === 'unavailable'" role="alert">无法核对会话，受保护页面保持关闭。可手动重新核对。</p>
+      <p v-else-if="phase === 'logging-out'" role="status">页面资料已清空，正在等待服务端撤销会话的确认。</p>
+      <p v-else-if="phase === 'logout-failed'" role="alert">页面资料已清空，但服务端撤销尚未确认。不能视为已注销；可重试撤销本会话。</p>
+      <p v-else-if="phase === 'mfa-starting' || phase === 'mfa-redirecting'" role="status">正在前往可信身份设施重新验证 MFA。返回后将重新读取会话，不自动提交业务操作。</p>
+      <p v-else-if="phase === 'mfa-failed'" role="alert">未能开始可信 MFA 验证，未获得新的认证证明。页面保持关闭；可重新核对会话后再尝试。</p>
+      <p v-else-if="phase === 'login-redirecting'" role="status">正在前往可信身份设施登录。</p>
+      <p v-else-if="phase === 'login-failed'" role="alert">账号、密码或登录状态无效；请稍后重试。</p>
+      <div class="identity-actions">
+        <button v-if="canLogout" type="button" @click="logout">注销本会话</button>
+        <button v-if="phase === 'logout-failed'" type="button" @click="logout">重试注销本会话</button>
+        <button v-if="['expired', 'changed', 'unavailable', 'mfa-failed'].includes(phase)" type="button" @click="checkSession">重新核对会话</button>
+      </div>
+      <form v-if="identityMode === 'local' && ['logged-out', 'expired', 'changed', 'unavailable', 'logout-failed', 'mfa-failed', 'login-failed'].includes(phase)" @submit.prevent="localLogin">
+        <label for="local-username">账号<input id="local-username" v-model="username" name="username" autocomplete="username" required minlength="3" maxlength="64"></label>
+        <label for="local-password">密码<input id="local-password" v-model="password" name="password" type="password" autocomplete="current-password" required minlength="12" maxlength="256"></label>
+        <button type="submit">登录</button>
+      </form>
+      <a v-else-if="identityMode === 'oidc' && ['logged-out', 'expired', 'changed', 'unavailable', 'logout-failed', 'mfa-failed'].includes(phase)" :href="loginURL" role="button" @click="login">通过可信身份设施登录</a>
+    </template>
   </section>
   <div v-if="phase === 'authenticated'" :key="protectedGeneration">
     <slot :expireSession="expireSession" :orgID="session?.org_id" />
   </div>
 </template>
-
-<style scoped>
-section { max-width: 72rem; margin: 1rem auto; padding: 0 1rem; font-family: system-ui, sans-serif; }
-button, a { margin-right: 1rem; }
-[role="alert"] { color: #9b1c1c; }
-</style>
