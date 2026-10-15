@@ -196,7 +196,7 @@ flowchart TB
 
 ### 0.5 组织与历史：三种时间、当前scope和PII释放
 
-下图以v12目标为准。`as_of`只投影业务有效期；历史`from/to`只筛UTC `recorded_at`；授权始终使用服务端捕获的集团IANA当前业务日。系统尚未进入重要环境，v12采用全新schema/空库，不承接v11 team或grant；重要环境数据兼容只从用户后续明确通知的基线开始。
+下图以v12目标为准。`as_of`只投影业务有效期；历史`from/to`只筛UTC `recorded_at`；授权始终使用服务端捕获的集团IANA当前业务日。DEV-015期间尚无重要环境，因此v12采用全新schema/空库且不承接v11 team或grant；2026-10-15既有环境通知后，兼容义务从实际登记的已部署v12 baseline开始，未来变化必须前向迁移并保留其数据。
 
 ```mermaid
 flowchart TB
@@ -339,7 +339,7 @@ DEV-006共同身份交互已实装/实跑：未核对/401/设施不可用时不�
 
 显式身份映射维护由持有受保护DB配置与本地keyd socket的受控进程执行，不把目标员工当操作者，也不借目标业务grant。CLI可选`-employee-id`，绑定已存在同org员工的一对一不可改绑`subject_employee`；省略保留已有对应，不推断、不转移、不创建capability/grant。检查已有approved active subject，**schema没有human-kind分类，不声称active-human核验或实名真人归责**。新事件的`local_maintenance`actor独立记录实际kernel有效UID＋域隔离host hash，应用actor subject为NULL；target subject/employee分列，不是共享/sudo账号背后真人证明。
 
-**历史固定版本证据（不进入v12 baseline）**：v4曾把旧v3事件原值标为`legacy_unattributed`且不补造未知operator，历史页面区分执行身份、目标与未知记录。v12不导入、解释或显示通知前legacy行；未来兼容义务只从用户明确的重要环境基线开始。
+**历史固定版本证据（不进入v12 baseline）**：v4曾把旧v3事件原值标为`legacy_unattributed`且不补造未知operator，历史页面区分执行身份、目标与未知记录。v12不导入、解释或显示通知前legacy行；2026-10-15通知后的兼容义务从实际登记的已部署v12 baseline开始，不追溯支持v1-v11。
 
 ### 1.5 页面注册、导航与字段分类
 
@@ -1018,10 +1018,13 @@ F-SEC-001唯一验收登记：本地root/keyring、包装生命周期、Docker�
 1. 部署时明确选择一种后端，检查支持的应用/数据库/迁移版本，不把换DSN当作完整兼容；后端各有对应DDL及可执行迁移，均属于 `team-ledger`。
 2. 所有功能经同一业务接口和授权规则执行；双持久化适配实现相同业务契约。对组织/薪酬/审批/权限等组合写使用原子事务和必要并发约束。
 3. 更新时使用版本比较；并发/锁忙或序列化失败不会悄悄成功，也不能覆盖过时状态。底层数据库错误映射为共同业务错误类别，技术细节由技术规范定义。
-4. 升级或SQLite到PostgreSQL迁移按实际版本运行校验：对象ID/所有权、有效期关系、金额/币种、审批/纠错链、版本、grant、密文/key metadata和审计引用保持一致；迁移不是重新审批或解密导出明文的捷径。
-5. 迁移/恢复后由实际行为证据确认产品语义与权限，再切换部署。中断/失败状态明确保留，不报告已完成迁移。
+4. 自2026-10-15既有环境通知起，任何持久化变化先只读登记实际应用commit、schema version/checksum及支持矩阵，再从每个支持的既有版本前向迁移；不得假定空库、改写已部署migration、自动清空或用重导数据代替升级。
+5. 升级或SQLite到PostgreSQL迁移按实际版本运行校验：对象ID/所有权、有效期关系、金额/币种、审批/纠错链、版本、receipt、grant、密文/key metadata和审计引用保持一致；迁移不是重新审批或解密导出明文的捷径。
+6. 迁移/恢复后由实际行为证据确认产品语义与权限，再切换部署。中断/失败状态明确保留，不报告已完成迁移。
 
 输入为部署选择、版本/迁移、与其他feature相同命令和查询；输出为相同业务对象/状态/错误类别及迁移核对结果。备份和运维各按后端实际机制，不要求两种数据库底层锁/SQL完全相同。
+
+**DEV-029当前兼容政策**：现行v12程序仍只接受其exact checksum，本次规则变更没有虚构一个尚不存在的v13 migrator。当前v12 baseline自本政策生效起冻结；下一项schema/AAD/index-key/持久化语义变化必须新建版本和SQLite/PostgreSQL migration。实际环境版本无法只读确认、备份恢复未验证或source不受支持时，升级保持阻塞并安全停留原版本。
 
 **R2当前数据库状态**：双方言只新增v5迁移、v1-v4 bytes/checksum不改。真实有数据v4→v5两库核对17旧表67原行所有旧列精确一致，原profile/KMS解密和原receipt确认保持；v5追加team/关系/lifecycle/结构change与密文载荷、typed scope/任期grant、不可改绑subject_employee、结构receipt及target_employee审计。全窗口拟图校验＋per-owner当前权＋graph CAS、epoch、事实/receipt/audit同短Tx；SQL目录当前scope在LIMIT前、窄GraphState查询。两库重启后未来事实/录入历史/撤权保持；九个原敏感marker及最终三个姓名/title/code markers在各29原生表无明文/hex镜像，SQLite physical DB/WAL亦未见、API log为空。以上是DEV-007受控观察，两轮审查闭环且固定代码C已push，不代全产品换库、备份恢复、生产批准或容量证明。
 

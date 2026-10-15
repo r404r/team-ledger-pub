@@ -360,7 +360,9 @@ OP-SEC-05批次请求只接受单个完整frozen batch，不能选择行或跳�
 历史关系原事实与有效投影有明确对应；structure change允许add/end/replace及lifecycle原子typed set，原始事实不能被更正区间抹掉。授权只取当前有效投影。position/title、姓名、联系方式默认加密；org-unit code/必要relation type等metadata也只对授权scope公开。
 DEV-015的v12采用**全新baseline而非v11前向迁移**。SQLite要求不存在的新DB文件，PostgreSQL要求空的专用schema/database；安装事务一次创建R2-R7仍需实体及v12 canonical org/employee/financial实体并写schema version/checksum。发现v1-v11 schema、业务表或未知对象即拒绝`SCHEMA_VERSION_UNSUPPORTED`，不改旧库、不自动drop、不运行mapper。开发fixture只通过v12 synthetic seed/API重建。
 
-v12数据schema不含team→department、membership/position→assignment、profile v1或密文AAD转换逻辑；OP-ORG-02/03路由和旧organization command从binary移除。DEV-017已将通用授权domain/store/API/UI清洁切换为department/job_assignment：DB强制department kind与exact immutable relation owner，业务日coverage按canonical assignment求值，不加载全department roster。历史固定代码/revision仍供证据与Git追溯，不构成运行兼容承诺。用户未来明确通知重要环境时，另起PLAN记录当时schema/data baseline，再为**该通知之后**的变更设计升级/merge/rollback。
+v12数据schema不含team→department、membership/position→assignment、profile v1或密文AAD转换逻辑；OP-ORG-02/03路由和旧organization command从binary移除。DEV-017已将通用授权domain/store/API/UI清洁切换为department/job_assignment：DB强制department kind与exact immutable relation owner，业务日coverage按canonical assignment求值，不加载全department roster。历史固定代码/revision仍供证据与Git追溯，不构成运行兼容承诺；2026-10-15通知之前的v1-v11不追溯纳入支持。
+
+**2026-10-15既有环境通知后的兼容边界**：DEV-015选择v12 clean baseline时尚无重要环境；该历史决定仍解释为何v1-v11不受支持，但不再允许未来schema变化继续覆写v12 baseline。自DEV-029规则生效起，当前仓库v12 migration bytes/checksum冻结；下一次持久化变化必须分配新schema版本，以只读preflight取得实际部署的应用commit、version和checksum，并为登记的v12 source提供SQLite/PostgreSQL前向migration。若已部署v12 checksum与当前仓库不同，必须先把该exact source纳入迁移矩阵或阻止升级并保全原库，不能假定、自动修漂移或清空重装。
 
 OP-ORG-10是v12唯一跨员工主数据/组织任职命令：一个1..100项typed set可同时处理identifier、employment、education、job_assignment（含membership/position）及administrative/dotted reporting和employee lifecycle。请求携带graph/catalog及每个affected employee revision；服务端先规划全部owner/endpoints，按§6.1锁org graph/auth→subjects→employee UUID→facts，逐owner重验OrgR/OrgW及PII、全窗口/目录/Staff Code owner/单一assignment/reporting无环，然后在**一个事务**写全部facts、canonical projection、graph/catalog/employee revisions、auth/source epochs、一个command receipt、audit/outbox；任一项失败全部rollback。OP-ORG-03在v12不再是writer，不能把两个HTTP请求拼成“原子”。
 
@@ -465,7 +467,7 @@ R4 v7实际新增aggregate/proposal及immutable revision/approval/event/terms/pa
 | `audit_receiver_chain` / `audit_receiver_ledger` | receiver按deployment持有sequence/head hash，并独立追加event/receipt ID、payload digest、sequence/previous/entry hash、received_at、signer key ID及完整signed receipt bytes；不含业务正文 | head、ledger与receipt同Tx；同ID同digest逐byte重放，异digest冲突；ledger trigger拒UPDATE/DELETE。PG receiver角色只读schema version并对专属表SELECT/INSERT、对chain UPDATE；API/forwarder无ledger写权；离线maintainer仅以ledger/outbox SELECT证明signer退役条件。SQLite只有应用/trigger隔离，不冒充文件持有人不可篡改 |
 | `audit_receiver_status` | 单例`id=1`、当前deployment、ready与checked_at；只含设施状态 | forwarder每5秒以同一mTLS客户端探测receiver ready并UPSERT；API只读且要求`ready=true`、heartbeat≤15秒，missing/false/stale均503；切换deployment覆盖单例，不接受旧deployment残留冒充 |
 
-**历史固定版本证据（不适用于v12 baseline）**：v3曾追加`session_auth`并保留v1/v2 bytes，v4曾为旧维护事件增加`legacy_unattributed`分型，v11曾追加audit outbox。v12只从空目标创建当前表和新事实，不导入、保留或解释这些旧行；未来重要环境通知后的新基线再决定升级、merge与rollback。
+**历史固定版本证据（不适用于v12 baseline）**：v3曾追加`session_auth`并保留v1/v2 bytes，v4曾为旧维护事件增加`legacy_unattributed`分型，v11曾追加audit outbox。v12只从空目标创建当前表和新事实，不导入、保留或解释这些旧行。2026-10-15既有环境通知已经发生：兼容义务从实际登记的已部署v12 baseline开始，后续版本必须升级它；该通知不追溯恢复v1-v11支持。
 
 ### 4.3.1 独立授权的批准 authority 与资格（DEV-003实装契约）
 
@@ -1244,8 +1246,9 @@ result draft→published/discarded/invalidated；published→invalidated（由so
 
 ### 9.2 迁移与备份
 
-v12分三路：①拒绝预检：现有v1-v11/未知目标只读识别后`SCHEMA_VERSION_UNSUPPORTED`，零DDL/bootstrap/cleanup；②安装：SQLite目标path必须不存在，PG专用schema/database必须为空，由独立installer原子建baseline；③正常启动：已合法安装且checksum精确的v12即使已有业务数据也正常打开，绝不因“非空”拒绝。只要求**安装目标**为空，不升级/merge/自动清空。下列v1-v11说明仅是历史证据，不进入v12 binary。
-DEV-003前向v2保留v1 migration字节与checksum，不改历史批准事实；API只核对版本不自动迁移。PG以同一事务内TEMP reference按固定migration求预期结构，与目标真实catalog比对后rollback；需要TEMP权限，不在目标schema建表/修漂移。catalog身份显式text且重复键拒绝，避免PostgreSQL name类型63字节截断合并长约束名。额外初始化成本/TEMP权限是避免第二份手写expected DDL的取舍；两库真实旧数据/故障中断/约束漂移测试、独立migrator重复运行及API启动重启已验，见当前证据；不代替生产角色分离/恢复验收。
+当前v12 binary分三路：①拒绝预检：现有v1-v11/未知目标只读识别后`SCHEMA_VERSION_UNSUPPORTED`，零DDL/bootstrap/cleanup；②安装：SQLite目标path必须不存在，PG专用schema/database必须为空，由独立installer原子建baseline；③正常启动：已合法安装且checksum精确的v12即使已有业务数据也正常打开，绝不因“非空”拒绝。当前代码尚不包含通知后的新schema版本，故本段只描述v12现状，不代表未来可继续只装空库。
+
+自2026-10-15既有环境通知起，v12 baseline bytes/checksum作为兼容源冻结。下一次schema或持久化语义变化必须新增版本及两方言前向migration；PLAN先只读记录每个目标环境的应用commit、version/checksum并定义source matrix。迁移必须在已验证备份/恢复前置下受控停写，真实带数据验证中断、重启、重复调用、原事实/密文/key metadata/receipt/grant/audit保真及新旧程序切换顺序。未知source、漂移或缺恢复条件必须阻止升级，不能改写v12、自动drop/重建、fallback空库或把手工重导冒充migration。v1-v11仍仅是通知前历史证据，不进入新的支持矩阵。
 
 R2历史v5迁移保持v1-v4 bytes/checksum并追加组织历史、密文、receipt、typed grant和审计目标；SQLite必要copy/rebuild保留原列，PostgreSQL按真实约束迁移。当前v12 binary不执行这条升级路径，v5文件仅用于checksum和历史兼容测试；当前安装、重启及验收以v12 baseline、源码旁永久测试和§10表为准，不据此宣称生产恢复或容量证明。
 

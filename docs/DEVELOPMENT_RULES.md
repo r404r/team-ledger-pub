@@ -1,9 +1,9 @@
 # TeamLedger 开发规则：TDD、双数据库与交付门禁
 
-- 日期与来源查阅日期：2026-10-10。
+- 日期与来源查阅日期：2026-10-15。
 - 状态：当前开发与交付规则；规则本身不代表某项功能已发布，也不声称仓库已配置生产CI。
 - 适用：独立开发者和 AI assistant；Go 模块化单体 API、Vue3/TypeScript/Vite、每次部署选择 SQLite 或 PostgreSQL 一个后端，不双写。
-- 用户约定：实际开发采用TDD；每个整体交付task完成验证与审查后必须commit并push，不补造历史提交。
+- 用户约定：实际开发采用TDD；每个整体交付task完成验证与审查后必须commit并push，不补造历史提交。自2026-10-15既有环境通知起，未来持久化变更必须提供已部署版本到新版本的安全migration，不得再以空库重建替代。
 - 关联：[整体功能规范](FUNCTIONAL_SPEC.md)、[整体技术规范](TECHNICAL_SPEC.md)及仓库README。
 
 ## 1. 结论、归属与适用限制
@@ -124,10 +124,11 @@ Go 的 `testing`、table-driven tests、subtests、race detector 和 fuzzing，�
 
 ### 6.2 方言与迁移必须另外测试
 
-- 两后端各有对应 DDL/migration；参数占位符、BLOB/BYTEA、布尔/整数/时间、JSON、索引/约束、affected rows、事务/锁和错误分类明确映射。不能把 SQLite 动态类型容忍误当 PostgreSQL 验证，不能宣称“换 DSN 即兼容”。
-- 每次 schema 变更，两库都实际测试空库安装、从上一个支持版本带合成数据升级、迁移版本检查和重启；检查金额/历史/密文/key metadata 保真、约束实际生效。SQLite 按连接落实外键等配置；PostgreSQL 按真实运行角色验证权限，不能只以超级用户执行。
-- 已部署 migration 不重写；新增迁移升级。测试应用代码与 schema 兼容的启动/切换顺序及迁移失败后的可恢复状态。若不支持 down migration，明确采用已验证备份恢复/前向修复，不虚构自动回退。
-- 涉及后端切换时，另验收受控停写、导出/导入、数量与关键不变量/金额/密文校验、切换后的真实程序 smoke、回退条件；库间数据迁移不是 DDL migration，不能借共享契约宣称已完成。
+- 两后端各有对应DDL/migration；参数占位符、BLOB/BYTEA、布尔/整数/时间、JSON、索引/约束、affected rows、事务/锁和错误分类明确映射。不能把SQLite动态类型容忍误当PostgreSQL验证，不能宣称“换DSN即兼容”。
+- 任何影响schema、持久化格式、密文AAD、索引key版本或不可变事实解释的task，设计前必须以只读preflight登记既有环境的应用commit、`schema_version`和checksum，列出支持的source→target matrix；无法取得实际source时保持阻塞，不能猜测它等于仓库HEAD。
+- 每次schema变更，两库都实际测试空库安装、从每个支持的既有版本带合成数据升级、迁移中断/重启/重复运行和切换后的真实程序；检查金额/历史/密文/key metadata/receipt/grant/audit引用保真及约束实际生效。SQLite按连接落实外键等配置；PostgreSQL按真实运行角色验证权限，不能只以超级用户执行。
+- 已部署migration和已经冻结为兼容源的baseline bytes/checksum不得重写；新增版本和前向migration升级。先验证备份恢复，再受控停写/迁移；失败必须安全停留在旧版本或已验证恢复目标，不得自动清空、fallback空库或用重新导入冒充原子升级。若不支持down migration，明确采用已验证备份恢复/前向修复，不虚构自动回退。
+- 涉及后端切换时，另验收受控停写、导出/导入、数量与关键不变量/金额/密文校验、切换后的真实程序smoke、回退条件；库间数据迁移不是DDL migration，不能借共享契约宣称已完成。
 
 ### 6.3 并发不能由 race detector 代替
 
