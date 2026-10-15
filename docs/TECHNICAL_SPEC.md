@@ -135,6 +135,8 @@ DEV-025前端视觉基础集中在`web/src/styles.css`并由`main.ts`静态导�
 
 DEV-026把`IdentityGate.checkSession`区分为破坏式显式/生命周期核对和路由后台核对。已有`authenticated`会话收到`popstate`时，后台请求仍使用`no-store`并参与generation/AbortController竞态控制，但不提前增加`protectedGeneration`或切换`phase=checking`；pending期间保持身份壳层，返回相同subject、org及auth epoch时确认继续。401调用统一`expireSession`，context变化/敏感期限失效进入`changed`，transport/非成功响应进入`unavailable`，这些失败路径仍清空session并卸载slot。用户显式“重新核对”、focus/pageshow及pagehide继续采用先销毁后核对语义。
 
+DEV-027的认证态`IdentityGate`使用原生`details/summary`作为会话披露控件，默认closed且不写入local/session storage；内部路由切换复用同一组件实例，因此保留当前open状态。summary仅呈现非敏感会话/MFA摘要，完整安全操作仍调用原有`checkSession`、`stepUp`、`logout`和`changePassword`路径；phase离开`authenticated`时整个details随分支卸载，不能把旧展开内容带入新身份上下文。
+
 
 | 拟定 Go package | 职责 / 依赖 |
 | --- | --- |

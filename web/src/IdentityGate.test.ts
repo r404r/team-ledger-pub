@@ -102,7 +102,12 @@ async function openGate() {
   return page
 }
 function action(page: VueWrapper, name: RegExp) {
-  const found = page.findAll('button').filter((item) => item.isVisible() && name.test(item.attributes('aria-label') ?? item.text()))
+  let found = page.findAll('button').filter((item) => item.isVisible() && name.test(item.attributes('aria-label') ?? item.text()))
+  if (found.length === 0) {
+    const panel = page.find('details.identity-session-panel')
+    if (panel.exists()) (panel.element as HTMLDetailsElement).open = true
+    found = page.findAll('button').filter((item) => item.isVisible() && name.test(item.attributes('aria-label') ?? item.text()))
+  }
   expect(found, `Accessible action ${name}`).toHaveLength(1)
   return found[0]!
 }
@@ -164,6 +169,20 @@ describe('shared protected identity interaction', () => {
     expect(identityState(page)).toBe('authenticated')
     expect(page.find('nav').exists()).toBe(true)
     expect(page.text()).toContain(SAVED_NAME)
+  })
+
+  it('starts with a compact authenticated summary and expands session controls on demand', async () => {
+    const page = await openGate()
+    const panel = page.get('details.identity-session-panel')
+    expect((panel.element as HTMLDetailsElement).open).toBe(false)
+    expect(panel.get('summary').text()).toContain('会话与安全')
+
+    await panel.get('summary').trigger('click')
+    await nextTick()
+
+    expect((panel.element as HTMLDetailsElement).open).toBe(true)
+    expect(panel.text()).toContain('重新核对会话（清空当前页面）')
+    expect(panel.text()).toContain('注销本会话')
   })
 
   it('keeps the authenticated surface mounted while an internal route session check is pending', async () => {
