@@ -73,7 +73,11 @@ func (s *Service) Create(ctx context.Context, request Request, org string, comma
 	if err != nil {
 		return Result{}, s.denied(ctx, request, snapshot, "OP-ORG-05", err)
 	}
-	if !value.ValidID(org) || !value.ValidID(request.Key) || !validProfile(command.Profile) || !validLifecycle(command.Lifecycle) {
+	employee := Employee{ID: value.NewID(), OrgID: org, Revision: 1, Lifecycle: command.Lifecycle}
+	workforce, hasWorkforce := initialWorkforceCommand(command, employee.ID)
+	if !value.ValidID(org) || !value.ValidID(request.Key) || !validProfile(command.Profile) || !validLifecycle(command.Lifecycle) ||
+		hasWorkforce && !validWorkforceChange(workforce) ||
+		!hasWorkforce && (command.ExpectedCatalogRevision != nil || command.ExpectedGraphRevision != nil) {
 		return Result{}, fault.Invalid
 	}
 	digest, err := s.digest(request, snapshot, "OP-ORG-05", org, command)
@@ -83,13 +87,27 @@ func (s *Service) Create(ctx context.Context, request Request, org string, comma
 	if result, found, err := s.replay(ctx, request, snapshot, "", "OP-ORG-05", digest); found || err != nil {
 		return result, s.denied(ctx, request, snapshot, "OP-ORG-05", err)
 	}
-	employee := Employee{ID: value.NewID(), OrgID: org, Revision: 1, Lifecycle: command.Lifecycle}
 	version, err := s.prepare(ctx, employee, command.Profile, "")
 	if err != nil {
 		return Result{}, err
 	}
+	var write WorkforceWrite
+	var expectedCatalog, expectedGraph int64
+	if hasWorkforce {
+		write, err = s.prepareWorkforceWrite(ctx, org, snapshot.SubjectID, workforce)
+		if err != nil {
+			return Result{}, err
+		}
+		expectedCatalog, _ = value.Revision(workforce.ExpectedCatalogRevision)
+		expectedGraph, _ = value.Revision(workforce.ExpectedGraphRevision)
+	}
 	var result Result
 	err = s.Store.WithTx(ctx, org, func(tx Tx) error {
+		if hasWorkforce {
+			if err := tx.LockGraph(ctx, org); err != nil {
+				return err
+			}
+		}
 		if err := tx.LockSubjects(ctx, org, []string{snapshot.SubjectID}); err != nil {
 			return err
 		}
@@ -111,6 +129,17 @@ func (s *Service) Create(ctx context.Context, request Request, org string, comma
 			return err
 		}
 		result = Result{ID: employee.ID, Revision: "1"}
+		if hasWorkforce {
+			if err := s.authorizeWorkforceEndpoints(ctx, tx, request, current, workforce); err != nil {
+				return err
+			}
+			_, graphRevision, employeeRevisions, err := tx.CommitWorkforceChange(ctx, org, expectedCatalog, expectedGraph, map[string]int64{employee.ID: 1}, write)
+			if err != nil {
+				return err
+			}
+			result.WorkforceRevision = strconv.FormatInt(employeeRevisions[employee.ID], 10)
+			result.GraphRevision = strconv.FormatInt(graphRevision, 10)
+		}
 		if err := tx.SaveReceipt(ctx, org, current.SubjectID, "OP-ORG-05", request.Key, Receipt{Digest: digest, Result: result}); err != nil {
 			return err
 		}
@@ -120,6 +149,27 @@ func (s *Service) Create(ctx context.Context, request Request, org string, comma
 		return Result{}, s.denied(ctx, request, snapshot, "OP-ORG-05", err)
 	}
 	return result, nil
+}
+
+func initialWorkforceCommand(command CreateCommand, employeeID string) (WorkforceChangeCommand, bool) {
+	hasWorkforce := command.StaffCode != nil || command.ManagerEmployeeID != nil
+	if !hasWorkforce || command.ExpectedCatalogRevision == nil || command.ExpectedGraphRevision == nil {
+		return WorkforceChangeCommand{}, hasWorkforce
+	}
+	validFrom := command.Lifecycle.ValidFrom
+	workforce := WorkforceChangeCommand{
+		ExpectedCatalogRevision:  *command.ExpectedCatalogRevision,
+		ExpectedGraphRevision:    *command.ExpectedGraphRevision,
+		ExpectedEmployeeRevision: map[string]string{employeeID: "1"},
+	}
+	if command.StaffCode != nil {
+		workforce.Changes = append(workforce.Changes, WorkforceChangeItem{Action: "add", Kind: "identifier", EmployeeID: employeeID, StaffCode: command.StaffCode, ValidFrom: &validFrom, ValidTo: command.Lifecycle.ValidTo})
+	}
+	if command.ManagerEmployeeID != nil {
+		reportingKind := "administrative"
+		workforce.Changes = append(workforce.Changes, WorkforceChangeItem{Action: "add", Kind: "reporting", EmployeeID: employeeID, ManagerEmployeeID: command.ManagerEmployeeID, ReportingKind: &reportingKind, ValidFrom: &validFrom, ValidTo: command.Lifecycle.ValidTo})
+	}
+	return workforce, true
 }
 func (s *Service) Read(ctx context.Context, request Request, id, asOf string, includeProfile bool) (View, error) {
 	if _, err := s.Session(ctx, request, ""); err != nil {

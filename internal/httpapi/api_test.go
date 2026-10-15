@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -110,6 +111,48 @@ func TestAPIProfileCreateReloadCorrectionAndSafeRejection(t *testing.T) {
 			apiSend(t, f, apiRequest(t, f, f.Stranger, "GET", get, "", ""), 404, &forbidden)
 			if f.KMS.Calls.Load() != before || forbidden["code"] != "NOT_FOUND" {
 				t.Fatal("unreadable HTTP object contacted unavailable KMS or leaked wrong error")
+			}
+		})
+	}
+}
+
+func TestAPIEmployeeCreateAtomicallyAddsStaffCodeAndDirectManager(t *testing.T) {
+	for _, backend := range []string{"sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) {
+			f := testsupport.NewHarness(t, backend)
+			path := "/api/v1/orgs/" + f.OrgID + "/employees"
+			var manager organization.Result
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, createJSON, value.NewID()), http.StatusCreated, &manager)
+
+			body := `{"profile":{"local_name":"SYNTHETIC_ATOMIC_EMPLOYEE"},"lifecycle":{"valid_from":"2026-10-11","valid_to":"2026-12-01"},"staff_code":"ATOMIC-0007","manager_employee_id":"` + manager.ID + `","expected_catalog_revision":"1","expected_graph_revision":"1"}`
+			key := value.NewID()
+			var made, replay map[string]string
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, body, key), http.StatusCreated, &made)
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, body, key), http.StatusCreated, &replay)
+			if made["id"] == "" || made["profile_revision"] != "1" || made["workforce_revision"] != "2" || made["graph_revision"] != "2" || !reflect.DeepEqual(made, replay) {
+				t.Fatalf("atomic employee create receipt = %#v replay=%#v", made, replay)
+			}
+			if f.Count(t, "employee") != 2 || f.Count(t, "employee_business_identifier") != 1 || f.Count(t, "reporting_line") != 1 || f.Count(t, "structure_change") != 1 {
+				t.Fatal("employee, identifier, and manager relation were not one committed unit")
+			}
+
+			var view organization.View
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodGet, "/api/v1/employees/"+made["id"]+"?as_of=2026-10-11&include_profile=true", "", ""), http.StatusOK, &view)
+			if len(view.Identifiers) != 1 || view.Identifiers[0].StaffCode != "ATOMIC-0007" || view.Identifiers[0].ValidTo == nil || *view.Identifiers[0].ValidTo != "2026-12-01" ||
+				view.DirectManager == nil || view.DirectManager.ManagerEmployeeID != manager.ID || view.DirectManager.ValidTo == nil || *view.DirectManager.ValidTo != "2026-12-01" {
+				t.Fatalf("bounded atomic employee facts were not readable: %#v", view)
+			}
+
+			conflict := `{"profile":{"local_name":"SYNTHETIC_CONFLICT"},"lifecycle":{"valid_from":"2026-10-11","valid_to":null},"staff_code":"ATOMIC-0007","expected_catalog_revision":"1","expected_graph_revision":"2"}`
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, conflict, value.NewID()), http.StatusConflict, nil)
+			if f.Count(t, "employee") != 2 || f.Count(t, "employee_profile_version") != 2 {
+				t.Fatal("staff-code conflict left a partial employee")
+			}
+
+			invalidManager := `{"profile":{"local_name":"SYNTHETIC_INVALID_MANAGER"},"lifecycle":{"valid_from":"2026-10-11","valid_to":null},"staff_code":"ATOMIC-0008","manager_employee_id":"10000000-0000-4000-8000-000000000099","expected_catalog_revision":"1","expected_graph_revision":"2"}`
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, path, invalidManager, value.NewID()), http.StatusNotFound, nil)
+			if f.Count(t, "employee") != 2 || f.Count(t, "employee_business_identifier") != 1 {
+				t.Fatal("invalid manager left partial employee or identifier")
 			}
 		})
 	}

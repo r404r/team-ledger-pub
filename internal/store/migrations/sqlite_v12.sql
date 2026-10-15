@@ -175,6 +175,8 @@ CREATE TRIGGER audit_receiver_ledger_no_update BEFORE UPDATE ON audit_receiver_l
 CREATE TRIGGER audit_receiver_ledger_no_delete BEFORE DELETE ON audit_receiver_ledger BEGIN SELECT RAISE(ABORT,'immutable audit receiver ledger'); END;
 CREATE TABLE audit_receiver_status(id INTEGER PRIMARY KEY CHECK(id=1),deployment_id TEXT NOT NULL CHECK(length(deployment_id) BETWEEN 3 AND 64),ready INTEGER NOT NULL CHECK(ready IN(0,1)),checked_at INTEGER NOT NULL) STRICT;
 ALTER TABLE command_receipt ADD COLUMN digest_key_id TEXT NOT NULL;
+ALTER TABLE command_receipt ADD COLUMN result_workforce_revision INTEGER CHECK(result_workforce_revision IS NULL OR result_workforce_revision>0);
+ALTER TABLE command_receipt ADD COLUMN result_graph_revision INTEGER CHECK(result_graph_revision IS NULL OR result_graph_revision>0);
 ALTER TABLE grant_command_receipt ADD COLUMN digest_key_id TEXT NOT NULL;
 ALTER TABLE interview_receipt ADD COLUMN digest_key_id TEXT NOT NULL;
 ALTER TABLE compensation_command_receipt ADD COLUMN digest_key_id TEXT NOT NULL;

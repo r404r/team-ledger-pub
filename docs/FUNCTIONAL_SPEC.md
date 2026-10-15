@@ -355,13 +355,15 @@ DEV-028 T1将业务有效期投影日收敛为认证态顶部全局“查看日�
 
 DEV-028 T2将员工目录收敛为业务查询页：初次显示当前获准在职员工，空条件“显示全部员工”包含全部生命周期状态；姓名/Staff Code、Department、状态和每页数量为主要筛选，员工ID收进高级筛选。目录只在当前`pii.read`成立时自动请求并显示受保护资料，不再要求用户理解“请求PII”；结果用表格、空状态、当前页及前后游标分页呈现，不显示未授权总数。组织数据revision移入“数据状态”，批量JSON维护入口默认折叠。员工详情链接同时触发应用级路由并带合法历史查看日期，应用内和新标签页均读取相同`as_of`，不再出现空白详情。
 
+DEV-028 T3将创建人员收敛为一次原子业务动作：创建页必填全集团Staff Code，可从当前获准员工中查找并选择直属主管/HOD，也可明确无直属主管。OP-ORG-05同一事务写profile/lifecycle、canonical identifier及可选administrative reporting；Staff Code冲突、主管不存在/跨组织/无权引用或revision变化时不留下半成品员工。成功后页面只以receipt确认提交，再按当前授权和查看日期重读完整资料；命令推进组织图导致本次会话auth epoch变化时，主体与org不变且重核对成功才继续。
+
 字段分类：`M` 为受 scope 约束但允许必要明文的结构 metadata（ID、关系、日期、状态、revision、记录时间）；`P` 为加密 PII/姓名/联系方式及敏感职位资料；`N` 为加密面谈/行动文本，按三个分区授权；`F` 为加密薪酬/奖金/原因/凭证/扩展；`A` 为加密 AI 文本与最小输入；`U` 为脱敏授权/审计 metadata。即使是 M/U 也不是公开数据；内容不得因字段名称“备注”变为 M。
 
 | 页面 ID / feature | 入口、字段及数据来源 | 详情/表单与操作条件 |
 | --- | --- | --- |
 | P-ORG-01 / F-ORG-001 | v12“组织树”：BG/Division/Department、employee安全ID、边/生命周期、as_of与graph revision；label另需PII，不返employee profile | root department/depth≤3/上限后重载；目录变更用OP-ORG-09，employee assignment/reporting用OP-ORG-10；不建team或自动grant |
-| P-ORG-02 / F-ORG-001 | v12“员工目录”：ID、lifecycle、as_of assignment/reporting；获PII权才含双语姓名/联系/职位正文 | department/lifecycle/as_of及body q有界过滤；创建员工OP-ORG-05，进入详情/历史不预载其他敏感域 |
-| P-ORG-03 / F-ORG-001及员工相关feature | v12资料/profile revision、工号/雇佣/教育、as_of单一任职、Direct Manager/HOD及历史；各工作台独立链接 | profile用OP-ORG-08；组合主数据用OP-ORG-10；薪酬/面谈/奖金/AI各自授权/分页，不互相转授 |
+| P-ORG-02 / F-ORG-001 | v12“员工目录”：ID、lifecycle、as_of assignment/reporting；获PII权才含双语姓名/联系/职位正文 | department/lifecycle/as_of及body q有界过滤；创建页通过OP-ORG-05原子提交profile/lifecycle、Staff Code及可选直属主管，进入详情/历史不预载其他敏感域 |
+| P-ORG-03 / F-ORG-001及员工相关feature | v12资料/profile revision、工号/雇佣/教育、as_of单一任职、Direct Manager/HOD及历史；各工作台独立链接 | 初建Staff Code/主管随OP-ORG-05；profile更正用OP-ORG-08，后续组合主数据用OP-ORG-10；薪酬/面谈/奖金/AI各自授权/分页，不互相转授 |
 | P-INT-01 / F-INT-001 | 当前主导航`/interviews`员工ID选择、员工面谈列表/安排页、`/interviews/:id`详情；metadata及分区/授权版本/行动各自独立 | 8 INT OP已实装；列表/详情自己的有限操作提示不依赖目录read。状态/补录、显式supersedes/理由更正、独立source批准与人工发布、额外授权NDJSON、原key/body结果确认；清理/冲突/partial明确呈现 |
 | P-COMP-01 / F-COMP-001 | 已固定`/employees/:employee_id/compensation`；明确as_of/from/to四栏：现状、未来批准、当前提案、immutable批准/完整纠错，所选提案原史另显式有界页 | 5OP/initial-adjustment-correction/member_key/独立状态转换/精确对象NDJSON/grant已接通；当前快照不内嵌原史，旧修订页替换不累积，head/cursor变更销毁旧body需人工重查。无币种/税制默认，409不自动rebase |
 | P-BONUS-01 / F-BONUS-001 | DEV-010固定代码路由`/employees/:employee_id/bonuses`；目标、奖励、支付/冲销、余额/异常、扩展分离（F，OP-BONUS-01），日期/状态（M） | 目标 OP-BONUS-02/07、奖励 OP-BONUS-03/04/05、支付 OP-BONUS-06、有限扩展 OP-BONUS-08；能力分别检查，命令前重验会话并按bonus/comp revision CAS，不放一个“财务编辑”总开关 |
@@ -451,13 +453,13 @@ flowchart LR
 
 目录默认只显示业务所需字段；教育、工号、财务字段分别经过PII/financial授权。批量导入以组织级Staff Code做全集团精确匹配，姓名只供人工核对，绝不作为身份键。
 
-目标员工主数据通过OP-ORG-09查询并维护`法分公司`、固定Location、固定三层org unit、job family/career level及固定education level目录；v12的OP-ORG-10是唯一员工主数据/任职组合写，可在一个typed set原子提交identifier、employment、education、canonical job assignment/position、employee lifecycle及administrative/dotted reporting。直属主管/HOD由同一administrative reporting fact投影。目录、员工事实、组织图各有revision，命令显式列全依赖；没有“直接改Excel一行”或跨HTTP伪原子。Salary range仍由OP-COMP-11维护。
+目标员工主数据通过OP-ORG-09查询并维护`法分公司`、固定Location、固定三层org unit、job family/career level及固定education level目录；v12的OP-ORG-10是后续员工主数据/任职组合写，可在一个typed set原子提交identifier、employment、education、canonical job assignment/position、employee lifecycle及administrative/dotted reporting。OP-ORG-05仅在初建员工时复用同一canonical规则原子写必填Staff Code和可选administrative manager；不另建第二套identifier/reporting事实。直属主管/HOD由同一administrative reporting fact投影。目录、员工事实、组织图各有revision，命令显式列全依赖；没有“直接改Excel一行”或跨HTTP伪原子。Salary range仍由OP-COMP-11维护。
 
 ### 流程与输入/输出
 
 1. v12不执行v11→v12升级或数据merge：在新的空SQLite文件或空PostgreSQL schema安装一份完整v12 baseline，旧开发数据库不作为启动输入。v12只创建Business Group→Division→Department、canonical job assignment及新授权类型；team/membership/position旧表、路由、scope/ref和decoder不进入新baseline。需要开发数据时仅以合成seed或v12 API重建。
-2. 创建人员记录并维护姓名、联系/必要资料等PII；职位和任职归属作为有效期事实维护，不只在人员表上覆盖一个“当前职位”。具体可收集PII字段由数据最小化政策确认。
-3. OP-ORG-10在一个guard事务维护全集团Staff Code owner、employment、education、单一canonical job assignment/position和administrative/dotted reporting；页面Direct Manager/HOD共同读取同一administrative fact。普通转岗可在同一命令结束旧employment/assignment/reporting并新增后继，任一失败全部回滚。
+2. 创建页面以一个OP-ORG-05命令提交姓名、联系资料、生命周期、必填Staff Code及可选直属主管；profile、identifier、administrative reporting、revisions、receipt和audit同事务提交或全部回滚，不自动建立assignment或grant。
+3. OP-ORG-10在一个guard事务维护初建后的Staff Code换号/复用、employment、education、单一canonical job assignment/position和administrative/dotted reporting；页面Direct Manager/HOD共同读取同一administrative fact。普通转岗可在同一命令结束旧employment/assignment/reporting并新增后继，任一失败全部回滚。
 4. 树/目录/详情按`as_of`查询有效任职；组织历史按UTC `recorded_at`录入窗口查询，保留每项独立有效期及原任期ID。组织变更在原子提交中推进graph/相关epoch，每请求按服务端捕获的当前组织业务日验证scope/绑定任期，未来结束不提前失格，当前结束或replace不等调度器；不自动为新经理创建grant。
 
 输入包括org/employee、BG/Division/Department、职位/资料、关系类别、有效区间和编辑版本；输出是已授权的三层树、人员与历史投影、有效日期、版本及冲突说明。敏感PII由 F-SEC-001保护，非敏感层级资料也必须受scope约束。
@@ -473,17 +475,17 @@ flowchart LR
 
 ### 页面操作与原子结构变更
 
-P-ORG-01/P-ORG-02通过OP-ORG-09读取或维护BG/Division/Department、法分公司及job family/career level目录；Location和education是固定seed。员工由OP-ORG-05创建最小profile/lifecycle，不隐式建assignment/manager/grant；后续员工主数据/任职/reporting只经OP-ORG-10。
+P-ORG-01/P-ORG-02通过OP-ORG-09读取或维护BG/Division/Department、法分公司及job family/career level目录；Location和education是固定seed。创建页先读取catalog/graph revision及当前获准主管候选，再由OP-ORG-05在一个事务创建profile/lifecycle、Staff Code identifier和可选administrative reporting；不隐式建assignment或grant。后续员工主数据/任职/reporting只经OP-ORG-10。
 
-P-ORG-03的双语姓名/联系方式更正是独立OP-ORG-08：以profile revision完整替换获准v2字段并追加密文版本，不改组织图。profile更正与OP-ORG-10仍是两个独立命令，不能声称一个原子“全部资料＋结构保存”。
+P-ORG-03的双语姓名/联系方式更正是独立OP-ORG-08：以profile revision完整替换获准v2字段并追加密文版本，不改组织图。初建组合仅限OP-ORG-05明确列出的Staff Code/主管；后续profile更正与OP-ORG-10仍是两个独立命令，不能把任意资料与结构保存拼成跨HTTP原子动作。
 
-OP-ORG-09/10表单逐行展示typed action、owner/endpoints、旧ref、半开区间及全部expected revisions，1..100项。普通转岗由一个OP-ORG-10结束旧employment/assignment/reporting并新增后继；replace保原事实/替代链，不自动建立grant。每个affected employee/reporting endpoint须当前组织读写，identifier/education/position载荷另需PII；本地keyd加密准备在guard外，事务内重验资格/版本，全组facts/projection/revisions/epochs/receipt/audit一起commit或rollback。
+OP-ORG-05与OP-ORG-09/10都使用canonical identifier/reporting规则和相同graph/catalog/employee revisions。初建事务先写尚不可见的新employee/profile，再核对manager endpoint，最后提交identifier/reporting、graph/employee revisions、一个OP-ORG-05 receipt及audit；任一检查失败整笔rollback。OP-ORG-09/10表单逐行展示typed action、owner/endpoints、旧ref、半开区间及全部expected revisions，1..100项。普通转岗由一个OP-ORG-10结束旧employment/assignment/reporting并新增后继；replace保原事实/替代链，不自动建立grant。每个affected employee/reporting endpoint须当前组织读写，identifier/education/position载荷另需PII；本地keyd加密准备在guard外，事务内重验资格/版本，全组facts/projection/revisions/epochs/receipt/audit一起commit或rollback。
 
 v12有限PII加密载荷为`pii.org_unit_label.v1`、`pii.legal_entity_label.v1`、`pii.job_assignment_position.v1`、`pii.structure_reason.v1`及profile/identifier/education schema；全部绑定exact owner/AAD。面谈reason与薪酬batch import raw/rows同样必须使用技术规范唯一registry，不得临时发明schema/context。结果不确定只明确重放v12原key/body；先重验当前scope/PII/authority和digest，再确认receipt，不产生“重新授权ticket”。
 
 | 源事实/投影 | 动作 | 前置 | 目标与不可变事实 | 拒绝 |
 | --- | --- | --- | --- | --- |
-| 无org unit/employee | 创建OP-ORG-09/05 | scope、类别写权、合法生命周期 | 新稳定ID；创建不自动任职或授权 | 无权、非法层级/PII/日期；无半建对象 |
+| 无employee | 创建OP-ORG-05 | OrgR/OrgW、PIIR/PIIW、合法profile/lifecycle、Staff Code、catalog/graph revisions；可选主管另需当前OrgR | 新稳定ID、profile、identifier和可选administrative reporting同Tx；不自动任职或授权 | 无权、非法PII/日期、工号冲突、主管无效/跨org、旧revision；无半建对象 |
 | 已有profile revision | 更正PII / OP-ORG-08 | employee PII读写、purpose、expected revision、v2 schema | append加密profile、CAS/audit原子；图不变 | 越权、旧revision、未知字段 |
 | org-unit目录 | OP-ORG-09 add/end/replace | catalog/graph revisions、完整窗口 | BG→Division→Department事实及历史 | 跳级、多父、环、仍被引用却停用 |
 | 员工主数据/任职/reporting | OP-ORG-10 add/end/replace | graph/catalog/employee revisions与全部owner授权 | 一个composite change/receipt；旧历史保留 | 任何invalid ref/重叠/环/旧revision，零部分事实 |
@@ -507,8 +509,8 @@ P-ORG-03资料页标`as_of`与当前授权判断日；profile是当前获准版�
 | AC-ORG-04 | P-ORG-01；OP-ORG-09/10 | OP-ORG-09两客户端持同旧graph/catalog revisions改父子，最多一成功；OP-ORG-10两客户端持同旧employee revision改任职，最多一成功。另一409，均无非法图/部分事实 | DEV-015候选CAS/rollback双库已验 |
 | AC-ORG-05 | P-ORG-03/P-SEC-01/P-INT-01/P-COMP-01；OP-ORG-10/06/07、OP-SEC-02/03、INT正文OP、OP-COMP-01/02 | 换M2后旧M1历史查询不回退当前授权；再任职不复活旧grant，新经理无独立交接不看旧正文；金融不继承经理身份 | reporting-line relation-bound与既有对象授权已回归；department/job-assignment授权仍见AC-ORG-12 |
 | AC-ORG-06 | P-ORG-02/03；OP-ORG-04/06/10 | 重叠assignment/secondary拒；无目录权拒，无PII可读metadata但不得搜profile/职位正文；q只POST、有界500，cursor换上下文失效；停department越界整组拒 | DEV-015候选双库/API/UI已验 |
-| AC-ORG-07 | P-ORG-03；OP-ORG-05/06/08 | 创建双语profile后以revision完整更正，追加加密历史/审计，图不变；同旧版本最多一成功，越权/未知字段拒绝；创建非upsert | DEV-015 profile v2密文/API已验 |
-| AC-ORG-08 | P-ORG-02/03；OP-ORG-05/06/07/10 | 创建本地姓名“合成员工甲”＋英文名“Example A”及文本工号`\"0007\"`；两姓名独立往返。该员工换为`\"0008\"`后rehire可重新启用本人旧`\"0007\"`，但另一employee在任何日期取得`\"0007\"`均整组拒绝；姓名不参与身份匹配，缺PII权不显示/解析工号 | DEV-015候选双库/API/UI及PII拒绝已验 |
+| AC-ORG-07 | P-ORG-03；OP-ORG-05/06/08 | 创建双语profile、Staff Code及可选直属主管后重读权威详情；再以profile revision完整更正，追加加密历史/审计。创建任一identifier/manager失败零部分员工；同旧更正版本最多一成功，越权/未知字段拒绝；创建非upsert | DEV-015 profile v2密文/API；DEV-028原子创建SQLite API/UI已验，PostgreSQL待真实DSN |
+| AC-ORG-08 | P-ORG-02/03；OP-ORG-05/06/07/10 | 原子创建本地姓名“合成员工甲”＋英文名“Example A”及文本工号`\"0007\"`；两姓名和工号独立往返。该员工换为`\"0008\"`后rehire可重新启用本人旧`\"0007\"`，但另一employee在任何日期取得`\"0007\"`均整组拒绝；姓名不参与身份匹配，缺PII权不显示/解析工号 | DEV-015候选双库/API/UI及PII拒绝；DEV-028创建组合SQLite回归已验，PostgreSQL待真实DSN |
 | AC-ORG-09 | P-ORG-03；OP-ORG-06/07/09/10 | employee先hire到`法分公司`/Shanghai，结束后rehire到`法分公司`/Tokyo；指定日期投影唯一并保留全部spell。Wuxi可选，未知Location或非`法分公司`Branch拒绝；first/current employment dates分别可解释 | DEV-015候选双库/API/UI已验 |
 | AC-ORG-10 | P-ORG-01/02/03；OP-ORG-01/04/07/09/10 | SQLite新文件和PG空schema分别安装v12，合成建立BG→Division→Department并写一个canonical assignment；schema/API不存在team第四层、team scope/ref、OP-ORG-02/03 writer。以v11 DB启动须明确`SCHEMA_VERSION_UNSUPPORTED`且零写入，不自动升级/merge/清空；换用空v12 DB后真实API/UI成功 | DEV-015 clean baseline、旧schema拒绝、两库/API/UI已验 |
 | AC-ORG-11 | P-ORG-03；OP-ORG-06/07/09/10 | 先记录Bachelor，再记录日期更早的Master和日期更晚的Diploma，Highest Education为Master；未知level拒绝。Direct Manager与HOD读出同一administrative reporting fact且不授financial；独立HOD kind或不同人员拒绝。新assignment含canonical position payload，department不一致/secondary/并发旧revision整组拒绝 | DEV-015候选双库/API/UI已验 |

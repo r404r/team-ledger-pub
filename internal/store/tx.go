@@ -146,7 +146,17 @@ func (t *transaction) SaveReceipt(ctx context.Context, org, subject, op, key str
 	if org != t.org || err != nil || rev < 1 || strconv.FormatInt(rev, 10) != r.Result.Revision {
 		return fault.Invalid
 	}
-	_, err = t.tx.ExecContext(ctx, t.sql("INSERT INTO command_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_id,result_revision,digest_key_id) VALUES(?,?,?,?,?,?,?,?,?)", "INSERT INTO command_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_id,result_revision,digest_key_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)"), org, subject, op, key, r.Digest, t.commandMACKey.Version, r.Result.ID, rev, t.commandMACKey.KeyID)
+	var workforceRevision, graphRevision any
+	if r.Result.WorkforceRevision != "" || r.Result.GraphRevision != "" {
+		workforce, workforceErr := strconv.ParseInt(r.Result.WorkforceRevision, 10, 64)
+		graph, graphErr := strconv.ParseInt(r.Result.GraphRevision, 10, 64)
+		if workforceErr != nil || graphErr != nil || workforce < 1 || graph < 1 ||
+			strconv.FormatInt(workforce, 10) != r.Result.WorkforceRevision || strconv.FormatInt(graph, 10) != r.Result.GraphRevision {
+			return fault.Invalid
+		}
+		workforceRevision, graphRevision = workforce, graph
+	}
+	_, err = t.tx.ExecContext(ctx, t.sql("INSERT INTO command_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_id,result_revision,result_workforce_revision,result_graph_revision,digest_key_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)", "INSERT INTO command_receipt(org_id,subject_id,operation,key,digest,digest_key_version,result_id,result_revision,result_workforce_revision,result_graph_revision,digest_key_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)"), org, subject, op, key, r.Digest, t.commandMACKey.Version, r.Result.ID, rev, workforceRevision, graphRevision, t.commandMACKey.KeyID)
 	return safeError(err)
 }
 func (t *transaction) Audit(ctx context.Context, a organization.Audit) error {

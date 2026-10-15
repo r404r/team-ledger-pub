@@ -15,6 +15,8 @@ const EMPLOYEE_PATH = `/api/v1/employees/${EMPLOYEE_ID}`
 const OTHER_EMPLOYEE_PATH = `/api/v1/employees/${OTHER_EMPLOYEE_ID}`
 const CREATE_PATH = `/api/v1/orgs/${ORG_ID}/employees`
 const CORRECTION_PATH = `${EMPLOYEE_PATH}/profile`
+const CATALOG_PATH = `/api/v1/orgs/${ORG_ID}/workforce-catalogs`
+const DIRECTORY_PATH = `/api/v1/orgs/${ORG_ID}/employees/query`
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 const SESSION = {
@@ -278,19 +280,24 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     expect(page.text()).not.toContain(DRAFT_NAME)
   })
 
-  it('creates from user inputs and confirms saved details only by loading the real GET result', async () => {
+  it('atomically creates a profile, Staff Code, and selected direct manager before reloading the saved employee', async () => {
+    api.respond('GET', CATALOG_PATH, 200, {
+      as_of: AS_OF, catalog_revision: '4', graph_revision: '9',
+      legal_entities: [], locations: [], education_levels: [], job_families: [], career_levels: [], org_units: [], org_unit_parents: [],
+    })
+    api.respond('POST', DIRECTORY_PATH, 200, {
+      items: [{ ...employee({ ...ORIGINAL_PROFILE, local_name: '合成直属主管' }, '3', OTHER_EMPLOYEE_ID), identifiers: [{ id: REQUEST_ID, kind: 'staff_code', staff_code: 'MGR-001', valid_from: VALID_FROM, valid_to: null }] }],
+      next_cursor: null, as_of: AS_OF, consistency: 'current', authorization_date: AS_OF, graph_revision: '9', auth_epoch: '1', search_incomplete: false,
+    })
     const created = api.defer('POST', CREATE_PATH)
     const reloaded = api.defer('GET', EMPLOYEE_PATH)
-    const serverProfile = {
-      local_name: '合成服务端读取结果丙',
-      work_contact: { email: 'fixture-server@example.invalid', phone: '+00-000-0003' },
-      profile_summary: '服务端实际读取的合成摘要',
-    }
     const page = await openPage(`/?as_of=${AS_OF}`)
     await field(page, /本地姓名|local_name/i).setValue(DRAFT_NAME)
     await field(page, /邮箱|email/i).setValue('fixture-create@example.invalid')
     await field(page, /电话|phone/i).setValue('+00-000-0002')
     await field(page, /摘要|简介|profile_summary/i).setValue('合成创建摘要')
+    await field(page, /工号 · 必填/i).setValue('EMP-0007')
+    await field(page, /直属主管|HOD/i).setValue(OTHER_EMPLOYEE_ID)
     await field(page, /生效日|开始日期|valid_from/i).setValue(VALID_FROM)
     await field(page, /结束日|结束日期|valid_to/i).setValue('')
     await submitProfile(page)
@@ -305,22 +312,28 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
         profile_summary: '合成创建摘要',
       },
       lifecycle: { valid_from: VALID_FROM, valid_to: null },
+      staff_code: 'EMP-0007',
+      manager_employee_id: OTHER_EMPLOYEE_ID,
+      expected_catalog_revision: '4',
+      expected_graph_revision: '9',
     })
     expect(api.matching('GET', EMPLOYEE_PATH)).toHaveLength(0)
 
-    created.resolve(201, { id: EMPLOYEE_ID, profile_revision: '1' })
+    created.resolve(201, { id: EMPLOYEE_ID, profile_revision: '1', workforce_revision: '2', graph_revision: '10' })
+    api.session = { ...SESSION, auth_epoch: '2' }
     await settled()
-    const reads = api.matching('GET', EMPLOYEE_PATH)
-    expect(reads, 'A create receipt is not a saved profile: the UI must actually reload it').toHaveLength(1)
-    expect(reads[0]!.url.searchParams.get('as_of')).toBe(AS_OF)
-    expect(reads[0]!.url.searchParams.get('include_profile')).toBe('true')
-    expect(page.text()).not.toContain(serverProfile.local_name)
-
-    reloaded.resolve(200, employee(serverProfile))
+    expect(api.matching('GET', EMPLOYEE_PATH), 'A create receipt is not saved employee data: the UI must reload').toHaveLength(1)
+    const manager = { id: REQUEST_ID, employee_id: EMPLOYEE_ID, manager_employee_id: OTHER_EMPLOYEE_ID, kind: 'administrative', valid_from: VALID_FROM, valid_to: null }
+    reloaded.resolve(200, {
+      ...employee({ ...ORIGINAL_PROFILE, local_name: '合成服务端读取结果丙' }),
+      graph_revision: '10',
+      identifiers: [{ id: SUBJECT_ID, kind: 'staff_code', staff_code: 'EMP-0007', valid_from: VALID_FROM, valid_to: null }],
+      reporting_lines: [manager], direct_manager: manager, hod: manager,
+    })
     await settled()
-    expectDetails(page, serverProfile.local_name, '1')
-    expect(page.text()).toContain(serverProfile.work_contact.email)
-    expect(page.text()).toContain(serverProfile.profile_summary)
+    expectDetails(page, '合成服务端读取结果丙', '1')
+    expect(page.text()).toContain('EMP-0007')
+    expect(page.text()).toContain(OTHER_EMPLOYEE_ID)
     expect(page.text()).not.toContain(DRAFT_NAME)
     for (const request of api.requests) {
       expect(request.url.href).not.toContain(encodeURIComponent(DRAFT_NAME))
@@ -328,6 +341,105 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     }
   })
 
+  it.each([
+    [409, 'Staff Code 已被占用', false],
+    [404, '所选直属主管不存在', true],
+  ])('keeps the unsaved create form after an atomic create failure (%s)', async (status, expectedMessage, selectManager) => {
+    api.respond('GET', CATALOG_PATH, 200, {
+      as_of: AS_OF, catalog_revision: '4', graph_revision: '9',
+      legal_entities: [], locations: [], education_levels: [], job_families: [], career_levels: [], org_units: [], org_unit_parents: [],
+    })
+    api.respond('POST', DIRECTORY_PATH, 200, {
+      items: [{ ...employee({ ...ORIGINAL_PROFILE, local_name: '合成直属主管' }, '3', OTHER_EMPLOYEE_ID), identifiers: [{ id: REQUEST_ID, kind: 'staff_code', staff_code: 'MGR-001', valid_from: VALID_FROM, valid_to: null }] }],
+      next_cursor: null, as_of: AS_OF, consistency: 'current', authorization_date: AS_OF, graph_revision: '9', auth_epoch: '1', search_incomplete: false,
+    })
+    api.respond('POST', CREATE_PATH, status, {})
+    const page = await openPage(`/?as_of=${AS_OF}`)
+    await field(page, /本地姓名|local_name/i).setValue(DRAFT_NAME)
+    await field(page, /工号 · 必填/i).setValue('EMP-0007')
+    if (selectManager) await field(page, /直属主管|HOD/i).setValue(OTHER_EMPLOYEE_ID)
+    await field(page, /生效日|开始日期|valid_from/i).setValue(VALID_FROM)
+    await submitProfile(page)
+    expect(page.text()).toContain(expectedMessage)
+    expect(field(page, /本地姓名|local_name/i).element.value).toBe(DRAFT_NAME)
+    expect(field(page, /工号 · 必填/i).element.value).toBe('EMP-0007')
+    expect(window.location.pathname).toBe('/')
+  })
+
+
+  it('replays the exact create command after a lost response and same-identity epoch advance', async () => {
+    api.respond('GET', CATALOG_PATH, 200, {
+      as_of: AS_OF, catalog_revision: '4', graph_revision: '9',
+      legal_entities: [], locations: [], education_levels: [], job_families: [], career_levels: [], org_units: [], org_unit_parents: [],
+    })
+    api.respond('POST', DIRECTORY_PATH, 200, {
+      items: [], next_cursor: null, as_of: AS_OF, consistency: 'current', authorization_date: AS_OF, graph_revision: '9', auth_epoch: '1', search_incomplete: false,
+    })
+    const lost = api.defer('POST', CREATE_PATH)
+    const page = await openPage(`/?as_of=${AS_OF}`)
+    await field(page, /本地姓名|local_name/i).setValue(DRAFT_NAME)
+    await field(page, /工号 · 必填/i).setValue('EMP-0008')
+    await field(page, /生效日|开始日期|valid_from/i).setValue(VALID_FROM)
+    await submitProfile(page)
+    const first = api.matching('POST', CREATE_PATH)[0]!
+
+    lost.reject()
+    api.session = { ...SESSION, auth_epoch: '2' }
+    await settled()
+    expect(action(page, /确认原提交/).exists()).toBe(true)
+    expect(field(page, /工号 · 必填/i).attributes('readonly')).toBeDefined()
+    expect(action(page, /^查找$/).attributes('disabled')).toBeDefined()
+    api.sessionStatus = 502
+    await submitProfile(page)
+    expect(api.matching('POST', CREATE_PATH)).toHaveLength(1)
+    expect(action(page, /确认原提交/).exists()).toBe(true)
+    expect(field(page, /工号 · 必填/i).attributes('readonly')).toBeDefined()
+    api.sessionStatus = 200
+    api.respond('POST', CREATE_PATH, 504, {})
+    await submitProfile(page)
+    expect(action(page, /确认原提交/).exists()).toBe(true)
+    expect(field(page, /工号 · 必填/i).attributes('readonly')).toBeDefined()
+    api.respond('POST', CREATE_PATH, 201, { id: EMPLOYEE_ID, profile_revision: '1', workforce_revision: '2', graph_revision: '10' })
+    api.respond('GET', EMPLOYEE_PATH, 200, {
+      ...employee({ ...ORIGINAL_PROFILE, local_name: '合成断线确认结果' }),
+      graph_revision: '10',
+      identifiers: [{ id: REQUEST_ID, kind: 'staff_code', staff_code: 'EMP-0008', valid_from: VALID_FROM, valid_to: null }],
+    })
+    await submitProfile(page)
+
+    const commands = api.matching('POST', CREATE_PATH)
+    expect(commands).toHaveLength(3)
+    for (const replay of commands.slice(1)) {
+      expect(replay.headers.get('Idempotency-Key')).toBe(first.headers.get('Idempotency-Key'))
+      expect(replay.body).toEqual(first.body)
+    }
+    expectDetails(page, '合成断线确认结果', '1')
+  })
+
+  it('clears a selected manager when a new search no longer returns that candidate', async () => {
+    api.respond('GET', CATALOG_PATH, 200, {
+      as_of: AS_OF, catalog_revision: '4', graph_revision: '9',
+      legal_entities: [], locations: [], education_levels: [], job_families: [], career_levels: [], org_units: [], org_unit_parents: [],
+    })
+    api.respond('POST', DIRECTORY_PATH, 200, {
+      items: [{ ...employee({ ...ORIGINAL_PROFILE, local_name: '合成直属主管' }, '3', OTHER_EMPLOYEE_ID), identifiers: [{ id: REQUEST_ID, kind: 'staff_code', staff_code: 'MGR-001', valid_from: VALID_FROM, valid_to: null }] }],
+      next_cursor: null, as_of: AS_OF, consistency: 'current', authorization_date: AS_OF, graph_revision: '9', auth_epoch: '1', search_incomplete: false,
+    })
+    const page = await openPage(`/?as_of=${AS_OF}`)
+    const manager = field(page, /直属主管|HOD/i)
+    await manager.setValue(OTHER_EMPLOYEE_ID)
+    api.respond('GET', CATALOG_PATH, 200, {
+      as_of: AS_OF, catalog_revision: '4', graph_revision: '9',
+      legal_entities: [], locations: [], education_levels: [], job_families: [], career_levels: [], org_units: [], org_unit_parents: [],
+    })
+    api.respond('POST', DIRECTORY_PATH, 200, {
+      items: [], next_cursor: null, as_of: AS_OF, consistency: 'current', authorization_date: AS_OF, graph_revision: '9', auth_epoch: '1', search_incomplete: false,
+    })
+    await field(page, /查找主管/i).setValue('无人匹配')
+    await action(page, /^查找$/).trigger('click')
+    await settled()
+    expect(manager.element.value).toBe('')
+  })
   it('submits a complete correction, omits cleared optional fields, and reloads without rounding the revision', async () => {
     const oldRevision = '9007199254740993'
     const newRevision = '9007199254740994'

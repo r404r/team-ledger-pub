@@ -268,17 +268,23 @@ func (r reader) Version(ctx context.Context, org, employee, id string) (organiza
 func (r reader) Receipt(ctx context.Context, org, subject, op, key string) (organization.Receipt, bool, error) {
 	var receipt organization.Receipt
 	var rev int64
+	var workforceRevision, graphRevision sql.NullInt64
 	var keyVersion int
-	err := r.db.QueryRowContext(ctx, r.sql("SELECT digest,digest_key_version,result_id,result_revision FROM command_receipt WHERE org_id=? AND subject_id=? AND operation=? AND key=?", "SELECT digest,digest_key_version,result_id,result_revision FROM command_receipt WHERE org_id=$1 AND subject_id=$2 AND operation=$3 AND key=$4"), org, subject, op, key).Scan(&receipt.Digest, &keyVersion, &receipt.Result.ID, &rev)
+	err := r.db.QueryRowContext(ctx, r.sql("SELECT digest,digest_key_version,result_id,result_revision,result_workforce_revision,result_graph_revision FROM command_receipt WHERE org_id=? AND subject_id=? AND operation=? AND key=?", "SELECT digest,digest_key_version,result_id,result_revision,result_workforce_revision,result_graph_revision FROM command_receipt WHERE org_id=$1 AND subject_id=$2 AND operation=$3 AND key=$4"), org, subject, op, key).Scan(&receipt.Digest, &keyVersion, &receipt.Result.ID, &rev, &workforceRevision, &graphRevision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return receipt, false, nil
 	}
 	if err != nil {
 		return organization.Receipt{}, false, safeError(err)
 	}
-	if keyVersion != 1 || len(receipt.Digest) != 32 || rev < 1 {
+	if keyVersion != 1 || len(receipt.Digest) != 32 || rev < 1 || workforceRevision.Valid != graphRevision.Valid ||
+		workforceRevision.Valid && (workforceRevision.Int64 < 1 || graphRevision.Int64 < 1) {
 		return organization.Receipt{}, false, fault.Unavailable
 	}
 	receipt.Result.Revision = strconv.FormatInt(rev, 10)
+	if workforceRevision.Valid {
+		receipt.Result.WorkforceRevision = strconv.FormatInt(workforceRevision.Int64, 10)
+		receipt.Result.GraphRevision = strconv.FormatInt(graphRevision.Int64, 10)
+	}
 	return receipt, true, nil
 }

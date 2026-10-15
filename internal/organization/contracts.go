@@ -18,8 +18,12 @@ type Lifecycle struct {
 	ValidTo   *string `json:"valid_to"`
 }
 type CreateCommand struct {
-	Profile   Profile   `json:"profile"`
-	Lifecycle Lifecycle `json:"lifecycle"`
+	Profile                 Profile   `json:"profile"`
+	Lifecycle               Lifecycle `json:"lifecycle"`
+	StaffCode               *string   `json:"staff_code,omitempty"`
+	ManagerEmployeeID       *string   `json:"manager_employee_id,omitempty"`
+	ExpectedCatalogRevision *string   `json:"expected_catalog_revision,omitempty"`
+	ExpectedGraphRevision   *string   `json:"expected_graph_revision,omitempty"`
 }
 type UpdateCommand struct {
 	ExpectedRevision string  `json:"expected_profile_revision"`
@@ -46,8 +50,10 @@ type Request struct {
 	Purpose, Key, RequestID string
 }
 type Result struct {
-	ID       string `json:"id"`
-	Revision string `json:"profile_revision"`
+	ID                string `json:"id"`
+	Revision          string `json:"profile_revision"`
+	WorkforceRevision string `json:"workforce_revision,omitempty"`
+	GraphRevision     string `json:"graph_revision,omitempty"`
 }
 type View struct {
 	ID                string              `json:"id"`

@@ -155,6 +155,8 @@ CREATE FUNCTION audit_receiver_immutable() RETURNS trigger LANGUAGE plpgsql AS $
 CREATE TRIGGER audit_receiver_ledger_no_update BEFORE UPDATE OR DELETE ON audit_receiver_ledger FOR EACH ROW EXECUTE FUNCTION audit_receiver_immutable();
 CREATE TABLE audit_receiver_status(id BIGINT PRIMARY KEY CHECK(id=1),deployment_id TEXT NOT NULL CHECK(length(deployment_id) BETWEEN 3 AND 64),ready BOOLEAN NOT NULL,checked_at TIMESTAMPTZ NOT NULL);
 ALTER TABLE command_receipt ADD COLUMN digest_key_id TEXT NOT NULL;
+ALTER TABLE command_receipt ADD COLUMN result_workforce_revision BIGINT CHECK(result_workforce_revision IS NULL OR result_workforce_revision>0);
+ALTER TABLE command_receipt ADD COLUMN result_graph_revision BIGINT CHECK(result_graph_revision IS NULL OR result_graph_revision>0);
 ALTER TABLE grant_command_receipt ADD COLUMN digest_key_id TEXT NOT NULL;
 ALTER TABLE interview_receipt ADD COLUMN digest_key_id TEXT NOT NULL;
 ALTER TABLE compensation_command_receipt ADD COLUMN digest_key_id TEXT NOT NULL;

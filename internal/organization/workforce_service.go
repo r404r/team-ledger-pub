@@ -269,68 +269,9 @@ func (s *Service) ChangeWorkforce(ctx context.Context, request Request, org stri
 	if err != nil {
 		return WorkforceChangeResult{}, err
 	}
-	write := WorkforceWrite{ID: value.NewID(), OrgID: org, SubjectID: snapshot.SubjectID, RecordedAt: s.clock(), Items: make([]WorkforcePreparedItem, len(command.Changes))}
-	if command.Reason != nil {
-		payload, sealErr := s.sealWorkforceFact(ctx, org, "", write.ID, "structure_change", "org.structure.reason.v1", struct {
-			Reason string `json:"reason"`
-		}{Reason: *command.Reason})
-		if sealErr != nil {
-			return WorkforceChangeResult{}, sealErr
-		}
-		write.ReasonPayload = &payload
-	}
-	for i, item := range command.Changes {
-		prepared := WorkforcePreparedItem{Command: item, ID: value.NewID()}
-		if item.Action == "end" && item.Kind != "employee_lifecycle" {
-			prepared.ID = *item.Ref
-		}
-		switch item.Kind {
-		case "identifier":
-			if item.Action != "end" {
-				normalized, _ := NormalizeStaffCode(*item.StaffCode)
-				frame := []byte("staff-code\x00" + org + "\x00" + normalized)
-				if s.StaffCodeMAC != nil {
-					value, macErr := s.StaffCodeMAC(ctx, frame)
-					if macErr != nil || value.Version == 0 || value.KeyID == "" || len(value.Digest) != sha256.Size {
-						clear(value.Digest)
-						return WorkforceChangeResult{}, fault.Unavailable
-					}
-					prepared.Digest, prepared.DigestKeyID, prepared.DigestKeyVersion = value.Digest, value.KeyID, value.Version
-				} else {
-					mac := hmac.New(sha256.New, s.DigestKey)
-					_, _ = mac.Write(frame)
-					prepared.Digest, prepared.DigestKeyID, prepared.DigestKeyVersion = mac.Sum(nil), "legacy-process-key", 1
-				}
-				payload, sealErr := s.sealWorkforceFact(ctx, org, item.EmployeeID, prepared.ID, "employee_identifier", "pii.employee_identifier.v1", struct {
-					StaffCode string `json:"staff_code"`
-				}{StaffCode: normalized})
-				if sealErr != nil {
-					return WorkforceChangeResult{}, sealErr
-				}
-				prepared.Payload = &payload
-			}
-		case "education":
-			if item.Action != "end" {
-				payload, sealErr := s.sealWorkforceFact(ctx, org, item.EmployeeID, prepared.ID, "education_record", "pii.education.v1", struct {
-					Institution *string `json:"institution,omitempty"`
-					Field       *string `json:"field,omitempty"`
-					AwardDate   *string `json:"award_date,omitempty"`
-				}{item.Institution, item.Field, item.AwardDate})
-				if sealErr != nil {
-					return WorkforceChangeResult{}, sealErr
-				}
-				prepared.Payload = &payload
-			}
-		case "job_assignment":
-			if item.Action != "end" && item.Position != nil {
-				payload, sealErr := s.sealWorkforceFact(ctx, org, item.EmployeeID, prepared.ID, "job_assignment", "pii.job_assignment_position.v1", *item.Position)
-				if sealErr != nil {
-					return WorkforceChangeResult{}, sealErr
-				}
-				prepared.Payload = &payload
-			}
-		}
-		write.Items[i] = prepared
+	write, err := s.prepareWorkforceWrite(ctx, org, snapshot.SubjectID, command)
+	if err != nil {
+		return WorkforceChangeResult{}, err
 	}
 	var result WorkforceChangeResult
 	err = s.Store.WithTx(ctx, org, func(tx Tx) error {
@@ -377,6 +318,72 @@ func (s *Service) ChangeWorkforce(ctx context.Context, request Request, org stri
 	}
 	return result, nil
 }
+func (s *Service) prepareWorkforceWrite(ctx context.Context, org, subject string, command WorkforceChangeCommand) (WorkforceWrite, error) {
+	write := WorkforceWrite{ID: value.NewID(), OrgID: org, SubjectID: subject, RecordedAt: s.clock(), Items: make([]WorkforcePreparedItem, len(command.Changes))}
+	if command.Reason != nil {
+		payload, err := s.sealWorkforceFact(ctx, org, "", write.ID, "structure_change", "org.structure.reason.v1", struct {
+			Reason string `json:"reason"`
+		}{Reason: *command.Reason})
+		if err != nil {
+			return WorkforceWrite{}, err
+		}
+		write.ReasonPayload = &payload
+	}
+	for i, item := range command.Changes {
+		prepared := WorkforcePreparedItem{Command: item, ID: value.NewID()}
+		if item.Action == "end" && item.Kind != "employee_lifecycle" {
+			prepared.ID = *item.Ref
+		}
+		switch item.Kind {
+		case "identifier":
+			if item.Action != "end" {
+				normalized, _ := NormalizeStaffCode(*item.StaffCode)
+				frame := []byte("staff-code\x00" + org + "\x00" + normalized)
+				if s.StaffCodeMAC != nil {
+					macValue, err := s.StaffCodeMAC(ctx, frame)
+					if err != nil || macValue.Version == 0 || macValue.KeyID == "" || len(macValue.Digest) != sha256.Size {
+						clear(macValue.Digest)
+						return WorkforceWrite{}, fault.Unavailable
+					}
+					prepared.Digest, prepared.DigestKeyID, prepared.DigestKeyVersion = macValue.Digest, macValue.KeyID, macValue.Version
+				} else {
+					mac := hmac.New(sha256.New, s.DigestKey)
+					_, _ = mac.Write(frame)
+					prepared.Digest, prepared.DigestKeyID, prepared.DigestKeyVersion = mac.Sum(nil), "legacy-process-key", 1
+				}
+				payload, err := s.sealWorkforceFact(ctx, org, item.EmployeeID, prepared.ID, "employee_identifier", "pii.employee_identifier.v1", struct {
+					StaffCode string `json:"staff_code"`
+				}{StaffCode: normalized})
+				if err != nil {
+					return WorkforceWrite{}, err
+				}
+				prepared.Payload = &payload
+			}
+		case "education":
+			if item.Action != "end" {
+				payload, err := s.sealWorkforceFact(ctx, org, item.EmployeeID, prepared.ID, "education_record", "pii.education.v1", struct {
+					Institution *string `json:"institution,omitempty"`
+					Field       *string `json:"field,omitempty"`
+					AwardDate   *string `json:"award_date,omitempty"`
+				}{item.Institution, item.Field, item.AwardDate})
+				if err != nil {
+					return WorkforceWrite{}, err
+				}
+				prepared.Payload = &payload
+			}
+		case "job_assignment":
+			if item.Action != "end" && item.Position != nil {
+				payload, err := s.sealWorkforceFact(ctx, org, item.EmployeeID, prepared.ID, "job_assignment", "pii.job_assignment_position.v1", *item.Position)
+				if err != nil {
+					return WorkforceWrite{}, err
+				}
+				prepared.Payload = &payload
+			}
+		}
+		write.Items[i] = prepared
+	}
+	return write, nil
+}
 
 func (s *Service) authenticateWorkforceRoot(ctx context.Context, reader Reader, request Request, org string) (authz.Snapshot, error) {
 	if len(request.TokenHash) != 32 || reader == nil {
@@ -421,6 +428,13 @@ func (s *Service) authorizeWorkforceEndpoints(ctx context.Context, reader Reader
 	}
 	sort.Strings(employees)
 	for _, employee := range employees {
+		object, err := reader.Employee(ctx, employee)
+		if err != nil {
+			return err
+		}
+		if object.OrgID != root.OrgID {
+			return fault.NotFound
+		}
 		snapshot, err := reader.Security(ctx, request.TokenHash, "", employee)
 		if err != nil {
 			return err
