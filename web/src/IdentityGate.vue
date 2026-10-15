@@ -54,6 +54,10 @@ function setGlobalViewDate(value: string) {
   globalViewDate.value = value
   return true
 }
+function requestedViewDate() {
+  const values = new URL(window.location.href).searchParams.getAll('as_of')
+  return values.length === 1 && validDate(values[0]!) ? values[0]! : ''
+}
 function knownReturnRoute() {
   const url = new URL(window.location.href)
   let path: string
@@ -167,7 +171,7 @@ async function checkSession(preserveProtected = false) {
       return
     }
     session.value = next
-    if (!previous || !validDate(globalViewDate.value)) globalViewDate.value = next.business_date
+    if (!previous || !validDate(globalViewDate.value)) globalViewDate.value = requestedViewDate() || next.business_date
     if (next.identity_mode) identityMode.value = next.identity_mode
     phase.value = 'authenticated'
   } catch {

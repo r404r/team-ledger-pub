@@ -530,6 +530,55 @@
     text-transform: uppercase;
   }
 
+  #app .directory-search-panel {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+    align-items: end;
+  }
+  #app .directory-search-actions { display: flex; flex-wrap: wrap; gap: .65rem; }
+  #app .directory-access-note { margin: 0; color: var(--ink-600); font-size: .78rem; }
+  #app .directory-advanced { grid-column: 1 / -1; border-top: 1px solid var(--line-soft); padding-top: .7rem; }
+  #app .directory-advanced > summary,
+  #app .directory-data-state > summary { width: fit-content; color: var(--brand-700); font-size: .8rem; font-weight: 760; cursor: pointer; }
+  #app .directory-advanced > label { max-width: 30rem; margin-top: .7rem; }
+  #app .employee-directory-results { padding: 0; overflow: hidden; }
+  #app .directory-results-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    margin: 0;
+    padding: var(--space-4) clamp(1rem, 2.2vw, 1.45rem);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  #app .directory-results-header h2,
+  #app .directory-results-header p { margin: 0; }
+  #app .directory-results-header h2 { font-size: 1.05rem; }
+  #app .directory-results-header p { margin-top: .2rem; color: var(--ink-600); font-size: .78rem; }
+  #app .employee-table-wrap { width: 100%; overflow-x: auto; }
+  #app .employee-table { min-width: 65rem; margin: 0; border: 0; border-radius: 0; }
+  #app .employee-table td { vertical-align: middle; }
+  #app .employee-table td small { display: block; margin-top: .2rem; color: var(--ink-600); font-size: .72rem; }
+  #app .employee-name { color: var(--ink-900); font-weight: 760; }
+  #app .employee-detail-link { font-weight: 760; white-space: nowrap; }
+  #app .directory-empty { padding: clamp(2.5rem, 8vw, 5rem) 1rem; text-align: center; }
+  #app .directory-empty h3 { margin: 0 0 .4rem; }
+  #app .directory-empty p { max-width: 36rem; margin: 0 auto; color: var(--ink-600); }
+  #app .directory-pagination {
+    align-items: center;
+    justify-content: center;
+    margin: 0;
+    border-top: 1px solid var(--line-soft);
+    padding: var(--space-4);
+  }
+  #app .directory-pagination span { min-width: 5rem; color: var(--ink-700); font-size: .82rem; font-weight: 720; text-align: center; }
+  #app .directory-data-state { margin: 0 var(--space-4) var(--space-4); border-top: 1px solid var(--line-soft); padding-top: var(--space-3); }
+  #app .directory-data-state p { margin: .5rem 0 0; color: var(--ink-600); font-size: .78rem; }
+  #app .advanced-master-data { padding: 0; }
+  #app .advanced-master-data > details > summary { padding: var(--space-4); color: var(--brand-700); font-weight: 780; cursor: pointer; }
+  #app .advanced-master-data-body { border-top: 1px solid var(--line-soft); padding: var(--space-4); }
+  #app .advanced-master-data-body > h2:first-child { margin-top: 0; }
+
+
   .identity-shell {
     width: min(calc(100% - 2rem), var(--content));
     margin: 1rem auto 0;

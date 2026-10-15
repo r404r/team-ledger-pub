@@ -14,5 +14,7 @@
 - [DEV-026验证摘要](validation/DEV-026.md) · [双轮审查记录](reviews/DEV-026.md)
 - [DEV-027紧凑会话与安全面板](plans/DEV-027.md)：折叠交互、边界及进度。
 - [DEV-027验证摘要](validation/DEV-027.md) · [双轮审查记录](reviews/DEV-027.md)
+- [DEV-028全局查看日期与员工操作体验](plans/DEV-028.md)：全局日期、员工目录查询/分页及人员创建字段进度。
+- [DEV-028验证摘要](validation/DEV-028.md) · [串行审查记录](reviews/DEV-028.md)
 
 历史私有计划、review会话、本机路径和旧文档commit台账不复制到public仓库；它们不是当前产品契约。当前行为以本仓库源码、迁移、永久测试和上述文档为准。

@@ -15,7 +15,8 @@ type Employee = { id: string; org_id: string; profile_revision?: string; lifecyc
 type Tree = { org_id: string; as_of: string; authorization_date: string; graph_revision: string; auth_epoch: string; nodes: (Lifecycle & { id: string; code: string; kind: string; label?: string })[]; edges: (Lifecycle & { id: string; child_unit_id: string; parent_unit_id: string })[]; employees: { id: string; department_id: string; profile?: Profile }[] }
 type Directory = { items: Employee[]; next_cursor: string | null; as_of: string; consistency: 'current'; authorization_date: string; graph_revision: string; auth_epoch: string; search_incomplete: boolean }
 type History = { items: { id: string; actor_subject_id: string; recorded_at: string; graph_before: string; graph_after: string; reason?: string; items: { action: string; kind: string; id?: string; employee_id?: string; valid_from?: string; valid_to?: string | null; effective_to?: string | null; supersedes_id?: string }[] }[]; next_cursor: string | null; consistency: 'current'; authorization_date: string; graph_revision: string; auth_epoch: string }
-type Catalogs = { as_of: string; catalog_revision: string; graph_revision: string; legal_entities: unknown[]; locations: string[]; org_units: unknown[]; org_unit_parents: unknown[]; education_levels: unknown[]; job_families: unknown[]; career_levels: unknown[] }
+type CatalogEntry = Lifecycle & { id: string; code: string; label?: string; kind?: string }
+type Catalogs = { as_of: string; catalog_revision: string; graph_revision: string; legal_entities: CatalogEntry[]; locations: string[]; org_units: CatalogEntry[]; org_unit_parents: unknown[]; education_levels: CatalogEntry[]; job_families: CatalogEntry[]; career_levels: CatalogEntry[] }
 type Operation = { generation: number; controller: AbortController }
 type Preview = { endpoint: string; body: Record<string, unknown>; summary: string }
 
@@ -33,7 +34,10 @@ const phase = ref<'idle' | 'loading' | 'submitting'>('idle')
 const error = ref<string | null>(null)
 const notice = ref<string | null>(null)
 const preview = shallowRef<Preview | null>(null)
-const filters = reactive({ asOf: '', rootDepartment: '', depth: '3', limit: '50', labels: false, department: '', employee: '', lifecycle: 'active', q: '', profile: false, from: '', to: '' })
+const filters = reactive({ asOf: '', rootDepartment: '', depth: '3', limit: '50', labels: false, department: '', employee: '', lifecycle: 'active', q: '', from: '', to: '' })
+const appliedDirectory = reactive({ asOf: '', limit: '50', department: '', employee: '', lifecycle: 'active', q: '' })
+const directoryPage = ref(1)
+const directoryCursors = ref<string[]>([''])
 const catalogChanges = ref('[]')
 const workforceChanges = ref('[]')
 const employeeRevisions = ref('{}')
@@ -43,6 +47,20 @@ let alive = false
 
 const busy = computed(() => phase.value !== 'idle')
 const canWrite = computed(() => Boolean(session.value?.capabilities.includes('organization.write')))
+const canReadPII = computed(() => Boolean(session.value?.capabilities.includes('pii.read')))
+const departmentOptions = computed(() => catalogs.value?.org_units.filter(item => item.kind === 'department') ?? [])
+const catalogLabels = computed(() => {
+  const labels = new Map<string, string>()
+  for (const item of [...(catalogs.value?.org_units ?? []), ...(catalogs.value?.legal_entities ?? [])]) {
+    labels.set(item.id, item.label || item.code)
+  }
+  return labels
+})
+const directoryNames = computed(() => {
+  const names = new Map<string, string>()
+  for (const employee of directory.value?.items ?? []) names.set(employee.id, employee.profile?.local_name || employee.profile?.english_name || employee.id)
+  return names
+})
 const heading = computed(() => mode.value === 'tree' ? '组织树与主数据维护' : mode.value === 'directory' ? '员工目录' : '员工组织历史')
 const treeOutline = computed(() => {
   if (!tree.value) return []
@@ -75,7 +93,7 @@ async function request<T>(path: string, op: Operation, body?: Record<string, unk
   return result
 }
 async function readSession(op: Operation) {
-  const suffix = mode.value === 'history' && uuid.test(employeeID.value) ? `?employee_id=${employeeID.value}` : mode.value === 'directory' && uuid.test(filters.employee) ? `?employee_id=${filters.employee}` : ''
+  const suffix = mode.value === 'history' && uuid.test(employeeID.value) ? `?employee_id=${employeeID.value}` : mode.value === 'directory' && uuid.test(appliedDirectory.employee) ? `?employee_id=${appliedDirectory.employee}` : ''
   const next = await request<Session>(`/session${suffix}`, op)
   if (!next || !uuid.test(next.subject_id) || !uuid.test(next.org_id) || !revision.test(next.auth_epoch) || !next.csrf_token || !Array.isArray(next.capabilities)) throw new ApiFailure(503)
   session.value = next
@@ -92,12 +110,18 @@ function route() {
   const query = new URLSearchParams(location.search)
   filters.asOf = validDate(props.queryDate ?? '') ? props.queryDate! : query.get('as_of') ?? new Date().toISOString().slice(0, 10)
   if (parts.length === 3 && parts[0] === 'orgs' && parts[2] === 'tree' && uuid.test(parts[1]!)) { mode.value = 'tree'; orgID.value = parts[1]! }
-  else if (parts.length === 3 && parts[0] === 'orgs' && parts[2] === 'employees' && uuid.test(parts[1]!)) { mode.value = 'directory'; orgID.value = parts[1]! }
+  else if (parts.length === 3 && parts[0] === 'orgs' && parts[2] === 'employees' && uuid.test(parts[1]!)) {
+    mode.value = 'directory'
+    orgID.value = parts[1]!
+    Object.assign(appliedDirectory, { asOf: filters.asOf, limit: filters.limit, department: filters.department, employee: filters.employee, lifecycle: filters.lifecycle, q: filters.q })
+    directoryPage.value = 1
+    directoryCursors.value = ['']
+  }
   else if (parts.length === 3 && parts[0] === 'employees' && parts[2] === 'organization-history' && uuid.test(parts[1]!)) { mode.value = 'history'; employeeID.value = parts[1]! }
   else { mode.value = 'away'; return }
   void refresh()
 }
-async function refresh(cursor = '') {
+async function refresh(cursor = '', targetPage = 1) {
   if (mode.value === 'away' || !validDate(filters.asOf)) { error.value = '请填写有效业务查询日。'; return }
   const op = begin('loading')
   try {
@@ -109,19 +133,65 @@ async function refresh(cursor = '') {
       const catalogParams = new URLSearchParams({ as_of: filters.asOf, limit: '100' })
       ;[catalogs.value, tree.value] = await Promise.all([request<Catalogs>(`/orgs/${orgID.value}/workforce-catalogs?${catalogParams}`, op), request<Tree>(`/orgs/${orgID.value}/tree?${params}`, op)])
     } else if (mode.value === 'directory') {
-      const body: Record<string, unknown> = { as_of: filters.asOf, lifecycle: filters.lifecycle, limit: Number(filters.limit), include_profile: filters.profile }
-      if (filters.department) body.department_id = filters.department
-      if (filters.employee) body.employee_id = filters.employee
-      if (filters.q) body.q = filters.q
+      if (appliedDirectory.q && !currentSession.capabilities.includes('pii.read')) {
+        directory.value = null
+        error.value = '当前权限不能按姓名或 Staff Code 查询。'
+        return
+      }
+      const body: Record<string, unknown> = { as_of: appliedDirectory.asOf, lifecycle: appliedDirectory.lifecycle, limit: Number(appliedDirectory.limit), include_profile: currentSession.capabilities.includes('pii.read') }
+      if (appliedDirectory.department) body.department_id = appliedDirectory.department
+      if (appliedDirectory.employee) body.employee_id = appliedDirectory.employee
+      if (appliedDirectory.q) body.q = appliedDirectory.q
       if (cursor) body.cursor = cursor
-      directory.value = await request<Directory>(`/orgs/${orgID.value}/employees/query`, op, body)
-      catalogs.value = await request<Catalogs>(`/orgs/${orgID.value}/workforce-catalogs?as_of=${filters.asOf}&limit=100`, op)
+      const [nextCatalogs, nextDirectory] = await Promise.all([
+        request<Catalogs>(`/orgs/${orgID.value}/workforce-catalogs?as_of=${appliedDirectory.asOf}&limit=100`, op),
+        request<Directory>(`/orgs/${orgID.value}/employees/query`, op, body),
+      ])
+      catalogs.value = nextCatalogs
+      directory.value = nextDirectory
+      directoryPage.value = targetPage
+      directoryCursors.value[targetPage - 1] = cursor
     } else {
       const params = new URLSearchParams({ from: filters.from || filters.asOf, to: filters.to || new Date(new Date(`${filters.asOf}T00:00:00Z`).getTime() + 86400000).toISOString().slice(0, 10), limit: filters.limit })
       if (cursor) params.set('cursor', cursor)
       history.value = await request<History>(`/employees/${employeeID.value}/organization-history?${params}`, op)
     }
   } catch (cause) { if (current(op)) fail(cause) } finally { if (current(op)) { phase.value = 'idle'; controller = null } }
+}
+function searchDirectory() {
+  if (filters.q.trim() && !canReadPII.value) { error.value = '当前权限不能按姓名或 Staff Code 查询。'; return }
+  Object.assign(appliedDirectory, {
+    asOf: filters.asOf,
+    limit: filters.limit,
+    department: filters.department.trim(),
+    employee: filters.employee.trim(),
+    lifecycle: filters.lifecycle,
+    q: filters.q.trim(),
+  })
+  directory.value = null
+  directoryPage.value = 1
+  directoryCursors.value = ['']
+  void refresh()
+}
+function showAllEmployees() {
+  Object.assign(filters, { department: '', employee: '', lifecycle: 'all', q: '' })
+  searchDirectory()
+}
+function nextDirectoryPage() {
+  if (!directory.value?.next_cursor) return
+  void refresh(directory.value.next_cursor, directoryPage.value + 1)
+}
+function previousDirectoryPage() {
+  if (directoryPage.value <= 1) return
+  void refresh(directoryCursors.value[directoryPage.value - 2] ?? '', directoryPage.value - 1)
+}
+function employeeName(employee: Employee) { return employee.profile?.local_name || employee.profile?.english_name || employee.id }
+function staffCode(employee: Employee) { return employee.identifiers.find(identifier => identifier.kind === 'staff_code')?.staff_code || '—' }
+function activeEmployment(employee: Employee) { return employee.employment[0] }
+function activeAssignment(employee: Employee) { return employee.job_assignments[0] }
+function catalogLabel(id?: string) { return id ? catalogLabels.value.get(id) || id : '—' }
+function managerName(employee: Employee) {
+  return employee.direct_manager ? directoryNames.value.get(employee.direct_manager.manager_employee_id) || employee.direct_manager.manager_employee_id : '—'
 }
 function parseArray(text: string) { const value: unknown = JSON.parse(text); if (!Array.isArray(value) || value.length < 1 || value.length > 100) throw new ApiFailure(422); return value }
 function prepare(kind: 'catalog' | 'workforce') {
@@ -146,10 +216,15 @@ async function submit() {
     await refresh()
   } catch (cause) { fail(cause) } finally { if (current(op)) { phase.value = 'idle'; controller = null } }
 }
-function navigate(event: MouseEvent, href: string) { if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return; event.preventDefault(); window.history.pushState({}, '', href); route() }
+function navigate(event: MouseEvent, href: string) { if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return; event.preventDefault(); window.history.pushState({}, '', href); window.dispatchEvent(new PopStateEvent('popstate')) }
 watch(() => props.queryDate, (next) => {
   if (!alive || !validDate(next ?? '') || next === filters.asOf || mode.value === 'away') return
   filters.asOf = next!
+  if (mode.value === 'directory') {
+    appliedDirectory.asOf = next!
+    directoryPage.value = 1
+    directoryCursors.value = ['']
+  }
   preview.value = null
   tree.value = null
   directory.value = null
@@ -165,13 +240,23 @@ onBeforeUnmount(() => { alive = false; window.removeEventListener('popstate', ro
   <main v-if="mode !== 'away'">
     <h1>{{ heading }}</h1>
     <p v-if="error" role="alert">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
-    <form aria-label="组织查询条件" @submit.prevent="refresh()">
+    <form class="directory-search-panel" aria-label="组织查询条件" @submit.prevent="mode === 'directory' ? searchDirectory() : refresh()">
       <label v-if="!validDate(props.queryDate ?? '')">查看日期<input v-model="filters.asOf" type="date" required /></label>
-      <label>每页/节点上限<input v-model="filters.limit" type="number" min="1" max="100" /></label>
-      <template v-if="mode === 'tree'"><label>根Department ID<input v-model="filters.rootDepartment" /></label><label>层级深度<input v-model="filters.depth" type="number" min="1" max="3" /></label><label><input v-model="filters.labels" type="checkbox" />显示名称和员工姓名（需要PII权限）</label></template>
-      <template v-if="mode === 'directory'"><label>Department ID<input v-model="filters.department" /></label><label>员工ID<input v-model="filters.employee" /></label><label>状态<select v-model="filters.lifecycle"><option>active</option><option>inactive</option><option>all</option></select></label><label>姓名或Staff Code<input v-model="filters.q" /></label><label><input v-model="filters.profile" type="checkbox" />请求PII资料</label></template>
-      <template v-if="mode === 'history'"><label>开始日<input v-model="filters.from" type="date" /></label><label>结束日（不含）<input v-model="filters.to" type="date" /></label></template>
-      <button type="submit" :disabled="busy">刷新权威投影</button>
+      <template v-if="mode === 'tree'">
+        <label>每页/节点上限<input v-model="filters.limit" type="number" min="1" max="100" /></label>
+        <label>根Department ID<input v-model="filters.rootDepartment" /></label><label>层级深度<input v-model="filters.depth" type="number" min="1" max="3" /></label><label><input v-model="filters.labels" type="checkbox" />显示名称和员工姓名（需要PII权限）</label>
+      </template>
+      <template v-if="mode === 'directory'">
+        <label class="directory-search-keyword">姓名或 Staff Code<input v-model="filters.q" :disabled="!canReadPII" autocomplete="off" placeholder="输入姓名或工号" /></label>
+        <label>Department（可选）<input v-model="filters.department" list="department-options" placeholder="全部部门" /><datalist id="department-options"><option v-for="item in departmentOptions" :key="item.id" :value="item.id">{{ item.label || item.code }}</option></datalist></label>
+        <label>员工状态<select v-model="filters.lifecycle"><option value="active">在职</option><option value="inactive">离职</option><option value="all">全部状态</option></select></label>
+        <label>每页显示<select v-model="filters.limit"><option value="20">20 人</option><option value="50">50 人</option><option value="100">100 人</option></select></label>
+        <details class="directory-advanced"><summary>高级筛选</summary><label>员工ID<input v-model="filters.employee" /></label></details>
+        <div class="directory-search-actions"><button type="submit" :disabled="busy">查询员工</button><button type="button" class="secondary" :disabled="busy" @click="showAllEmployees">显示全部员工</button></div>
+        <p class="directory-access-note">{{ canReadPII ? '姓名和 Staff Code 等受保护资料会按当前权限显示。' : '当前权限仅显示员工ID和组织资料，不能读取或搜索姓名与 Staff Code。' }}</p>
+      </template>
+      <template v-if="mode === 'history'"><label>每页上限<input v-model="filters.limit" type="number" min="1" max="100" /></label><label>开始日<input v-model="filters.from" type="date" /></label><label>结束日（不含）<input v-model="filters.to" type="date" /></label></template>
+      <button v-if="mode !== 'directory'" type="submit" :disabled="busy">刷新资料</button>
     </form>
 
     <section v-if="tree" aria-label="组织树">
@@ -180,18 +265,33 @@ onBeforeUnmount(() => { alive = false; window.removeEventListener('popstate', ro
       <h2>Department员工</h2><ul><li v-for="item in tree.employees" :key="item.id"><a :href="`/employees/${item.id}?as_of=${tree.as_of}`" @click="navigate($event, `/employees/${item.id}?as_of=${tree.as_of}`)">{{ item.profile?.local_name || item.profile?.english_name || item.id }}</a> · Department {{ item.department_id }}</li></ul>
     </section>
 
-    <section v-if="directory" aria-label="员工目录">
-      <p>图版本 {{ directory.graph_revision }} · <span v-if="directory.search_incomplete">本页仅是受权候选扫描结果，搜索尚未完成。</span></p>
-      <article v-for="employee in directory.items" :key="employee.id"><h2>{{ employee.profile?.local_name || employee.profile?.english_name || employee.id }}</h2><p>员工 {{ employee.id }}</p><p v-for="identifier in employee.identifiers" :key="identifier.id">{{ identifier.kind }}：{{ identifier.staff_code }}</p><p v-for="spell in employee.employment" :key="spell.id">{{ spell.kind }} · {{ spell.location_code }} · 法分公司 {{ spell.legal_entity_id }}</p><p v-for="assignment in employee.job_assignments" :key="assignment.id">Department {{ assignment.department_id }}<span v-if="assignment.position"> · {{ assignment.position.title }}</span></p><p v-if="employee.direct_manager">直属主管/HOD：{{ employee.direct_manager.manager_employee_id }}</p><a :href="`/employees/${employee.id}?as_of=${directory.as_of}`" @click="navigate($event, `/employees/${employee.id}?as_of=${directory.as_of}`)">查看完整员工资料</a></article>
-      <button v-if="directory.next_cursor" :disabled="busy" @click="refresh(directory.next_cursor)">继续下一页</button>
+    <section v-if="directory" class="employee-directory-results" aria-label="员工查询结果">
+      <header class="directory-results-header"><div><h2>查询结果</h2><p>第 {{ directoryPage }} 页 · 本页 {{ directory.items.length }} 人</p></div><p v-if="directory.search_incomplete" role="status">搜索范围较大；请继续翻页，或增加筛选条件。</p></header>
+      <div v-if="directory.items.length" class="employee-table-wrap">
+        <table class="employee-table"><thead><tr><th>Staff Code</th><th>姓名</th><th>法分公司 / 地点</th><th>Department / 职位</th><th>直属主管/HOD</th><th><span class="sr-only">操作</span></th></tr></thead><tbody>
+          <tr v-for="employee in directory.items" :key="employee.id">
+            <td><strong>{{ staffCode(employee) }}</strong></td>
+            <td><span class="employee-name">{{ employeeName(employee) }}</span><small v-if="employee.profile?.local_name && employee.profile?.english_name">{{ employee.profile.english_name }}</small><small v-if="!employee.profile">员工ID {{ employee.id }}</small></td>
+            <td>{{ catalogLabel(activeEmployment(employee)?.legal_entity_id) }}<small>{{ activeEmployment(employee)?.location_code || '—' }}</small></td>
+            <td>{{ catalogLabel(activeAssignment(employee)?.department_id) }}<small>{{ activeAssignment(employee)?.position?.title || '—' }}</small></td>
+            <td>{{ employee.direct_manager ? `员工ID · ${managerName(employee)}` : '—' }}</td>
+            <td><a class="employee-detail-link" :aria-label="`查看${employeeName(employee)}的完整资料`" :href="`/employees/${employee.id}?as_of=${directory.as_of}`" @click="navigate($event, `/employees/${employee.id}?as_of=${directory.as_of}`)">查看员工资料</a></td>
+          </tr>
+        </tbody></table>
+      </div>
+      <div v-else class="directory-empty"><h3>没有找到员工</h3><p>调整查询条件，或点击“显示全部员工”查看当前权限范围内的全部人员。</p></div>
+      <nav class="directory-pagination" aria-label="员工目录分页"><button type="button" class="secondary" :disabled="busy || directoryPage <= 1" @click="previousDirectoryPage">上一页</button><span>第 {{ directoryPage }} 页</span><button type="button" class="secondary" :disabled="busy || !directory.next_cursor" @click="nextDirectoryPage">下一页</button></nav>
+      <details class="directory-data-state"><summary>数据状态</summary><p>组织数据版本 {{ directory.graph_revision }}。用于保证查询与组织关系处于同一版本，无需手工操作。</p></details>
     </section>
 
     <section v-if="history" aria-label="员工组织历史"><article v-for="change in history.items" :key="change.id"><h2>{{ change.recorded_at }} · {{ change.id }}</h2><p>图版本 {{ change.graph_before }} → {{ change.graph_after }}</p><p v-if="change.reason">原因：{{ change.reason }}</p><ul><li v-for="(item, index) in change.items" :key="`${change.id}-${index}`">{{ item.action }} {{ item.kind }} {{ item.id }} · [{{ item.valid_from || '—' }}, {{ item.valid_to || item.effective_to || '∞' }})</li></ul></article><button v-if="history.next_cursor" :disabled="busy" @click="refresh(history.next_cursor)">继续下一页</button></section>
 
-    <section v-if="canWrite && mode !== 'history'" aria-label="原子主数据维护">
-      <h2>目录与组织层级变更</h2><p>输入1..100项changes数组。系统自动带入当前catalog/graph revision；先预览，再提交。</p><textarea v-model="catalogChanges" rows="8" spellcheck="false"></textarea><button :disabled="busy" @click="prepare('catalog')">预览目录变更</button>
-      <h2>员工主数据变更</h2><label>expected_employee_revisions对象<textarea v-model="employeeRevisions" rows="3" spellcheck="false"></textarea></label><label>changes数组<textarea v-model="workforceChanges" rows="10" spellcheck="false"></textarea></label><button :disabled="busy" @click="prepare('workforce')">预览员工变更</button>
-      <aside v-if="preview" aria-label="提交预览"><p>{{ preview.summary }}</p><pre>{{ JSON.stringify(preview.body, null, 2) }}</pre><button :disabled="busy" @click="submit">确认原子提交</button><button :disabled="busy" @click="preview = null">取消</button></aside>
+    <section v-if="canWrite && mode !== 'history'" class="advanced-master-data" aria-label="高级主数据维护">
+      <details><summary>高级主数据维护</summary><div class="advanced-master-data-body">
+        <h2>目录与组织层级变更</h2><p>面向管理员的批量变更入口；先预览，再提交。</p><textarea v-model="catalogChanges" rows="8" spellcheck="false"></textarea><button :disabled="busy" @click="prepare('catalog')">预览目录变更</button>
+        <h2>员工主数据变更</h2><label>员工资料版本<textarea v-model="employeeRevisions" rows="3" spellcheck="false"></textarea></label><label>批量变更内容<textarea v-model="workforceChanges" rows="10" spellcheck="false"></textarea></label><button :disabled="busy" @click="prepare('workforce')">预览员工变更</button>
+        <aside v-if="preview" aria-label="提交预览"><p>{{ preview.summary }}</p><pre>{{ JSON.stringify(preview.body, null, 2) }}</pre><button :disabled="busy" @click="submit">确认原子提交</button><button :disabled="busy" @click="preview = null">取消</button></aside>
+      </div></details>
     </section>
   </main>
 </template>

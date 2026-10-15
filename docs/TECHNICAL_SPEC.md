@@ -137,7 +137,9 @@ DEV-026把`IdentityGate.checkSession`区分为破坏式显式/生命周期核对
 
 DEV-027的认证态`IdentityGate`使用原生`details/summary`作为会话披露控件，默认closed且不写入local/session storage；内部路由切换复用同一组件实例，因此保留当前open状态。summary仅呈现非敏感会话/MFA摘要，完整安全操作仍调用原有`checkSession`、`stepUp`、`logout`和`changePassword`路径；phase离开`authenticated`时整个details随分支卸载，不能把旧展开内容带入新身份上下文。
 
-DEV-028 T1在`GET /session`增加规范Date字段`business_date`，由handler使用同一次授权时钟和snapshot中的组织IANA timezone计算；timezone缺失/不可加载时fail closed。`IdentityGate`验证后以其初始化session级`globalViewDate`，通过受保护slot交给`App.vue`顶部日期控件及Profile/Organization/Compensation页面；内部导航保留，session销毁时清空。相关页面仍向既有API发送`as_of`并在全局值变化后取消旧请求、清敏感投影、重新读取；授权服务继续使用独立当前业务日，客户端值不参与scope判断。
+DEV-028 T1在`GET /session`增加规范Date字段`business_date`，由handler使用同一次授权时钟和snapshot中的组织IANA timezone计算；timezone缺失/不可加载时fail closed。`IdentityGate`验证后以其初始化session级`globalViewDate`，通过受保护slot交给`App.vue`顶部日期控件及Profile/Organization/Compensation页面；单一合法`as_of`深链接优先初始化该内存值，内部导航保留，session销毁时清空。相关页面仍向既有API发送`as_of`并在全局值变化后取消旧请求、清敏感投影、重新读取；授权服务继续使用独立当前业务日，客户端值不参与scope判断。
+
+DEV-028 T2的`OrganizationPage`继续只调用OP-ORG-04 `POST /orgs/:id/employees/query`，PII能力由重读后的scoped session决定：有`pii.read`才发送`include_profile=true`及允许`q`，无权时不发送姓名查询。筛选表单与已应用查询快照分离，opaque cursor历史只保存在页面内存，实现上一页/下一页且不推导总数；新查询或全局日期变化清空cursor历史并回到第一页。目录与catalog并行读取并在同一operation generation提交，结果映射法分公司/Department业务名称；SPA链接dispatch `popstate`通知应用router，并在URL保留受控`as_of`供新标签页恢复。
 
 
 | 拟定 Go package | 职责 / 依赖 |

@@ -1,6 +1,7 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import OrganizationPage from './OrganizationPage.vue'
+import App from './App.vue'
 
 const ORG = '10000000-0000-4000-8000-000000000001'
 const SUBJECT = '10000000-0000-4000-8000-000000000002'
@@ -10,7 +11,7 @@ const DEP = '10000000-0000-4000-8000-000000000005'
 const EMPLOYEE = '10000000-0000-4000-8000-000000000006'
 const MANAGER = '10000000-0000-4000-8000-000000000007'
 const AS_OF = '2026-10-11'
-const session = { subject_id: SUBJECT, org_id: ORG, auth_epoch: '7', csrf_token: 'csrf', capabilities: ['organization.read', 'organization.write', 'pii.read', 'pii.write'] }
+const session = { subject_id: SUBJECT, org_id: ORG, auth_epoch: '7', csrf_token: 'csrf', business_date: '2026-10-15', capabilities: ['organization.read', 'organization.write', 'pii.read', 'pii.write'], mfa_recent: false, identity_available: true }
 const catalogs = { as_of: AS_OF, catalog_revision: '4', graph_revision: '5', legal_entities: [], locations: ['Shanghai', 'Tokyo', 'Wuxi'], education_levels: [], job_families: [], career_levels: [], org_units: [], org_unit_parents: [] }
 const tree = {
   org_id: ORG, as_of: AS_OF, authorization_date: AS_OF, graph_revision: '5', auth_epoch: '7',
@@ -31,13 +32,15 @@ const employee = {
   identifiers: [{ id: crypto.randomUUID(), kind: 'staff_code', staff_code: '0007', valid_from: '2026-01-01', valid_to: null }],
   employment: [{ id: crypto.randomUUID(), legal_entity_id: crypto.randomUUID(), location_code: 'Shanghai', kind: 'hire', valid_from: '2026-01-01', valid_to: null }],
   education: [], job_assignments: [{ id: crypto.randomUUID(), department_id: DEP, valid_from: '2026-01-01', valid_to: null, position: { title: 'Engineer' } }],
-  reporting_lines: [], direct_manager: { id: crypto.randomUUID(), employee_id: EMPLOYEE, manager_employee_id: MANAGER, kind: 'administrative', valid_from: '2026-01-01', valid_to: null },
+  reporting_lines: [{ id: '10000000-0000-4000-8000-000000000009', employee_id: EMPLOYEE, manager_employee_id: MANAGER, kind: 'administrative', valid_from: '2026-01-01', valid_to: null }],
+  direct_manager: { id: '10000000-0000-4000-8000-000000000009', employee_id: EMPLOYEE, manager_employee_id: MANAGER, kind: 'administrative', valid_from: '2026-01-01', valid_to: null },
+  hod: { id: '10000000-0000-4000-8000-000000000009', employee_id: EMPLOYEE, manager_employee_id: MANAGER, kind: 'administrative', valid_from: '2026-01-01', valid_to: null },
 }
 
 type Seen = { method: string; url: URL; body?: unknown }
 let seen: Seen[] = []
 let page: VueWrapper | null = null
-let employeeQueryReply: () => Promise<Response>
+let employeeQueryReply: (body: Record<string, unknown>) => Promise<Response>
 function response(body: unknown, status = 200) { return Promise.resolve(new Response(status === 204 ? null : JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })) }
 function installAPI() {
   vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -47,7 +50,8 @@ function installAPI() {
     if (url.pathname === '/api/v1/session') return response(session)
     if (url.pathname.endsWith('/workforce-catalogs')) return response(catalogs)
     if (url.pathname.endsWith('/tree')) return response(tree)
-    if (url.pathname.endsWith('/employees/query')) return employeeQueryReply()
+    if (url.pathname.endsWith('/employees/query')) return employeeQueryReply(body ?? {})
+    if (url.pathname === `/api/v1/employees/${EMPLOYEE}`) return response(employee)
     if (url.pathname.endsWith('/workforce-catalog-changes') && method === 'POST') return response({ id: crypto.randomUUID(), catalog_revision: '5', graph_revision: '6', items: [] }, 201)
     throw new Error(`unexpected ${method} ${url.pathname}`)
   }))
@@ -77,15 +81,50 @@ describe('DEV-015 workforce organization consumers', () => {
   it('uses department_id and body-only name/Staff Code search, then renders HOD from the administrative manager fact', async () => {
     const wrapper = await open(`/orgs/${ORG}/employees?as_of=${AS_OF}`)
     const inputs = wrapper.findAll('input')
-    await inputs.find((item) => item.element.parentElement?.textContent?.includes('Department ID'))!.setValue(DEP)
-    await inputs.find((item) => item.element.parentElement?.textContent?.includes('姓名或Staff Code'))!.setValue('0007')
-    await inputs.find((item) => item.element.parentElement?.textContent?.includes('请求PII资料'))!.setValue(true)
-    await button(wrapper, /刷新权威投影/).trigger('submit'); await settle()
+    await inputs.find((item) => item.element.parentElement?.textContent?.includes('Department'))!.setValue(DEP)
+    await inputs.find((item) => item.element.parentElement?.textContent?.includes('姓名或 Staff Code'))!.setValue('0007')
+    expect(wrapper.text()).not.toContain('请求PII资料')
+    await button(wrapper, /查询员工/).trigger('click'); await settle()
     const request = seen.filter((entry) => entry.url.pathname.endsWith('/employees/query')).at(-1)!
     expect(request.url.search).toBe('')
     expect(request.body).toMatchObject({ as_of: AS_OF, department_id: DEP, q: '0007', include_profile: true })
-    expect(wrapper.text()).toContain('0007')
-    expect(wrapper.text()).toContain(`直属主管/HOD：${MANAGER}`)
+    expect(wrapper.get('[aria-label="员工查询结果"]').text()).toContain('0007')
+    expect(wrapper.text()).toContain('直属主管/HOD')
+    await button(wrapper, /显示全部员工/).trigger('click'); await settle()
+    expect(seen.filter(entry => entry.url.pathname.endsWith('/employees/query')).at(-1)!.body).toMatchObject({ lifecycle: 'all', include_profile: true })
+    expect(seen.filter(entry => entry.url.pathname.endsWith('/employees/query')).at(-1)!.body).not.toHaveProperty('q')
+  })
+
+  it('paginates employee results forward and backward without exposing a total count', async () => {
+    const second = { ...employee, id: '10000000-0000-4000-8000-000000000008', profile: { local_name: '第二页员工' }, identifiers: [] }
+    employeeQueryReply = body => response({
+      items: body.cursor ? [second] : [employee],
+      next_cursor: body.cursor ? null : 'opaque-next',
+      as_of: AS_OF, consistency: 'current', authorization_date: AS_OF, graph_revision: '5', auth_epoch: '7', search_incomplete: false,
+    })
+    const wrapper = await open(`/orgs/${ORG}/employees`, { queryDate: AS_OF })
+    expect(wrapper.text()).toContain('第 1 页')
+    await button(wrapper, /下一页/).trigger('click'); await settle()
+    expect(wrapper.text()).toContain('第 2 页')
+    expect(wrapper.text()).toContain('第二页员工')
+    expect(wrapper.text()).not.toContain('合成员工')
+    expect(seen.filter(entry => entry.url.pathname.endsWith('/employees/query')).at(-1)!.body).toMatchObject({ cursor: 'opaque-next' })
+    await button(wrapper, /上一页/).trigger('click'); await settle()
+    expect(wrapper.text()).toContain('第 1 页')
+    expect(wrapper.text()).toContain('合成员工')
+    expect(wrapper.text()).not.toContain('共 ')
+  })
+
+  it('opens employee details through the application router instead of leaving a blank page', async () => {
+    window.history.replaceState({}, '', `/orgs/${ORG}/employees?as_of=${AS_OF}`)
+    page = mount(App, { attachTo: document.body })
+    await settle()
+    await page.get('a[aria-label="查看合成员工的完整资料"]').trigger('click')
+    await settle()
+    expect(window.location.pathname).toBe(`/employees/${EMPLOYEE}`)
+    expect(window.location.search).toBe(`?as_of=${AS_OF}`)
+    expect(page.text()).toContain(`${AS_OF} 员工主数据`)
+    expect(page.text()).toContain('合成员工')
   })
 
   it('clears the old directory and prepared mutation preview before loading a new global date', async () => {
