@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import GrantPage from './GrantPage.vue'
 import CompensationTermsEditor from './CompensationTermsEditor.vue'
 import { uuid, validDate, validRevision, validCompRevision, timestamp, validCurrent, validChanges, validSession, validProposal, validMapping, validCommand, formTerms, termsForm, emptyTerms, sameIdentity, statuses, type Session, type CurrentView, type ChangesView, type ProposalView, type CorrectionMember, type ProposalCommand, type TermsForm, type ExportObject, type Result, type TransitionCommand } from './compensationDTO'
 import { FinancialFailure, financialJSON, financialRequest, financialExport, type FinancialCommand } from './compensationAPI'
 import type { ApprovalEvent } from './compensationDTO'
+const props = defineProps<{ queryDate?: string }>()
 const emit = defineEmits<{ 'session-expired': [] }>()
 type Operation = { generation: number; controller: AbortController }
 type MemberForm = { key: string; action: 'replace' | 'reverse'; original: string; date: string; refKind: string; ref: string; terms: TermsForm }
@@ -21,6 +22,7 @@ const editor = reactive({ open: false, id: '', revision: '', basis: '', kind: 'i
 const decision = reactive({ id: '', action: '' as TransitionCommand['action'] | '', revision: '', basis: '', reason: '', confirmed: false })
 const confirmed = ref(false), replayConfirmed = ref(false), uncertain = ref(false), grantOpen = ref(false)
 const pending = shallowRef<FinancialCommand | null>(null)
+const queuedViewDate = ref('')
 const exportSelection = ref<string[]>([]), exportOutput = ref(''), exportStatus = ref(''), exportConfirmed = ref(false)
 const exactExportRows = ref<{ kind: string; id: string; revision: string }[]>([])
 const transitionStatuses: Record<string, string> = { submit: 'submitted', withdraw: 'withdrawn', approve: 'approved', reject: 'rejected' }
@@ -162,7 +164,7 @@ function fail(cause: unknown, op: Operation) {
   error.value = status === 401 ? '会话已失效，财务内容与表单已销毁。' : [403, 404].includes(status) ? '当前对象、purpose、scope、授权或 MFA 不满足要求；财务内容已清空。重新验证后须重载并明确重新确认。' : status === 409 ? '版本或完整依赖冲突（409）：未覆盖批准历史。请手动刷新后重新核对整个下游依赖组；不会自动重试或改基准。' : [400, 422].includes(status) ? '输入被拒绝；请核对明确口径、规范金额、版本、日期、原事件和完整依赖组。' : '服务或网络不可用，结果未确认；不显示成功，不自动重发。'
 }
 async function refresh() {
-  if (busy.value || !active.value) return
+  if (busy.value || uncertain.value || !active.value) return
   const op = begin('loading'); clearSensitive()
   try { await readSession(op); await readViews(op) } catch (cause) { fail(cause, op) } finally { if (isCurrent(op)) { phase.value = 'idle'; controller = null } }
 }
@@ -209,6 +211,14 @@ function queue(path: string, method: 'POST' | 'PATCH', body: unknown, capability
   const command: FinancialCommand = { path, method, body: JSON.stringify(body), key: crypto.randomUUID(), context: { ...session.value }, capability, exporting }
   pending.value = command; void execute(command)
 }
+function adoptQueuedViewDate(reload: boolean) {
+  if (!queuedViewDate.value) return
+  const next = queuedViewDate.value
+  queuedViewDate.value = ''
+  query.asOf = next
+  applied.asOf = next
+  if (reload) void refresh()
+}
 async function execute(command: FinancialCommand, replay = false) {
   if (busy.value) return
   const op = begin('submitting'); let sent = false, committed = false
@@ -240,8 +250,15 @@ async function execute(command: FinancialCommand, replay = false) {
     if (sent && !committed && !command.exporting && ![400, 401, 403, 404, 409, 422].includes(status)) { clearSensitive(); pending.value = command; uncertain.value = true }
     else if (command.exporting || !sent) clearSensitive()
     fail(cause, op)
+    if ([401, 403, 404].includes(status)) adoptQueuedViewDate(false)
     if (committed) { clearSensitive(); notice.value = '此命令已提交，但当前授权回读未完成；不宣称已提交事实回滚。请手动刷新。' }
-  } finally { if (isCurrent(op)) { phase.value = 'idle'; controller = null } }
+  } finally {
+    if (isCurrent(op)) {
+      phase.value = 'idle'
+      controller = null
+      if (!uncertain.value) adoptQueuedViewDate(true)
+    }
+  }
 }
 function replay() { if (!replayConfirmed.value || !uncertain.value || !pending.value) return; const command = pending.value; void execute(command, true) }
 function exportSelected() {
@@ -256,16 +273,38 @@ async function grantResult() {
   await refresh()
   if (alive && active.value && session.value && !error.value) notice.value = '独立授权操作完成；财务事实已重新加载，须重新编辑并确认，未自动提出、审批或导出。'
 }
-function expire() { cancel(); clearSensitive(); session.value = null; grantOpen.value = false; error.value = '财务授权或近期 MFA 期限已到，内容与命令已销毁；重新验证后须重载并明确确认。' }
+function expire() { cancel(); clearSensitive(); queuedViewDate.value = ''; session.value = null; grantOpen.value = false; error.value = '财务授权或近期 MFA 期限已到，内容与命令已销毁；重新验证后须重载并明确确认。' }
 function readRoute() {
   const url = new URL(location.href), match = /^\/employees\/([0-9a-f-]+)\/compensation\/?$/.exec(url.pathname)
-  cancel(); clearSensitive(); session.value = null; grantOpen.value = false
+  cancel(); clearSensitive(); queuedViewDate.value = ''; session.value = null; grantOpen.value = false
   active.value = Boolean(match && uuid.test(match[1]!)); employee.value = active.value ? match![1]! : ''
   Object.assign(query, { asOf: '', from: '', to: '', status: '', proposalID: '', limit: '50', futureLimit: '20' }); Object.assign(applied, query)
-  if (url.searchParams.getAll('as_of').length === 1 && validDate(url.searchParams.get('as_of'))) { query.asOf = url.searchParams.get('as_of')!; applied.asOf = query.asOf }
+  const globalDate = validDate(props.queryDate) ? props.queryDate! : ''
+  if (globalDate) { query.asOf = globalDate; applied.asOf = globalDate }
+  else if (url.searchParams.getAll('as_of').length === 1 && validDate(url.searchParams.get('as_of'))) { query.asOf = url.searchParams.get('as_of')!; applied.asOf = query.asOf }
   if (active.value) void refresh()
 }
 function onFocus() { if (!active.value) return; if (!deadlinesValid()) expire(); else void refresh() }
+watch(() => props.queryDate, (next) => {
+  if (!alive || !active.value || !validDate(next)) return
+  if (next === applied.asOf) {
+    queuedViewDate.value = ''
+    return
+  }
+  if (uncertain.value || busy.value && phase.value !== 'loading') {
+    queuedViewDate.value = next!
+    exportOutput.value = ''
+    exportStatus.value = ''
+    exportSelection.value = []
+    exactExportRows.value = []
+    return
+  }
+  if (phase.value === 'loading') cancel()
+  queuedViewDate.value = ''
+  query.asOf = next!
+  applied.asOf = next!
+  void refresh()
+})
 onMounted(() => { alive = true; readRoute(); window.addEventListener('popstate', readRoute); window.addEventListener('focus', onFocus); window.addEventListener('pagehide', expire); timer = setInterval(() => { if (session.value && !deadlinesValid()) expire() }, 250) })
 onBeforeUnmount(() => { alive = false; window.removeEventListener('popstate', readRoute); window.removeEventListener('focus', onFocus); window.removeEventListener('pagehide', expire); if (timer) clearInterval(timer); cancel(); clearSensitive(); session.value = null })
 </script>
@@ -275,10 +314,10 @@ onBeforeUnmount(() => { alive = false; window.removeEventListener('popstate', re
     <h1>员工薪酬 · {{ employee }}</h1>
     <p>financial / compensation_management · 当前独立 scope、grant 与 MFA。读、提出、审批和导出彼此独立；作者、普通经理、HR 或员工身份不自动授权。金额与版本保持原始字符串。</p>
     <p v-if="error" role="alert">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
-    <button type="button" :disabled="busy" @click="refresh">手动刷新当前授权与事实（清空草稿）</button>
-    <form aria-label="薪酬查询条件" @submit.prevent="applyQueries">
+    <button type="button" :disabled="busy || uncertain" @click="refresh">手动刷新当前授权与事实（清空草稿）</button>
+    <form v-if="!queuedViewDate" aria-label="薪酬查询条件" @submit.prevent="applyQueries">
       <fieldset :disabled="busy || uncertain">
-        <label for="comp-as-of">指定查询日 as_of</label><input id="comp-as-of" v-model="query.asOf" type="date" />
+        <template v-if="!validDate(props.queryDate)"><label for="comp-as-of">查看日期</label><input id="comp-as-of" v-model="query.asOf" type="date" /></template>
         <label for="comp-from">历史录入 UTC from（包含，最多六位小数）</label><input id="comp-from" v-model="query.from" placeholder="YYYY-MM-DDTHH:mm:ssZ" autocomplete="off" />
         <label for="comp-to">历史录入 UTC to（不包含，最多六位小数）</label><input id="comp-to" v-model="query.to" placeholder="YYYY-MM-DDTHH:mm:ssZ" autocomplete="off" />
         <label for="comp-status">提案状态（不作用批准历史）</label><select id="comp-status" v-model="query.status"><option value="">全部获准状态</option><option v-for="status in statuses" :key="status">{{ status }}</option></select>
@@ -293,6 +332,8 @@ onBeforeUnmount(() => { alive = false; window.removeEventListener('popstate', re
       <label for="comp-replay-confirm"><input id="comp-replay-confirm" v-model="replayConfirmed" type="checkbox" />确认仅以同一原键和逐字节原正文查询已提交结果，仍重新检查当前授权</label>
       <button type="button" :disabled="busy || !replayConfirmed" @click="replay">确认原命令结果</button>
     </section>
+    <p v-if="queuedViewDate" role="status">查看日期已改变；旧日期财务内容已隐藏，将在当前命令结果明确后加载新日期。</p>
+    <template v-if="!queuedViewDate">
     <div class="panes">
       <section aria-label="指定日现状">
         <h2>指定日现状</h2>
@@ -398,6 +439,7 @@ onBeforeUnmount(() => { alive = false; window.removeEventListener('popstate', re
       </fieldset>
     </section>
     <p v-if="exportStatus" role="status">{{ exportStatus }}</p><pre v-if="exportOutput" aria-label="当前内存财务 NDJSON 输出">{{ exportOutput }}</pre>
+    </template>
     <button type="button" :disabled="busy || uncertain" @click="clearSensitive(); grantOpen = !grantOpen">独立请求 / 核对已批准财务授权</button>
     <GrantPage v-if="grantOpen" @session-expired="expire(); emit('session-expired')" @grant-result="grantResult" />
   </main>

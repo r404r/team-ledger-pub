@@ -206,11 +206,11 @@ function expectMutation(request: NetworkRequest) {
   expect(request.headers.get('Idempotency-Key')).toMatch(UUID)
 }
 
-async function openPage(path = `/employees/${EMPLOYEE_ID}?as_of=${AS_OF}`) {
+async function openPage(path = `/employees/${EMPLOYEE_ID}?as_of=${AS_OF}`, props: { queryDate?: string } = {}) {
   window.history.replaceState({}, '', path)
   const host = document.createElement('div')
   document.body.append(host)
-  const page = mount(ProfilePage, { attachTo: host })
+  const page = mount(ProfilePage, { attachTo: host, props })
   mounted.push({ page, host })
   await settled()
   return page
@@ -404,6 +404,32 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     expect(page.find('[role="alert"]').exists()).toBe(true)
     expect(field(page, /本地姓名|local_name/i).element.value).toBe(DRAFT_NAME)
     expect(api.matching('PATCH', CORRECTION_PATH)).toHaveLength(1)
+  })
+
+  it('queues a global date change without abandoning an unconfirmed profile command', async () => {
+    api.respond('GET', EMPLOYEE_PATH, 200, employee())
+    const page = await openPage(`/employees/${EMPLOYEE_ID}`, { queryDate: AS_OF })
+    await startCorrection(page)
+    const failed = api.defer('PATCH', CORRECTION_PATH)
+    await submitProfile(page)
+    await page.setProps({ queryDate: '2026-10-12' })
+    expect(page.text()).toContain('当前人员资料命令结果明确后加载')
+
+    failed.reject()
+    await settled()
+    expect(field(page, /本地姓名|local_name/i).element.value).toBe(DRAFT_NAME)
+    expect(page.text()).toContain('当前人员资料命令结果明确后加载')
+    const first = api.matching('PATCH', CORRECTION_PATH)[0]!
+
+    api.respond('PATCH', CORRECTION_PATH, 422, error('INVALID_INPUT'))
+    api.respond('GET', EMPLOYEE_PATH, 200, { ...employee(), as_of: '2026-10-12' })
+    await submitProfile(page)
+    await settled()
+    const commands = api.matching('PATCH', CORRECTION_PATH)
+    expect(commands).toHaveLength(2)
+    expect(commands[1]!.headers.get('Idempotency-Key')).toBe(first.headers.get('Idempotency-Key'))
+    expect(commands[1]!.body).toEqual(first.body)
+    expect(api.matching('GET', EMPLOYEE_PATH).at(-1)!.url.searchParams.get('as_of')).toBe('2026-10-12')
   })
 
   it('does not confirm a committed correction when its authoritative reload fails', async () => {

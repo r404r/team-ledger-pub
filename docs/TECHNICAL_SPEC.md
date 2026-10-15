@@ -137,6 +137,8 @@ DEV-026把`IdentityGate.checkSession`区分为破坏式显式/生命周期核对
 
 DEV-027的认证态`IdentityGate`使用原生`details/summary`作为会话披露控件，默认closed且不写入local/session storage；内部路由切换复用同一组件实例，因此保留当前open状态。summary仅呈现非敏感会话/MFA摘要，完整安全操作仍调用原有`checkSession`、`stepUp`、`logout`和`changePassword`路径；phase离开`authenticated`时整个details随分支卸载，不能把旧展开内容带入新身份上下文。
 
+DEV-028 T1在`GET /session`增加规范Date字段`business_date`，由handler使用同一次授权时钟和snapshot中的组织IANA timezone计算；timezone缺失/不可加载时fail closed。`IdentityGate`验证后以其初始化session级`globalViewDate`，通过受保护slot交给`App.vue`顶部日期控件及Profile/Organization/Compensation页面；内部导航保留，session销毁时清空。相关页面仍向既有API发送`as_of`并在全局值变化后取消旧请求、清敏感投影、重新读取；授权服务继续使用独立当前业务日，客户端值不参与scope判断。
+
 
 | 拟定 Go package | 职责 / 依赖 |
 | --- | --- |

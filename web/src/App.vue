@@ -33,6 +33,10 @@ function navigate(event: MouseEvent, path: string) {
   // Both the composition root and the existing profile page consume popstate.
   window.dispatchEvent(new PopStateEvent('popstate'))
 }
+function changeViewDate(event: Event, setAsOf: (value: string) => boolean, current: string) {
+  const input = event.target as HTMLInputElement
+  if (!setAsOf(input.value)) input.value = current
+}
 
 function navActive(section: 'profile' | 'grants' | 'audit' | 'organization' | 'directory' | 'interviews' | 'batches') {
   const path = pathname.value
@@ -49,14 +53,20 @@ onBeforeUnmount(() => window.removeEventListener('popstate', readRoute))
 </script>
 
 <template>
-  <IdentityGate v-slot="{ expireSession, orgID }">
+  <IdentityGate v-slot="{ expireSession, orgID, asOf, setAsOf }">
     <header class="app-shell-header">
       <div class="app-shell-bar">
         <a class="brand-lockup" href="/" aria-label="TeamLedger 首页" @click="navigate($event, '/')">
           <span class="brand-mark" aria-hidden="true">TL</span>
           <span class="brand-copy"><strong>TeamLedger</strong><small>People operations</small></span>
         </a>
-        <div class="workspace-state"><span>受保护工作区</span></div>
+        <div class="app-shell-context">
+          <label class="global-view-date" for="global-view-date">
+            <span>查看日期</span>
+            <input id="global-view-date" type="date" :value="asOf" @change="changeViewDate($event, setAsOf, asOf)" />
+          </label>
+          <div class="workspace-state"><span>受保护工作区</span></div>
+        </div>
       </div>
       <nav class="app-nav" aria-label="主导航">
         <a href="/" :aria-current="navActive('profile') ? 'page' : undefined" @click="navigate($event, '/')">人员资料</a>
@@ -72,10 +82,10 @@ onBeforeUnmount(() => window.removeEventListener('popstate', readRoute))
     <AuditPage v-else-if="auditRoute" @session-expired="expireSession" />
     <InterviewPage v-else-if="interviewRoute" @session-expired="expireSession" />
     <FollowupPage v-else-if="followupRoute" @session-expired="expireSession" />
-    <CompensationPage v-else-if="compensationRoute" @session-expired="expireSession" />
+    <CompensationPage v-else-if="compensationRoute" :query-date="asOf" @session-expired="expireSession" />
     <CompensationBatchPage v-else-if="compensationBatchRoute" @session-expired="expireSession" />
     <BonusPage v-else-if="bonusRoute" @session-expired="expireSession" />
-    <OrganizationPage v-else-if="organizationRoute" @session-expired="expireSession" />
-    <ProfilePage v-else @session-expired="expireSession" />
+    <OrganizationPage v-else-if="organizationRoute" :query-date="asOf" @session-expired="expireSession" />
+    <ProfilePage v-else :query-date="asOf" @session-expired="expireSession" />
   </IdentityGate>
 </template>

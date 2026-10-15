@@ -37,6 +37,7 @@ const employee = {
 type Seen = { method: string; url: URL; body?: unknown }
 let seen: Seen[] = []
 let page: VueWrapper | null = null
+let employeeQueryReply: () => Promise<Response>
 function response(body: unknown, status = 200) { return Promise.resolve(new Response(status === 204 ? null : JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })) }
 function installAPI() {
   vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -46,16 +47,20 @@ function installAPI() {
     if (url.pathname === '/api/v1/session') return response(session)
     if (url.pathname.endsWith('/workforce-catalogs')) return response(catalogs)
     if (url.pathname.endsWith('/tree')) return response(tree)
-    if (url.pathname.endsWith('/employees/query')) return response({ items: [employee], next_cursor: null, as_of: AS_OF, consistency: 'current', authorization_date: AS_OF, graph_revision: '5', auth_epoch: '7', search_incomplete: false })
+    if (url.pathname.endsWith('/employees/query')) return employeeQueryReply()
     if (url.pathname.endsWith('/workforce-catalog-changes') && method === 'POST') return response({ id: crypto.randomUUID(), catalog_revision: '5', graph_revision: '6', items: [] }, 201)
     throw new Error(`unexpected ${method} ${url.pathname}`)
   }))
 }
 async function settle() { await flushPromises(); await flushPromises() }
-async function open(route: string) { window.history.replaceState({}, '', route); page = mount(OrganizationPage, { attachTo: document.body }); await settle(); return page }
+async function open(route: string, props: { queryDate?: string } = {}) { window.history.replaceState({}, '', route); page = mount(OrganizationPage, { attachTo: document.body, props }); await settle(); return page }
 function button(wrapper: VueWrapper, label: RegExp) { const values = wrapper.findAll('button').filter((item) => label.test(item.text())); expect(values).toHaveLength(1); return values[0]! }
 
-beforeEach(() => { seen = []; installAPI() })
+beforeEach(() => {
+  seen = []
+  employeeQueryReply = () => response({ items: [employee], next_cursor: null, as_of: AS_OF, consistency: 'current', authorization_date: AS_OF, graph_revision: '5', auth_epoch: '7', search_incomplete: false })
+  installAPI()
+})
 afterEach(() => { page?.unmount(); page = null; vi.unstubAllGlobals(); document.body.innerHTML = '' })
 
 describe('DEV-015 workforce organization consumers', () => {
@@ -81,6 +86,29 @@ describe('DEV-015 workforce organization consumers', () => {
     expect(request.body).toMatchObject({ as_of: AS_OF, department_id: DEP, q: '0007', include_profile: true })
     expect(wrapper.text()).toContain('0007')
     expect(wrapper.text()).toContain(`直属主管/HOD：${MANAGER}`)
+  })
+
+  it('clears the old directory and prepared mutation preview before loading a new global date', async () => {
+    const wrapper = await open(`/orgs/${ORG}/employees`, { queryDate: AS_OF })
+    await wrapper.findAll('textarea')[0]!.setValue(JSON.stringify([{ action: 'create', kind: 'department', code: 'NEW', label: '新部门', valid_from: AS_OF }]))
+    await button(wrapper, /预览目录变更/).trigger('click')
+    expect(wrapper.text()).toContain('合成员工')
+    expect(wrapper.text()).toContain('1 项原子变更')
+
+    let release!: () => void
+    employeeQueryReply = () => new Promise(resolve => {
+      release = () => resolve(new Response(JSON.stringify({ items: [], next_cursor: null, as_of: '2026-10-12', consistency: 'current', authorization_date: AS_OF, graph_revision: '5', auth_epoch: '7', search_incomplete: false }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    })
+    await wrapper.setProps({ queryDate: '2026-10-12' })
+    await flushPromises()
+    expect(release).toBeTypeOf('function')
+    expect(wrapper.text()).not.toContain('合成员工')
+    expect(wrapper.find('[aria-label="提交预览"]').exists()).toBe(false)
+
+    release()
+    await settle()
+    const request = seen.filter(entry => entry.url.pathname.endsWith('/employees/query')).at(-1)!
+    expect(request.body).toMatchObject({ as_of: '2026-10-12' })
   })
 
   it('previews and submits catalog changes with current catalog/graph revisions and CSRF/idempotency headers', async () => {

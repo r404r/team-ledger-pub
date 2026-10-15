@@ -169,6 +169,24 @@
   .brand-copy strong { font-size: 1.08rem; letter-spacing: -.02em; }
   .brand-copy small { margin-top: .26rem; font-size: .68rem; font-weight: 720; letter-spacing: .1em; text-transform: uppercase; }
 
+  .app-shell-context { display: flex; align-items: center; gap: var(--space-5); }
+  #app .global-view-date {
+    display: flex;
+    align-items: center;
+    gap: .55rem;
+    color: var(--ink-600);
+    font-size: .76rem;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  #app .global-view-date input {
+    width: 9.3rem;
+    min-height: 2.2rem;
+    border-color: var(--line);
+    background: var(--surface-muted);
+    padding: .35rem .55rem;
+    font-size: .8rem;
+  }
   .workspace-state { display: flex; align-items: center; gap: .62rem; color: var(--ink-600); font-size: .78rem; font-weight: 650; }
   .workspace-state::before { width: .46rem; height: .46rem; border-radius: 50%; background: var(--brand-500); box-shadow: 0 0 0 .24rem var(--brand-100); content: ""; }
 
@@ -597,6 +615,10 @@
     body { font-size: .9rem; }
     .app-shell-bar { min-height: 3.8rem; }
     .brand-copy small, .workspace-state span { display: none; }
+    .app-shell-context { gap: .65rem; }
+    #app .global-view-date { gap: .35rem; }
+    #app .global-view-date > span { display: none; }
+    #app .global-view-date input { width: 8.5rem; min-height: 2.1rem; }
     #app .app-nav a { padding: .62rem .7rem .72rem; }
     #app main { width: min(calc(100% - 1.15rem), var(--content)); padding-top: 1.5rem; }
     #app main section, #app main form { border-radius: var(--radius-md); padding: .9rem; }

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 
+const props = defineProps<{ queryDate?: string }>()
 const emit = defineEmits<{ 'session-expired': [] }>()
 type Session = { subject_id: string; org_id: string; auth_epoch: string; csrf_token: string; capabilities: string[] }
 type Profile = { local_name?: string; english_name?: string }
@@ -69,7 +70,9 @@ async function request<T>(path: string, op: Operation, body?: Record<string, unk
   const response = await fetch(`/api/v1${path}`, { method: body ? 'POST' : 'GET', credentials: 'same-origin', cache: 'no-store', headers, body: body ? JSON.stringify(body) : undefined, signal: op.controller.signal })
   if (!current(op)) throw new DOMException('Cancelled', 'AbortError')
   if (!response.ok) throw new ApiFailure(response.status)
-  return response.status === 204 ? undefined as T : await response.json() as T
+  const result = response.status === 204 ? undefined as T : await response.json() as T
+  if (!current(op)) throw new DOMException('Cancelled', 'AbortError')
+  return result
 }
 async function readSession(op: Operation) {
   const suffix = mode.value === 'history' && uuid.test(employeeID.value) ? `?employee_id=${employeeID.value}` : mode.value === 'directory' && uuid.test(filters.employee) ? `?employee_id=${filters.employee}` : ''
@@ -87,7 +90,7 @@ function route() {
   cancel(); preview.value = null; tree.value = null; directory.value = null; history.value = null; catalogs.value = null
   const parts = location.pathname.split('/').filter(Boolean)
   const query = new URLSearchParams(location.search)
-  filters.asOf = query.get('as_of') ?? new Date().toISOString().slice(0, 10)
+  filters.asOf = validDate(props.queryDate ?? '') ? props.queryDate! : query.get('as_of') ?? new Date().toISOString().slice(0, 10)
   if (parts.length === 3 && parts[0] === 'orgs' && parts[2] === 'tree' && uuid.test(parts[1]!)) { mode.value = 'tree'; orgID.value = parts[1]! }
   else if (parts.length === 3 && parts[0] === 'orgs' && parts[2] === 'employees' && uuid.test(parts[1]!)) { mode.value = 'directory'; orgID.value = parts[1]! }
   else if (parts.length === 3 && parts[0] === 'employees' && parts[2] === 'organization-history' && uuid.test(parts[1]!)) { mode.value = 'history'; employeeID.value = parts[1]! }
@@ -118,7 +121,7 @@ async function refresh(cursor = '') {
       if (cursor) params.set('cursor', cursor)
       history.value = await request<History>(`/employees/${employeeID.value}/organization-history?${params}`, op)
     }
-  } catch (cause) { fail(cause) } finally { if (current(op)) { phase.value = 'idle'; controller = null } }
+  } catch (cause) { if (current(op)) fail(cause) } finally { if (current(op)) { phase.value = 'idle'; controller = null } }
 }
 function parseArray(text: string) { const value: unknown = JSON.parse(text); if (!Array.isArray(value) || value.length < 1 || value.length > 100) throw new ApiFailure(422); return value }
 function prepare(kind: 'catalog' | 'workforce') {
@@ -144,6 +147,16 @@ async function submit() {
   } catch (cause) { fail(cause) } finally { if (current(op)) { phase.value = 'idle'; controller = null } }
 }
 function navigate(event: MouseEvent, href: string) { if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return; event.preventDefault(); window.history.pushState({}, '', href); route() }
+watch(() => props.queryDate, (next) => {
+  if (!alive || !validDate(next ?? '') || next === filters.asOf || mode.value === 'away') return
+  filters.asOf = next!
+  preview.value = null
+  tree.value = null
+  directory.value = null
+  history.value = null
+  catalogs.value = null
+  void refresh()
+})
 onMounted(() => { alive = true; window.addEventListener('popstate', route); route() })
 onBeforeUnmount(() => { alive = false; window.removeEventListener('popstate', route); cancel(); session.value = null; tree.value = null; directory.value = null; history.value = null })
 </script>
@@ -153,7 +166,7 @@ onBeforeUnmount(() => { alive = false; window.removeEventListener('popstate', ro
     <h1>{{ heading }}</h1>
     <p v-if="error" role="alert">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
     <form aria-label="组织查询条件" @submit.prevent="refresh()">
-      <label>业务查询日（as_of）<input v-model="filters.asOf" type="date" required /></label>
+      <label v-if="!validDate(props.queryDate ?? '')">查看日期<input v-model="filters.asOf" type="date" required /></label>
       <label>每页/节点上限<input v-model="filters.limit" type="number" min="1" max="100" /></label>
       <template v-if="mode === 'tree'"><label>根Department ID<input v-model="filters.rootDepartment" /></label><label>层级深度<input v-model="filters.depth" type="number" min="1" max="3" /></label><label><input v-model="filters.labels" type="checkbox" />显示名称和员工姓名（需要PII权限）</label></template>
       <template v-if="mode === 'directory'"><label>Department ID<input v-model="filters.department" /></label><label>员工ID<input v-model="filters.employee" /></label><label>状态<select v-model="filters.lifecycle"><option>active</option><option>inactive</option><option>all</option></select></label><label>姓名或Staff Code<input v-model="filters.q" /></label><label><input v-model="filters.profile" type="checkbox" />请求PII资料</label></template>

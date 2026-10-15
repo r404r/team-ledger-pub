@@ -5,6 +5,7 @@ type SessionHint = {
   subject_id: string
   org_id: string
   auth_epoch: string
+  business_date: string
   csrf_token: string
   mfa_recent: boolean
   identity_available?: boolean
@@ -19,6 +20,7 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const revision = /^[1-9][0-9]*$/
 const phase = ref<Phase>('checking')
 const session = shallowRef<SessionHint | null>(null)
+const globalViewDate = ref('')
 const returnTo = ref(knownReturnRoute())
 const interviewIntent = ref<'note.publish' | 'sensitive.export'>('note.publish')
 const compensationIntent = ref<'compensation.read' | 'compensation.propose' | 'compensation.approve' | 'bonus.target.manage' | 'bonus.propose' | 'bonus.approve' | 'bonus.payment.record' | 'compensation.extension.manage' | 'sensitive.export'>('compensation.read')
@@ -46,6 +48,11 @@ function validDate(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
   const date = new Date(`${value}T00:00:00Z`)
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value
+}
+function setGlobalViewDate(value: string) {
+  if (!validDate(value)) return false
+  globalViewDate.value = value
+  return true
 }
 function knownReturnRoute() {
   const url = new URL(window.location.href)
@@ -100,6 +107,7 @@ function sessionHint(value: unknown): SessionHint | null {
   const next = value as Partial<SessionHint>
   if (typeof next.subject_id !== 'string' || !uuid.test(next.subject_id) ||
       typeof next.org_id !== 'string' || !uuid.test(next.org_id) ||
+      typeof next.business_date !== 'string' || !validDate(next.business_date) ||
       typeof next.auth_epoch !== 'string' || !revision.test(next.auth_epoch) ||
       next.auth_epoch.length > 19 || BigInt(next.auth_epoch) > 9223372036854775807n ||
       typeof next.csrf_token !== 'string' || !next.csrf_token ||
@@ -114,9 +122,10 @@ function sessionHint(value: unknown): SessionHint | null {
   // Do not retain the response's business capabilities, authorities or unrelated fields.
   return {
     subject_id: next.subject_id, org_id: next.org_id, auth_epoch: next.auth_epoch,
-    csrf_token: next.csrf_token, mfa_recent: next.mfa_recent, identity_available: next.identity_available,
-    identity_mode: next.identity_mode, sensitivity_valid_until: next.sensitivity_valid_until,
-  }
+    business_date: next.business_date, csrf_token: next.csrf_token, mfa_recent: next.mfa_recent,
+    identity_available: next.identity_available, identity_mode: next.identity_mode,
+    sensitivity_valid_until: next.sensitivity_valid_until,
+}
 }
 function sameIdentity(left: SessionHint, right: SessionHint) {
   return left.subject_id === right.subject_id && left.org_id === right.org_id && left.auth_epoch === right.auth_epoch
@@ -125,6 +134,7 @@ function expireSession() {
   cancelOperation()
   protectedGeneration.value += 1
   session.value = null
+  globalViewDate.value = ''
   logoutCSRF = null
   phase.value = 'expired'
 }
@@ -157,11 +167,13 @@ async function checkSession(preserveProtected = false) {
       return
     }
     session.value = next
+    if (!previous || !validDate(globalViewDate.value)) globalViewDate.value = next.business_date
     if (next.identity_mode) identityMode.value = next.identity_mode
     phase.value = 'authenticated'
   } catch {
     if (!isCurrent(operation)) return
     session.value = null
+    globalViewDate.value = ''
     phase.value = 'unavailable'
   } finally {
     if (isCurrent(operation)) controller = null
@@ -174,6 +186,7 @@ async function logout() {
   logoutCSRF = csrf
   session.value = null
   await nextTick()
+  globalViewDate.value = ''
   if (!isCurrent(operation)) return
   try {
     const response = await fetch('/api/v1/auth/logout', {
@@ -386,6 +399,6 @@ onBeforeUnmount(() => {
     </template>
   </section>
   <div v-if="phase === 'authenticated'" :key="protectedGeneration">
-    <slot :expireSession="expireSession" :orgID="session?.org_id" />
+    <slot :expireSession="expireSession" :orgID="session?.org_id" :asOf="globalViewDate" :setAsOf="setGlobalViewDate" />
   </div>
 </template>

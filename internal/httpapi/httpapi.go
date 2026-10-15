@@ -181,6 +181,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if h.grants.Now != nil {
 			now = h.grants.Now().UTC().Truncate(time.Microsecond)
 		}
+		zone, e := time.LoadLocation(snap.Timezone)
+		if e != nil || snap.Timezone == "" {
+			h.fail(w, fault.Unavailable, requestID)
+			return
+		}
+		businessDate := now.In(zone).Format("2006-01-02")
 		authorities, e := h.grants.SessionAuthorities(r.Context(), authz.Request{TokenHash: req.TokenHash, RequestID: req.RequestID, Purpose: authz.ManagementPurpose})
 		if e != nil {
 			h.fail(w, e, requestID)
@@ -254,6 +260,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Subject                 string                    `json:"subject_id"`
 			Org                     string                    `json:"org_id"`
 			Epoch                   string                    `json:"auth_epoch"`
+			BusinessDate            string                    `json:"business_date"`
 			Capabilities            []string                  `json:"capabilities"`
 			CSRF                    string                    `json:"csrf_token"`
 			ScopeKind               string                    `json:"scope_kind"`
@@ -266,7 +273,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			InterviewPermissions    []interview.Permission    `json:"interview_permissions"`
 			CompensationPermissions []compensation.Permission `json:"compensation_permissions"`
 			SensitivityUntil        time.Time                 `json:"sensitivity_valid_until"`
-		}{snap.SubjectID, snap.OrgID, strconv.FormatInt(snap.AuthEpoch, 10), caps, token, scopeKind, scopeID, now.Before(snap.MFAUntil), snap.MFAUntil, authorities, h.identities.Available(), h.identities.Mode(), interviewPermissions, compensationPermissions, sensitivityUntil})
+		}{snap.SubjectID, snap.OrgID, strconv.FormatInt(snap.AuthEpoch, 10), businessDate, caps, token, scopeKind, scopeID, now.Before(snap.MFAUntil), snap.MFAUntil, authorities, h.identities.Available(), h.identities.Mode(), interviewPermissions, compensationPermissions, sensitivityUntil})
 		return
 	}
 	if r.URL.Path == "/api/v1/access-grants" || strings.HasPrefix(r.URL.Path, "/api/v1/access-grants/") {

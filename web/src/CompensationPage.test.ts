@@ -11,7 +11,7 @@ const permissions = ['compensation.read', 'compensation.propose', 'compensation.
 const terms: Terms = { currency: 'ZZZ', scale: 3, amount_minor: MONEY, rate: null, unit: 'synthetic_month', payment_frequency: 'synthetic_monthly', tax_basis: 'gross', components: [] }
 const term = { id: TERM, revision: R, employee_id: EMPLOYEE, effective_date: '2026-01-01', valid_to: null, event_id: EVENT, terms }
 const event = { id: EVENT, revision: B, kind: 'initial', effective_date: '2026-01-01', before_term_id: null, after_term_id: TERM, corrects_event_id: null, before: null, after: term, member_key: '' }
-const initialSession: Session = { subject_id: SUBJECT, org_id: ORG, auth_epoch: B, csrf_token: 'synthetic-csrf', mfa_recent: true, mfa_valid_until: '2026-10-12T00:00:00Z', sensitivity_valid_until: '2026-10-12T00:00:00Z', compensation_permissions: permissions }
+const initialSession = { subject_id: SUBJECT, org_id: ORG, auth_epoch: B, csrf_token: 'synthetic-csrf', business_date: '2026-10-11', mfa_recent: true, mfa_valid_until: '2026-10-12T00:00:00Z', sensitivity_valid_until: '2026-10-12T00:00:00Z', compensation_permissions: permissions } satisfies Session & { business_date: string }
 function proposal(status = 'draft'): ProposalView { return { id: PROPOSAL, employee_id: EMPLOYEE, kind: 'initial', status, revision: R, comp_revision: B, author_subject_id: OTHER, recorded_at: '2026-10-01T00:00:00Z', effective_date: '2026-01-01', before_term_id: null, after: terms, reason: 'synthetic immutable reason', members: [], decision_reason: '', approval_id: status === 'approved' ? APPROVAL : null, permissions: permissions.map(p => ({ ...p })) } }
 function approval(): ApprovalView { return { id: APPROVAL, employee_id: EMPLOYEE, proposal_id: PROPOSAL, proposal_revision: R, comp_revision: B, approver_subject_id: OTHER, approved_at: '2026-01-01T00:00:00Z', reason: 'synthetic immutable reason', decision_reason: 'synthetic independent decision', events: [event], members: [] } }
 function response(status: number, body: unknown) { return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }) }
@@ -68,6 +68,27 @@ describe('P-COMP-01 financial consumer boundaries', () => {
     expect(history.find(r => r.url.searchParams.get('record_kind') === 'approvals')!.url.searchParams.has('status')).toBe(false)
     expect(history.find(r => r.url.searchParams.get('record_kind') === 'proposals')!.url.searchParams.get('status')).toBe('submitted')
   })
+  it('replaces an in-flight old-date read when the global view date changes', async () => {
+    let release!: () => void
+    const old = { ...current }
+    currentReply = () => new Promise(resolve => { release = () => resolve(response(200, old)) })
+    const page = await open(true)
+    expect(release).toBeTypeOf('function')
+
+    current = { ...current, as_of: '2026-10-12' }
+    const picker = page.get('#global-view-date')
+    await picker.setValue('2026-10-12')
+    await picker.trigger('change')
+    await settle()
+    const reads = requests.filter(request => request.url.pathname.endsWith('/compensation'))
+    expect(reads.map(request => request.url.searchParams.get('as_of'))).toEqual(['2026-10-11', '2026-10-12'])
+    expect(page.text()).toContain('查询日 2026-10-12')
+
+    release()
+    await settle()
+    expect(page.text()).toContain('查询日 2026-10-12')
+    expect(page.text()).not.toContain('查询日 2026-10-11')
+  })
   it('keeps independent read/propose/approve/export capabilities separate from role or session authentication', async () => {
     session.compensation_permissions = [{ capability: 'compensation.read', category: 'financial' }]; current.permissions = session.compensation_permissions
     proposals.proposals[0]!.permissions = session.compensation_permissions
@@ -104,12 +125,48 @@ describe('P-COMP-01 financial consumer boundaries', () => {
     expect(page.find('[aria-label="财务命令结果尚未确认"]').exists()).toBe(false); expect(page.text()).toContain('409')
   })
   it('confirms a lost committed mutation only after explicit same-key same-body confirmation, despite new auth epoch and basis', async () => {
-    const page = await open(); await draft(page); mutationReply = async () => { throw new TypeError('Synthetic lost committed reply') }
+    const page = await open(true); await draft(page); mutationReply = async () => { throw new TypeError('Synthetic lost committed reply') }
     await page.get('[aria-label="完整薪酬提案编辑"]').trigger('submit'); await settle(); expect(page.find('[aria-label="财务命令结果尚未确认"]').exists()).toBe(true); expect(page.text()).not.toContain('synthetic immutable reason')
+    const picker = page.get('#global-view-date')
+    await picker.setValue('2026-10-12'); await picker.trigger('change'); await settle()
+    expect(page.find('[aria-label="财务命令结果尚未确认"]').exists()).toBe(true)
+    expect(page.text()).toContain('旧日期财务内容已隐藏')
+    expect(mutations()).toHaveLength(1)
     await button(page, '确认原命令结果').trigger('click'); await settle(); expect(mutations()).toHaveLength(1)
-    session.auth_epoch = '9007199254740995'; current.comp_revision = '9007199254740996'; mutationReply = async () => response(200, { id: PROPOSAL, revision: R, comp_revision: B, status: 'draft', proposal: null, members: [] })
+    session.auth_epoch = '9007199254740995'; current = { ...current, comp_revision: '9007199254740996' }
+    mutationReply = async () => {
+      currentReply = async () => {
+        const verification = { ...current }
+        current = { ...current, as_of: '2026-10-12' }
+        return response(200, verification)
+      }
+      return response(200, { id: PROPOSAL, revision: R, comp_revision: B, status: 'draft', proposal: null, members: [] })
+    }
     await page.get('#comp-replay-confirm').setValue(true); await button(page, '确认原命令结果').trigger('click'); await settle()
     expect(mutations()).toHaveLength(2); expect(mutations()[1]!.body).toBe(mutations()[0]!.body); expect(mutations()[1]!.headers.get('Idempotency-Key')).toBe(mutations()[0]!.headers.get('Idempotency-Key')); expect(JSON.parse(mutations()[1]!.body!).comp_revision).toBe(B)
+  })
+  it('adopts a queued global date after a definitive command denial without stranding the workbench', async () => {
+    let release!: () => void
+    mutationReply = () => new Promise(resolve => { release = () => resolve(response(403, { code: 'DENIED' })) })
+    const page = await open(true)
+    await draft(page)
+    await page.get('[aria-label="完整薪酬提案编辑"]').trigger('submit')
+    await settle()
+    expect(release).toBeTypeOf('function')
+
+    const picker = page.get('#global-view-date')
+    await picker.setValue('2026-10-12'); await picker.trigger('change'); await settle()
+    expect(page.text()).toContain('旧日期财务内容已隐藏')
+    release()
+    await settle()
+    expect(page.text()).not.toContain('旧日期财务内容已隐藏')
+    expect(page.find('[aria-label="薪酬查询条件"]').exists()).toBe(true)
+
+    current = { ...current, as_of: '2026-10-12' }
+    await button(page, '手动刷新当前授权与事实（清空草稿）').trigger('click')
+    await settle()
+    const reads = requests.filter(request => request.url.pathname.endsWith('/compensation'))
+    expect(reads.at(-1)!.url.searchParams.get('as_of')).toBe('2026-10-12')
   })
   it('never resends uncertain bytes after current purpose/scope grants are revoked', async () => {
     const page = await open(); await draft(page); mutationReply = async () => { throw new TypeError('Lost reply') }; await page.get('[aria-label="完整薪酬提案编辑"]').trigger('submit'); await settle()

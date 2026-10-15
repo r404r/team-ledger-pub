@@ -199,12 +199,20 @@ func TestEmployeeScopedSessionCanReadAndCorrectOnlyGrantedEmployee(t *testing.T)
 					t.Fatal(err)
 				}
 			}
+			if err := f.Exec(ctx, "UPDATE organization SET timezone=? WHERE id=?", "UPDATE organization SET timezone=$1 WHERE id=$2", "Asia/Tokyo", f.OrgID); err != nil {
+				t.Fatal(err)
+			}
+			zone, err := time.LoadLocation("Asia/Tokyo")
+			if err != nil {
+				t.Fatal(err)
+			}
 			var root, scoped struct {
 				Capabilities []string `json:"capabilities"`
+				BusinessDate string   `json:"business_date"`
 			}
 			apiSend(t, f, apiRequest(t, f, f.Owner, "GET", "/api/v1/session", "", ""), 200, &root)
-			if len(root.Capabilities) != 0 {
-				t.Fatal("employee-only authority became organization-wide authority")
+			if len(root.Capabilities) != 0 || root.BusinessDate != f.Now.In(zone).Format("2006-01-02") {
+				t.Fatal("employee-only root session returned wrong authority or organization business date", root)
 			}
 			apiSend(t, f, apiRequest(t, f, f.Owner, "GET", "/api/v1/session?employee_id="+first.ID, "", ""), 200, &scoped)
 			for _, capability := range scoped.Capabilities {

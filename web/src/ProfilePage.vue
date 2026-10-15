@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 
+const props = defineProps<{ queryDate?: string }>()
 const emit = defineEmits<{ 'session-expired': [] }>()
 
 type Session = {
@@ -68,6 +69,7 @@ const session = shallowRef<Session | null>(null)
 const details = shallowRef<Employee | null>(null)
 const routeKind = ref<RouteKind>('away')
 const employeeId = ref<string | null>(null)
+const queuedViewDate = ref('')
 const asOf = ref('')
 const editing = ref(false)
 const phase = ref<'idle' | 'loading' | 'saving' | 'verifying'>('idle')
@@ -244,8 +246,8 @@ function showFailure(cause: unknown, operation: Operation) {
 
 function updateAddress() {
   const path = routeKind.value === 'employee' ? `/employees/${employeeId.value}` : '/'
-  const query = new URLSearchParams({ as_of: asOf.value })
-  window.history.replaceState({}, '', `${path}?${query}`)
+  if (validDate(props.queryDate ?? '')) window.history.replaceState({}, '', path)
+  else window.history.replaceState({}, '', `${path}?${new URLSearchParams({ as_of: asOf.value })}`)
 }
 
 async function refresh(updateUrl = true) {
@@ -290,6 +292,13 @@ function beginEdit() {
   errorMessage.value = null
 }
 
+function adoptQueuedViewDate() {
+  if (!queuedViewDate.value) return
+  asOf.value = queuedViewDate.value
+  queuedViewDate.value = ''
+  void refresh(false)
+}
+
 async function save() {
   if (busy.value || !session.value || routeKind.value === 'away') return
   const creating = routeKind.value === 'create'
@@ -305,6 +314,7 @@ async function save() {
   const originalSession = session.value
   const targetId = employeeId.value
   const operation = beginOperation('saving')
+  let commandFinal = false
   try {
     const current = await readSession(operation)
     if (!sameSession(originalSession, current) ||
@@ -333,6 +343,7 @@ async function save() {
         typeof receipt.profile_revision !== 'string' || !revisionPattern.test(receipt.profile_revision)) {
       throw new ApiFailure(503)
     }
+    commandFinal = true
 
     if (creating) {
       employeeId.value = receipt.id
@@ -348,6 +359,8 @@ async function save() {
     notice.value = '已提交，并重新读取服务端当前获准的资料。'
   } catch (cause) {
     if (!isCurrent(operation)) return
+    const status = cause instanceof ApiFailure ? cause.status : 503
+    if ([400, 401, 403, 404, 409, 422].includes(status)) commandFinal = true
     if (cause instanceof ApiFailure && cause.status === 409) {
       try {
         const current = await readSession(operation)
@@ -364,6 +377,7 @@ async function save() {
     if (isCurrent(operation)) {
       phase.value = 'idle'
       controller = null
+      if (commandFinal) adoptQueuedViewDate()
     }
   }
 }
@@ -378,9 +392,10 @@ function navigate(event: MouseEvent, path: string) {
 function readRoute() {
   cancelOperation()
   clearSensitive()
+  queuedViewDate.value = ''
   errorMessage.value = null
   const url = new URL(window.location.href)
-  asOf.value = url.searchParams.get('as_of') ?? ''
+  asOf.value = validDate(props.queryDate ?? '') ? props.queryDate! : url.searchParams.get('as_of') ?? ''
   const employeeRoute = /^\/employees\/([^/]+)(?:\/profile)?\/?$/.exec(url.pathname)
   if (employeeRoute && uuidPattern.test(employeeRoute[1]!)) {
     routeKind.value = 'employee'
@@ -396,6 +411,22 @@ function readRoute() {
   }
   void refresh(false)
 }
+
+watch(() => props.queryDate, (next) => {
+  if (!alive || !validDate(next ?? '') || routeKind.value === 'away') return
+  if (next === asOf.value) {
+    queuedViewDate.value = ''
+    return
+  }
+  if (phase.value === 'saving' || phase.value === 'verifying') {
+    queuedViewDate.value = next!
+    return
+  }
+  if (phase.value === 'loading') cancelOperation()
+  queuedViewDate.value = ''
+  asOf.value = next!
+  void refresh(false)
+})
 
 onMounted(() => {
   alive = true
@@ -421,9 +452,9 @@ onBeforeUnmount(() => {
         <p>建立并维护员工身份资料。任职、组织关系、学历与直属主管在组织模块中独立维护。</p>
       </header>
 
-      <form class="profile-query" aria-label="人员资料查询条件" @submit.prevent="refresh()">
+      <form v-if="!validDate(props.queryDate ?? '')" class="profile-query" aria-label="人员资料查询条件" @submit.prevent="refresh()">
         <label for="profile-as-of">
-          <span>业务查询日 <small>as_of</small></span>
+          <span>查看日期</span>
           <input id="profile-as-of" v-model="asOf" type="date" required :disabled="busy" />
         </label>
         <button type="submit" :disabled="busy">刷新资料</button>
@@ -434,9 +465,10 @@ onBeforeUnmount(() => {
       <p v-if="busy" role="status">
         {{ phase === 'saving' ? '正在提交资料……' : phase === 'verifying' ? '正在重新读取服务端资料……' : '正在验证会话并读取资料……' }}
       </p>
+      <p v-if="queuedViewDate" role="status">查看日期已改变；将在当前人员资料命令结果明确后加载，新旧日期不会混合显示。</p>
       <p v-if="notice" role="status">{{ notice }}</p>
 
-      <section v-if="details" aria-label="当前获准的人员资料">
+      <section v-if="details && !queuedViewDate" aria-label="当前获准的人员资料">
         <dl>
           <dt>员工 ID</dt>
           <dd>{{ details.id }}</dd>

@@ -18,15 +18,16 @@ const DRAFT_NAME = '合成尚未提交资料'
 const PROVIDER_URL = 'https://identity.example.invalid/authorize?transaction=synthetic-browser-bound'
 const initialSession = {
   subject_id: SUBJECT, org_id: ORG, auth_epoch: '1', csrf_token: 'synthetic-csrf-initial',
+  business_date: AS_OF,
   capabilities: ['organization.read', 'organization.write', 'pii.read', 'pii.write'],
   scope_kind: 'org', scope_id: ORG, mfa_recent: false, mfa_valid_until: '2026-10-11T00:00:00Z',
   grant_authorities: [], identity_available: true,
   sensitivity_valid_until: undefined as string | undefined,
 }
-function profile(name = SAVED_NAME, org = ORG) {
+function profile(name = SAVED_NAME, org = ORG, asOf = AS_OF) {
   return {
     id: EMPLOYEE, org_id: org, profile_revision: '1',
-    lifecycle: { valid_from: '2026-10-01', valid_to: null }, as_of: AS_OF, authorization_date: AS_OF,
+    lifecycle: { valid_from: '2026-10-01', valid_to: null }, as_of: asOf, authorization_date: AS_OF,
     profile: { local_name: name, work_contact: { email: 'synthetic-identity@example.invalid' } },
     identifiers: [], employment: [], education: [], job_assignments: [], reporting_lines: [],
   }
@@ -183,6 +184,29 @@ describe('shared protected identity interaction', () => {
     expect((panel.element as HTMLDetailsElement).open).toBe(true)
     expect(panel.text()).toContain('重新核对会话（清空当前页面）')
     expect(panel.text()).toContain('注销本会话')
+  })
+
+  it('uses the server organization day as the global view date and reloads the active page when it changes', async () => {
+    api.reply('GET', PROFILE_PATH, 200, profile())
+    const page = await open()
+    const picker = page.get('#global-view-date')
+    expect((picker.element as HTMLInputElement).value).toBe(AS_OF)
+
+    const changed = '2026-10-12'
+    api.reply('GET', PROFILE_PATH, 200, profile(SAVED_NAME, ORG, changed))
+    await picker.setValue(changed)
+    await picker.trigger('change')
+    await settled()
+
+    const requests = api.matching('GET', PROFILE_PATH)
+    expect(requests).toHaveLength(2)
+    expect(requests[1]!.url.searchParams.get('as_of')).toBe(changed)
+
+    await picker.setValue('')
+    await picker.trigger('change')
+    await settled()
+    expect((picker.element as HTMLInputElement).value).toBe(changed)
+    expect(api.matching('GET', PROFILE_PATH)).toHaveLength(2)
   })
 
   it('keeps the authenticated surface mounted while an internal route session check is pending', async () => {
