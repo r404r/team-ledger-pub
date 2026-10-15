@@ -54,8 +54,8 @@ ORG/INT/COMP/BONUS/AI业务机制保持；R7已有审计、有限导出、KEK re
 flowchart TB
     person["授权人员"]
     identity{"部署固定identity mode"}
-    local["local账号/密码<br/>fresh maintenance bootstrap<br/>Argon2id＋keyd pepper；无MFA<br/>DEV-019固定C c8b4da4已验"]
-    oidc["可选受信OIDC IdP<br/>唯一step-up/MFA来源"]
+    local["local账号/密码<br/>Argon2id＋keyd pepper；当前无MFA<br/>DEV-030批准TOTP＋恢复码，待v13 migration"]
+    oidc["可选受信OIDC IdP<br/>当前唯一step-up/MFA来源"]
     session["8h absolute / 30m idle会话<br/>登录不创建grant"]
     command["授权人员的显式业务命令"]
     gate["F-SEC-001 当前命令授权<br/>能力、scope、类别、grant、purpose<br/>必要MFA；版本/当前资格"]
@@ -349,7 +349,7 @@ DEV-025统一9个稳定页面及共同身份壳层的视觉系统：同源hash C
 
 DEV-026将P-ORG-01人员资料录入按“查询条件、基本资料、工作联系方式、生命周期/更正依据、提交区”分组，label与control保持单一字段单元；字段、必填/可清空口径、创建/更正命令及组织事实边界不变。应用内主导航切换时，已核对身份壳层保持可见并在后台重新核对会话，不再短暂显示全屏checking状态；后台核对的401、身份上下文变化、敏感期限失效或服务失败仍销毁全部保护内容。
 
-DEV-027将认证态共同会话区默认收敛为单行摘要：持续显示“会话已核对”和MFA摘要，用户展开“会话与安全”后才显示身份边界说明、重新核对、注销、MFA及本地账号密码操作。未认证、checking、expired、changed、unavailable和操作中状态不折叠，安全错误及恢复入口保持显式；折叠只改变信息密度，不改变身份或业务授权。
+DEV-027曾将认证态共同会话区收敛为默认关闭的单行摘要；DEV-030进一步把正常态入口移入sticky应用顶栏右侧，以“会话正常”状态按钮打开不改变业务layout的浮层，身份边界、重新核对、注销、MFA及本地账号密码操作均在浮层内。路由切换、外部点击或Escape关闭并正确返回焦点，短视口内部滚动；受保护页面generation替换时目标和Teleport共同重建。未认证、checking、expired、changed、unavailable和操作中状态仍由独占gate销毁/阻止业务内容，不为收窄视觉而降低安全显著性。
 
 DEV-028 T1将业务有效期投影日收敛为认证态顶部全局“查看日期”：初值来自服务端按组织IANA时区计算的当天，应用内切换人员资料、组织树、员工目录和薪酬工作台时保持同一内存值；用户改变后相关当前页面重新读取。页面不再要求重复填写或显示技术名`as_of`；`as_of`仍是API契约，只影响雇佣、任职、组织及薪资等有效期投影，不改变服务端独立捕获的当前授权判断日。该值不写local/session storage；单一合法`as_of`的受控深链接可恢复历史查看日期，其余重新登录或加载回到服务端当天。
 
@@ -943,7 +943,7 @@ flowchart TB
 7. 本地文件方案支持无人值守启动且阻止API UID直接读取长期key；但获准API进程被攻陷后可通过窄接口取得其允许domain明文。方案不抵御host root、离线副本持有人或该授权调用方，不把keyd冒充业务授权边界。
 8. 部署必须选择且只能选择`local`或`oidc`身份模式；首次bootstrap后模式固定入库，配置不符不ready。切换是显式维护动作，会撤销全部会话并审计；登录失败不尝试另一模式。
 9. `local`模式无公开注册：fresh空库由maintenance profile一次性创建唯一集团、首个active subject/account及固定`bootstrap_policy.v1`最小组织/PII维护权；输入不能选择金融、面谈、审计、导出或grant管理权。其后维护者只把唯一username绑定既有active subject；后续subject创建本身不授职责。登录错误、未知或停用账号给相同提示并指数延迟；密码更改/重置/停用撤销该主体全部会话。正常登录只建立会话，不创建角色、grant或员工绑定。
-10. `local`模式没有MFA/step-up，所有要求MFA的授权管理、敏感导出等操作保持`MFA_REQUIRED`不可用；不得用再次输入密码或bootstrap身份冒充第二因素。需要这些操作的部署应选择并配置能提供已批准MFA声明的`oidc`模式。
+10. `local`模式当前没有MFA/step-up，所有要求MFA的授权管理、敏感导出等操作保持`MFA_REQUIRED`不可用；不得用再次输入密码或bootstrap身份冒充第二因素。DEV-030已批准由TeamLedger独立完成的TOTP＋一次性恢复码，但在实际部署v12 source/checksum、备份恢复和v13双数据库migration验证完成前仍是未实装目标；当前页面明确显示“MFA未提供”，不提供伪开关。
 11. Compose内置receiver是独立进程但与业务共用DB：业务事务先原子写安全事件/outbox，forwarder以mTLS投递；receiver先构造/签名receipt，再将ledger与完整signed receipt在同一事务INSERT/commit，commit后才返回，forwarder验签才确认outbox。服务中断保留事件重试，同event/digest逐byte返回已持久化原receipt；forwarder另以5秒mTLS探测写单例heartbeat，API仅接受本部署ID且成功状态不老于15秒。此同库方案不宣称抵御DBA/host root。
 12. root/keyring离线副本每次同时导出到两份分别加密、分离保管的可移动介质；停止写入并锁定同一generation，inventory包含全部active/staged/decrypt-only/verify-only key entry状态与每domain active pointer，A/B都经隔离只读hash/auth/完整probe后才登记成功。副本不含DB或audit/OIDC私钥，不是完整灾备，当前不承诺RPO/RTO。
 
@@ -1105,7 +1105,7 @@ P-ORG-01 的图冲突、P-INT-01 的 head 冲突、P-COMP-01 的 basis 冲突、
 | Staff Code、rehire入职日口径、组织目录及HOD | F-ORG-001、F-COMP-001 | 工号全集团跨历史owner唯一，可换号且同一employee rehire可复用本人旧号；Branch=`法分公司`；Location=Shanghai/Wuxi/Tokyo；层级固定BG→Division→Department；学历Master>Bachelor>Diploma；HOD=直属主管。rehire页面同时显示首次入职日和本次employment spell起始日 |
 | 个人薪酬与奖金审批职责、自批限制、追溯纠错及支付证明规则 | F-COMP-001、F-BONUS-001 | 个人提案/奖金仍分离查看、提出、审批、导出/支付并默认拒自批；normal/special批次由DES-005明确无人工审批，不能把该决定外推到个人提案/奖金 |
 | Special原因目录、批次技术容量与导入文件保留期 | F-COMP-001、F-SEC-001 | 原因目录从部署薪资policy受控配置、未配置为空，每行另有必填加密文本；最多500名唯一员工/`.xlsx`压缩10MiB、展开50MiB、ZIP entry 10,000；candidate当前TTL 24小时待业务接受。系统不保存原XLSX，系统外留存/删除责任仍待批准 |
-| 身份、密钥、特殊权限批准者/MFA、AI与外传 | F-SEC-001、F-AI-001 | 已批准内置账号/密码模式、本地root/keyd、同库独立audit receiver及离线副本介质；MFA、生产职责及AI provider仍待后续政策，不把无MFA的本地账号冒充高保障身份 |
+| 身份、密钥、特殊权限批准者/MFA、AI与外传 | F-SEC-001、F-AI-001 | 已批准内置账号/密码模式、本地root/keyd、同库独立audit receiver、离线副本介质及本地TOTP＋恢复码方向；TOTP仍待既有v12 preflight和v13双数据库migration实装，当前本地账号不冒充高保障身份；生产职责及AI provider仍待后续政策 |
 | 部署位置、人数/并发、可用性与恢复目标 | F-DB-001、F-SEC-001 | 每部署一个DB后端；root/keyring必须与DB backup分离，并另存两份加密可移动离线介质；灾备RPO/RTO明确在当前scope外 |
 
 政策确认或撤回通过真实task/决定记录更新当前完整功能与技术规范及验收；稳定ID保留，历史在Git/必要ADR中追溯，不另开一份并行现状规范。

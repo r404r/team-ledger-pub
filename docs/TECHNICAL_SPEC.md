@@ -19,7 +19,7 @@ flowchart LR
     subgraph app["边界 A：浏览器与应用"]
         proxy["反向代理 / TLS"]
         api["Go API<br/>当前授权、业务事务、有限导出<br/>live / ready"]
-        localAuth["local模式<br/>fresh maintenance bootstrap＋账号/密码<br/>Argon2id＋keyd pepper；无MFA"]
+        localAuth["local模式<br/>账号/密码＋Argon2id/keyd pepper；当前无MFA<br/>TOTP＋恢复码已批准，待v13"]
         listener["内部 worker routes<br/>mTLS；拒 cookie/Authorization"]
         proxy --> api
         localAuth --> api
@@ -135,7 +135,7 @@ DEV-025前端视觉基础集中在`web/src/styles.css`并由`main.ts`静态导�
 
 DEV-026把`IdentityGate.checkSession`区分为破坏式显式/生命周期核对和路由后台核对。已有`authenticated`会话收到`popstate`时，后台请求仍使用`no-store`并参与generation/AbortController竞态控制，但不提前增加`protectedGeneration`或切换`phase=checking`；pending期间保持身份壳层，返回相同subject、org及auth epoch时确认继续。401调用统一`expireSession`，context变化/敏感期限失效进入`changed`，transport/非成功响应进入`unavailable`，这些失败路径仍清空session并卸载slot。用户显式“重新核对”、focus/pageshow及pagehide继续采用先销毁后核对语义。
 
-DEV-027的认证态`IdentityGate`使用原生`details/summary`作为会话披露控件，默认closed且不写入local/session storage；内部路由切换复用同一组件实例，因此保留当前open状态。summary仅呈现非敏感会话/MFA摘要，完整安全操作仍调用原有`checkSession`、`stepUp`、`logout`和`changePassword`路径；phase离开`authenticated`时整个details随分支卸载，不能把旧展开内容带入新身份上下文。
+DEV-030把认证态`IdentityGate`的原生`details/summary`经deferred Teleport放入`App.vue` sticky顶栏的固定target，默认closed且不写local/session storage；浮层absolute定位，不推动业务layout，动态视口限高并内部滚动。路由切换、外部pointer及Escape关闭，Escape返回summary焦点；`protectedGeneration`同时重建受保护slot、target与Teleport，避免控件留在detached DOM。summary仅呈现非敏感会话/MFA状态；local当前明确“MFA未提供”。完整操作仍调用原`checkSession`、`stepUp`、`logout`和`changePassword`路径；phase离开`authenticated`时整个业务slot和控件卸载，异常gate保持独占。
 
 DEV-028 T1在`GET /session`增加规范Date字段`business_date`，由handler使用同一次授权时钟和snapshot中的组织IANA timezone计算；timezone缺失/不可加载时fail closed。`IdentityGate`验证后以其初始化session级`globalViewDate`，通过受保护slot交给`App.vue`顶部日期控件及Profile/Organization/Compensation页面；单一合法`as_of`深链接优先初始化该内存值，内部导航保留，session销毁时清空。相关页面仍向既有API发送`as_of`并在全局值变化后取消旧请求、清敏感投影、重新读取；授权服务继续使用独立当前业务日，客户端值不参与scope判断。
 
@@ -587,7 +587,7 @@ DB必须执行 PK/NOT NULL、复合org/employee FK、有限state/kind/category C
 | GET `/auth/callback` | 仅`oidc` mode；一次性code/state与同浏览器binding；协议例外不以普通body CSRF替代PKCE/nonce | 成功才轮换opaque session/CSRF并302批准站内路径；401/403 MFA_REQUIRED/503均不签新cookie，不把code/token返回或写日志 |
 | POST `/auth/local/login` | 仅`local` mode；strict JSON `{username,password}`、Origin/Fetch Metadata、TLS；密码按§7.1.2原始bytes | 成功签8h/30m session/CSRF；不存在/disabled/错误/限流统一401且无另一模式fallback；DB/keyd/audit故障503 |
 | POST `/auth/local/password` | 仅`local` mode；当前cookie/CSRF/Origin/Metadata，strict `{current_password,new_password}` | 重验当前密码，原子换credential、推进epoch、撤销全部session及审计；成功204并清当前cookie，须重新登录 |
-| POST `/auth/step-up` | 仅`oidc` mode；当前cookie/CSRF/Origin/Fetch Metadata，`{action,return_to}`；action有限pii.write/access_grant.manage/note.publish/sensitive.export及compensation.read/propose/approve（含批次） | 200受信HTTPS authorization_url与binding；local mode或无可信MFA为`403/MFA_REQUIRED`，意图不授业务权、不自动重提命令 |
+| POST `/auth/step-up` | 当前仅`oidc` mode；当前cookie/CSRF/Origin/Fetch Metadata，`{action,return_to}`；action有限pii.write/access_grant.manage/note.publish/sensitive.export及compensation.read/propose/approve（含批次） | 200受信HTTPS authorization_url与binding；当前local mode或无可信MFA为`403/MFA_REQUIRED`，意图不授业务权、不自动重提命令。已批准的local TOTP使用v13独立协议，未实装前不复用密码或此OIDC redirect契约 |
 | POST `/auth/logout` | 两种mode；同current cookie/CSRF/Origin/Metadata/JSON，body仅`{}`，无mutation query/未知字段 | 同敏感release guard原子revoke**本session**＋safe audit后204并清cookie；非subject全会话登出/IdP全局登出。失败不可假确认 |
 
 `return_to`有限`/`、`/security/grants`、canonical员工/组织R2路由、R3面谈路由、`/employees/<id>/compensation`及`/compensation/adjustment-batches[/<id>]`；只各自定义安全query，无任意host/fragment/PII/转义path。cookie Secure/HttpOnly/Lax/Path=/、无Domain，callback no-referrer/no-store。`identity_available`只配置hint。`sensitivity_valid_until`为服务端下一组织IANA日界、会话绝对/idle、MFA及未来grant生效/失效的保守最早期限；UI到期销毁并显式重验，不承诺在线撤权推送。
@@ -931,7 +931,7 @@ HMAC状态不是可忽略运维标记：所有新增奖金写在事务内读取�
 
 所有cookie mutation及敏感POST校验session绑定CSRF token、Origin与Fetch Metadata。[S3] token只经keyd当前`csrf_token` MAC：规范输入为domain＋原始32-byte session随机值，DB存token hash/key version，`/session`从已验证cookie以**当前同version key**重算。CSRF key rotation必须停写，并在激活前同一DB事务撤销全部旧version session、推进subject/session epoch及写audit；因此不提供历史MAC派生。旧tab/reload/POST统一401并清敏感状态，按当前部署模式重新登录才取得新session/token；多tab不静默换token。OIDC callback仍以state/nonce/PKCE而非普通CSRF。
 
-只有`oidc`模式提供step-up：通过同login流程绑定当前主体＋requested action/return，`max_age`和essential auth_time/实际IdP认可acr请求；回包核验同issuer/sub、auth_time和**已约定可信acr/amr映射**，不是客户端勾选“MFA”或收到任意amr就通过。**沿既有授权设计，合格近期MFA是会话级认证条件，不是一次性动作授权票据**：action只绑定短时认证transaction/AAD及回跳意图；例如为`pii.write`完成MFA的同一会话，可以在仍有完整`access_grant.manage`能力/scope/grant/purpose/批准/当前资格时满足其MFA条件，缺任何业务条件仍拒绝。不得因action值、return或认证成功创建角色/grant或自动提交业务。建议freshness≤10分钟；无可信对应证明则`403/MFA_REQUIRED`且不自造认证器。[S1] `local`模式把`mfa_until`固定为空、不提供step-up route；§5所有要求MFA的操作稳定拒绝`403/MFA_REQUIRED`，不得把密码重输视为MFA。
+当前只有`oidc`模式提供step-up：通过同login流程绑定当前主体＋requested action/return，`max_age`和essential auth_time/实际IdP认可acr请求；回包核验同issuer/sub、auth_time和**已约定可信acr/amr映射**，不是客户端勾选“MFA”或收到任意amr就通过。**沿既有授权设计，合格近期MFA是会话级认证条件，不是一次性动作授权票据**：action只绑定短时认证transaction/AAD及回跳意图；例如为`pii.write`完成MFA的同一会话，在当前grant允许时也满足同窗口内其他要求MFA的能力。DEV-030批准的local TOTP＋恢复码仍是v13目标，实际部署preflight和migration完成前不改变本段当前行为。
 
 #### 7.1.1 OIDC身份协议时序（DEV-006候选已实际运行，生产设施另验）
 
@@ -989,7 +989,7 @@ keyd的`local_password_pepper` key永不离开keyd。MAC规范输入为ASCII `TE
 
 fresh local部署以maintenance profile显式运行`identity local-bootstrap -input-file ... -request-id <UUID>`。input同文件规则且唯一schema为fixed-order `{"timezone":"<IANA>","username":"…","password":"…"}`；CLI生成org/subject/account UUID。命令只在organization、subject、local account、identity mode及bootstrap receipt全部为空时执行，并在一个事务建立唯一active org、首个active bootstrap subject、local account/credential、mode=`local`、`bootstrap_policy.v1`固定的OrgR/OrgW/PIIR/PIIW capability assignments与对应org/metadata/PII grants、maintenance audit/outbox和command receipt；输入不能指定额外能力/category/purpose。固定集合不含金融、面谈、审计查看、导出或grant管理，所有MFA-required路径仍拒绝。相同request ID和同digest在断连后只返回原安全org/subject/account IDs，异digest冲突；任何其他事实已存在时永久拒绝，不补建、不接管。此命令不依赖IdP/邮件/短信/匿名HTTP，失败全回滚且不输出可登录账号。
 
-后续`identity local-subject create -request-id`可经同类protected file创建无账号的active subject；它不授capability/grant。随后`local-account create`绑定该subject；职责仍必须来自既有批准/provisioning事实，“可登录”不等于管理员。bootstrap最小subject只足以建立初始组织目录/员工；需要MFA的grant管理及敏感功能在local模式保持不可用。
+后续`identity local-subject create -request-id`可经同类protected file创建无账号的active subject；它不授capability/grant。随后`local-account create`绑定该subject；职责仍必须来自既有批准/provisioning事实，“可登录”不等于管理员。bootstrap最小subject只足以建立初始组织目录/员工；当前需要MFA的grant管理及敏感功能在local模式保持不可用。DEV-030已经批准TOTP＋一次性恢复码及受限`enrollment_required`/recovery状态机，但必须作为v13双方言前向migration实装，不修改冻结v12 baseline。
 
 ```mermaid
 sequenceDiagram
@@ -1271,7 +1271,7 @@ SQLite备份使用一致Backup API/VACUUM INTO等机制，不能复制活main.db
 
 历史R3/R7外部Transit URL/token/CA只保留为固定代码证据；DEV-018已迁移生产调用者并删除外部KMS生产路径/secret，不得回退。
 
-DEV-019当前组合根只接受`TEAMLEDGER_IDENTITY_MODE=local|oidc`，删除`disabled`模式。`local`拒绝任何OIDC变量并经keyd提供username/password domain；`oidc`要求完整`TEAMLEDGER_OIDC_ISSUER`/`CLIENT_ID`/`CLIENT_SECRET_FILE`/`MFA_ACR`/`MFA_AMR`及可选`CA_FILE`。redirect由已校验PUBLIC_ORIGIN固定`/api/v1/auth/callback`，须在实际IdP精确注册；仅RS256，HTTPS discovery/JWKS/token、TLS≥1.2、无redirect/不安全TLS/代理fallback、有界timeout。两种模式均无请求级fallback。
+DEV-019当前组合根只接受`TEAMLEDGER_IDENTITY_MODE=local|oidc`，删除`disabled`模式。`local`拒绝任何OIDC变量并经keyd提供username/password domain，当前没有MFA；`oidc`要求完整`TEAMLEDGER_OIDC_ISSUER`/`CLIENT_ID`/`CLIENT_SECRET_FILE`/`MFA_ACR`/`MFA_AMR`及可选`CA_FILE`。redirect由已校验PUBLIC_ORIGIN固定`/api/v1/auth/callback`，须在实际IdP精确注册；仅RS256，HTTPS discovery/JWKS/token、TLS≥1.2、无redirect/不安全TLS/代理fallback、有界timeout。已批准local TOTP将新增独立MFA key domain和v13状态，不得提前用配置布尔值解锁。
 
 OIDC client secret及非对称信任继续使用受保护配置文件；identity lookup、transaction envelope、CSRF、receipt/generation及cursor长期对称key均由keyring/keyd提供。历史client secret之外的identity/transaction RAW32 key-file配置已删除且无fallback；session opaque token仍只存SHA-256 hash，无session key。
 

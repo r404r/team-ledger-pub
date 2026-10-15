@@ -187,8 +187,7 @@
     padding: .35rem .55rem;
     font-size: .8rem;
   }
-  .workspace-state { display: flex; align-items: center; gap: .62rem; color: var(--ink-600); font-size: .78rem; font-weight: 650; }
-  .workspace-state::before { width: .46rem; height: .46rem; border-radius: 50%; background: var(--brand-500); box-shadow: 0 0 0 .24rem var(--brand-100); content: ""; }
+  .identity-session-target { position: relative; flex: 0 0 auto; }
 
   #app .app-nav {
     display: flex;
@@ -580,21 +579,18 @@
 
 
   .identity-shell {
-    width: min(calc(100% - 2rem), var(--content));
-    margin: 1rem auto 0;
+    width: min(calc(100% - 2rem), 31rem);
+    margin: clamp(2rem, 8vh, 6rem) auto 0;
     border: 1px solid var(--line);
+    border-top: .28rem solid var(--brand-700);
     border-radius: var(--radius-lg);
     background: rgb(255 255 255 / 94%);
-    box-shadow: var(--shadow-sm);
-    padding: var(--space-4);
+    box-shadow: var(--shadow-md);
+    padding: clamp(1.35rem, 4vw, 2rem);
     font-family: var(--font-sans);
   }
-  .identity-shell[data-identity-state="authenticated"] {
-    overflow: hidden;
-    padding: 0;
-    box-shadow: var(--shadow-xs);
-  }
   .identity-session-panel {
+    position: relative;
     margin: 0;
     border: 0;
     padding: 0;
@@ -602,31 +598,49 @@
   .identity-session-panel > summary {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
-    min-height: 3.5rem;
+    min-height: 2.25rem;
     align-items: center;
-    gap: .8rem;
-    padding: .62rem 1rem;
+    gap: .6rem;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--surface-muted);
+    padding: .34rem .68rem;
     color: var(--ink-900);
     cursor: pointer;
     list-style: none;
+    white-space: nowrap;
   }
   .identity-session-panel > summary::-webkit-details-marker { display: none; }
-  .identity-session-panel > summary:hover { background: var(--surface-muted); }
-  .identity-session-panel > summary:focus-visible { outline: .2rem solid var(--focus); outline-offset: -.2rem; }
+  .identity-session-panel > summary:hover { border-color: var(--brand-300); background: var(--brand-50); }
+  .identity-session-panel > summary:focus-visible { outline: .2rem solid var(--focus); outline-offset: .12rem; }
   .identity-indicator {
-    width: .7rem;
-    height: .7rem;
+    width: .52rem;
+    height: .52rem;
     border-radius: 50%;
     background: var(--brand-500);
-    box-shadow: 0 0 0 .28rem var(--brand-100);
+    box-shadow: 0 0 0 .2rem var(--brand-100);
   }
-  .identity-copy { display: flex; min-width: 0; align-items: baseline; gap: .65rem; }
-  .identity-copy strong { font-size: .88rem; }
-  .identity-copy > span { color: var(--ink-600); font-size: .78rem; }
-  .identity-disclosure { color: var(--brand-700); font-size: .78rem; font-weight: 760; white-space: nowrap; }
-  .identity-disclosure::after { display: inline-block; margin-left: .45rem; content: "⌄"; }
+  .identity-copy { display: flex; min-width: 0; align-items: baseline; gap: .45rem; }
+  .identity-copy strong { font-size: .78rem; }
+  .identity-copy > span { color: var(--ink-600); font-size: .7rem; }
+  .identity-disclosure::after { display: inline-block; color: var(--brand-700); font-size: .78rem; content: "⌄"; }
   .identity-session-panel[open] .identity-disclosure::after { transform: rotate(180deg); }
-  .identity-session-body { border-top: 1px solid var(--line-soft); padding: var(--space-4); }
+  .identity-session-body {
+    position: absolute;
+    z-index: 50;
+    top: calc(100% + .55rem);
+    right: 0;
+    width: min(26rem, calc(100vw - 2rem));
+    max-height: calc(100dvh - 5.5rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: rgb(255 255 255 / 98%);
+    box-shadow: var(--shadow-lg);
+    padding: var(--space-4);
+    white-space: normal;
+  }
   .identity-session-body > p { margin: 0 0 var(--space-3); color: var(--ink-600); font-size: .8rem; }
   .identity-actions { display: flex; flex-wrap: wrap; gap: .55rem; }
   .identity-tools { margin-top: var(--space-3); border-top: 1px solid var(--line-soft); padding-top: var(--space-3); }
@@ -636,18 +650,11 @@
   .identity-account-panel { margin-top: var(--space-3); border-top: 1px solid var(--line-soft); padding-top: var(--space-3); }
   .identity-account-panel > summary { width: fit-content; color: var(--brand-700); font-size: .82rem; font-weight: 760; cursor: pointer; }
   .identity-account-panel form { margin-top: var(--space-3); }
-  .identity-shell:not([data-identity-state="authenticated"]) {
-    width: min(calc(100% - 2rem), 31rem);
-    margin-top: clamp(2rem, 8vh, 6rem);
-    border-top: .28rem solid var(--brand-700);
-    padding: clamp(1.35rem, 4vw, 2rem);
-    box-shadow: var(--shadow-md);
-  }
   .auth-heading { display: flex; align-items: center; gap: .8rem; margin-bottom: var(--space-5); }
   .auth-heading h1 { margin: 0; font-size: 1.35rem; }
   .auth-heading p { margin: .1rem 0 0; color: var(--ink-600); font-size: .78rem; }
-  .identity-shell:not([data-identity-state="authenticated"]) form { grid-template-columns: 1fr; padding: 0; }
-  #app .identity-shell:not([data-identity-state="authenticated"]) form button { width: 100%; }
+  .identity-shell form { grid-template-columns: 1fr; padding: 0; }
+  #app .identity-shell form button { width: 100%; }
   .sr-only {
     position: absolute;
     width: 1px;
@@ -663,7 +670,7 @@
   @media (max-width: 760px) {
     body { font-size: .9rem; }
     .app-shell-bar { min-height: 3.8rem; }
-    .brand-copy small, .workspace-state span { display: none; }
+    .brand-copy small { display: none; }
     .app-shell-context { gap: .65rem; }
     #app .global-view-date { gap: .35rem; }
     #app .global-view-date > span { display: none; }
@@ -676,13 +683,16 @@
     #app dt { border-bottom: 0; padding-bottom: .12rem; }
     #app dd { padding-top: .12rem; }
     #app button, #app a[role="button"] { min-height: 2.7rem; }
-    .identity-shell { width: min(calc(100% - 1.15rem), var(--content)); }
-    .identity-shell[data-identity-state="authenticated"] { grid-template-columns: 1fr; }
-    .identity-session-panel > summary { gap: .65rem; padding-inline: .8rem; }
+    .identity-shell { width: min(calc(100% - 1.15rem), 31rem); }
+    .identity-copy > span { display: none; }
+    .identity-session-body { right: -.25rem; width: min(24rem, calc(100vw - 1.15rem)); }
     .identity-actions { justify-content: flex-start; margin-top: var(--space-3); }
     .identity-tools-row { display: grid; grid-template-columns: 1fr; }
     .identity-tools-row label { min-width: 0; }
     #app th, #app td { min-width: 7.5rem; }
+  }
+  @media (max-width: 560px) {
+    .brand-copy { display: none; }
   }
 
   @media (prefers-reduced-motion: reduce) {

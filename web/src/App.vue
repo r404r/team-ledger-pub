@@ -65,7 +65,7 @@ onBeforeUnmount(() => window.removeEventListener('popstate', readRoute))
             <span>查看日期</span>
             <input id="global-view-date" type="date" :value="asOf" @change="changeViewDate($event, setAsOf, asOf)" />
           </label>
-          <div class="workspace-state"><span>受保护工作区</span></div>
+          <div id="identity-session-target" class="identity-session-target"></div>
         </div>
       </div>
       <nav class="app-nav" aria-label="主导航">

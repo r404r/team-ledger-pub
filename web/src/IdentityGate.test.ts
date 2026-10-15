@@ -96,7 +96,7 @@ async function open() {
 async function openGate() {
   const page = mount(IdentityGate, {
     attachTo: document.body,
-    slots: { default: '<main data-protected-surface>合成保护页面</main>' },
+    slots: { default: '<header><div id="identity-session-target"></div></header><main data-protected-surface>合成保护页面</main>' },
   })
   pages.push(page)
   await settled()
@@ -172,18 +172,24 @@ describe('shared protected identity interaction', () => {
     expect(page.text()).toContain(SAVED_NAME)
   })
 
-  it('starts with a compact authenticated summary and expands session controls on demand', async () => {
+  it('renders the compact session control in the supplied header target and closes its overlay on Escape', async () => {
     const page = await openGate()
-    const panel = page.get('details.identity-session-panel')
+    const target = page.get('#identity-session-target')
+    const panel = target.get('details.identity-session-panel')
     expect((panel.element as HTMLDetailsElement).open).toBe(false)
     expect(panel.get('summary').text()).toContain('会话与安全')
+    expect(page.element.querySelector(':scope > details.identity-session-panel')).toBeNull()
 
     await panel.get('summary').trigger('click')
     await nextTick()
-
     expect((panel.element as HTMLDetailsElement).open).toBe(true)
     expect(panel.text()).toContain('重新核对会话（清空当前页面）')
     expect(panel.text()).toContain('注销本会话')
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await nextTick()
+    expect((panel.element as HTMLDetailsElement).open).toBe(false)
+    expect(document.activeElement).toBe(panel.get('summary').element)
   })
 
   it('uses the server organization day as the global view date and reloads the active page when it changes', async () => {
@@ -251,6 +257,7 @@ describe('shared protected identity interaction', () => {
     api.reply('GET', PROFILE_PATH, 200, profile('合成重新核对后的资料'))
     await action(page, /^重新核对会话$/).trigger('click'); await settled()
     expect(page.text()).toContain('合成重新核对后的资料')
+    expect(page.get('#identity-session-target').text()).toContain('会话正常')
   })
 
   it('a newer session denial supersedes an earlier checking response without mounting a protected consumer', async () => {
@@ -514,6 +521,8 @@ describe('shared protected identity interaction', () => {
     api.reply('GET', PROFILE_PATH, 200, profile())
     api.reply('POST', '/api/v1/auth/local/password', 204)
     const page = await open()
+    expect(page.get('.identity-session-panel > summary').text()).toContain('MFA 未提供')
+    expect(page.get('.identity-session-panel > summary').text()).not.toContain('MFA 待验证')
     await page.get('#current-password').setValue('correct horse battery staple')
     await page.get('#new-password').setValue('replacement horse battery staple')
     await page.get('form').trigger('submit')
@@ -536,7 +545,7 @@ describe('R3 session-wide interview MFA intents', () => {
     [`/interviews/${OTHER}`, 'note.publish', '重新验证笔记发布 MFA'],
   ])('retains legal return route %s and submits only current session intent %s', async (route, intent, label) => {
     history.replaceState({}, '', `${route}?untrusted_body=must-not-return`)
-    const page = mount(IdentityGate, { attachTo: document.body, slots: { default: '<p>受保护业务插槽</p>' } }); pages.push(page)
+    const page = mount(IdentityGate, { attachTo: document.body, slots: { default: '<div id="identity-session-target"></div><p>受保护业务插槽</p>' } }); pages.push(page)
     await settled()
     await page.get('#interview-stepup-intent').setValue(intent)
     const starting = api.defer('POST', '/api/v1/auth/step-up')
@@ -550,7 +559,7 @@ describe('R3 session-wide interview MFA intents', () => {
   })
   it('does not falsely report missing identity facilities on legal interview route', async () => {
     history.replaceState({}, '', '/interviews')
-    const page = mount(IdentityGate, { attachTo: document.body }); pages.push(page); await settled()
+    const page = mount(IdentityGate, { attachTo: document.body, slots: { default: '<div id="identity-session-target"></div>' } }); pages.push(page); await settled()
     expect(page.text()).toContain('MFA 是会话级近期认证')
     expect(page.text()).not.toContain('可信登录与 MFA 设施未启用')
   })
@@ -577,7 +586,7 @@ describe('shared gate current sensitivity clock boundary', () => {
 describe('R4 financial MFA intents and strict safe return routes', () => {
   it.each(['compensation.read', 'compensation.propose', 'compensation.approve', 'sensitive.export'])('submits finite %s intent without issuing any financial operation', async intent => {
     history.replaceState({}, '', `/employees/${EMPLOYEE}/compensation?as_of=${AS_OF}`)
-    const page = mount(IdentityGate, { attachTo: document.body, slots: { default: '<p>financial protected slot</p>' } }); pages.push(page); await settled()
+    const page = mount(IdentityGate, { attachTo: document.body, slots: { default: '<div id="identity-session-target"></div><p>financial protected slot</p>' } }); pages.push(page); await settled()
     expect(api.matching('GET', '/api/v1/session')[0]!.headers.get('X-Access-Purpose')).toBe('compensation_management')
     await page.get('#compensation-stepup-intent').setValue(intent)
     const pending = api.defer('POST', '/api/v1/auth/step-up')

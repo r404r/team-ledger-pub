@@ -30,6 +30,8 @@ const password = ref('')
 const currentPassword = ref('')
 const newPassword = ref('')
 const protectedGeneration = ref(0)
+const sessionPanel = ref<HTMLDetailsElement | null>(null)
+const sessionSummary = ref<HTMLElement | null>(null)
 let alive = false
 let generation = 0
 let controller: AbortController | null = null
@@ -296,7 +298,22 @@ async function changePassword() {
     if (isCurrent(operation)) controller = null
   }
 }
+function closeSessionPanel(returnFocus = false) {
+  if (!sessionPanel.value?.open) return
+  sessionPanel.value.open = false
+  if (returnFocus) sessionSummary.value?.focus()
+}
+function closeSessionPanelFromPointer(event: PointerEvent) {
+  if (sessionPanel.value?.open && event.target instanceof Node && !sessionPanel.value.contains(event.target)) closeSessionPanel()
+}
+function closeSessionPanelFromKey(event: KeyboardEvent) {
+  if (event.key === 'Escape' && sessionPanel.value?.open) {
+    event.preventDefault()
+    closeSessionPanel(true)
+  }
+}
 function routeChanged() {
+  closeSessionPanel()
   returnTo.value = knownReturnRoute()
   if (phase.value === 'authenticated' || phase.value === 'checking') void checkSession(true)
 }
@@ -322,11 +339,15 @@ onMounted(() => {
   window.addEventListener('pageshow', resume)
   window.addEventListener('pagehide', suspend)
   expiryTimer = setInterval(clearExpiredSensitivity, 1000)
+  document.addEventListener('pointerdown', closeSessionPanelFromPointer)
+  document.addEventListener('keydown', closeSessionPanelFromKey)
   void checkSession()
 })
 onBeforeUnmount(() => {
   alive = false
   window.removeEventListener('popstate', routeChanged)
+  document.removeEventListener('pointerdown', closeSessionPanelFromPointer)
+  document.removeEventListener('keydown', closeSessionPanelFromKey)
   window.removeEventListener('focus', resume)
   window.removeEventListener('pageshow', resume)
   window.removeEventListener('pagehide', suspend)
@@ -338,41 +359,49 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="identity-shell" aria-label="共同身份与会话" :data-identity-state="phase" :aria-busy="['checking', 'logging-out', 'mfa-starting'].includes(phase)">
-    <details v-if="phase === 'authenticated'" class="identity-session-panel">
-      <summary>
-        <span class="identity-indicator" aria-hidden="true"></span>
-        <span class="identity-copy">
-          <strong>会话已核对</strong>
-          <span>{{ session?.mfa_recent ? 'MFA 近期有效' : 'MFA 按需验证' }}</span>
-        </span>
-        <span class="identity-disclosure">会话与安全</span>
-      </summary>
-      <div class="identity-session-body">
-        <p>身份摘要不是业务访问许可；页面仍按当前scope、purpose和能力独立授权。</p>
-        <div class="identity-actions">
-          <button type="button" @click="checkSession()">重新核对会话（清空当前页面）</button>
-          <button v-if="canLogout" type="button" @click="logout">注销本会话</button>
-        </div>
-        <div class="identity-tools">
-          <div v-if="identityAvailable" class="identity-tools-row">
-            <label v-if="interviewRoute" for="interview-stepup-intent">重新验证意图<select id="interview-stepup-intent" v-model="interviewIntent"><option value="note.publish">发布笔记</option><option value="sensitive.export">敏感导出</option></select></label>
-            <label v-if="compensationRoute" for="compensation-stepup-intent">财务重新验证意图<select id="compensation-stepup-intent" v-model="compensationIntent"><option value="compensation.read">财务读取</option><option value="compensation.propose">薪酬提出</option><option value="compensation.approve">独立薪酬审批</option><option value="bonus.target.manage">奖金目标维护</option><option value="bonus.propose">奖金奖励维护</option><option value="bonus.approve">独立奖金审批</option><option value="bonus.payment.record">奖金支付事实</option><option value="compensation.extension.manage">薪酬有限扩展</option><option value="sensitive.export">财务敏感导出</option></select></label>
-            <button type="button" @click="stepUp">{{ compensationRoute ? '重新验证财务 MFA' : stepUpAction === 'access_grant.manage' ? '重新验证授权管理 MFA' : stepUpAction === 'interview_policy.manage' ? '重新验证跟进策略 MFA' : stepUpAction === 'note.publish' ? '重新验证笔记发布 MFA' : stepUpAction === 'sensitive.export' ? '重新验证敏感导出 MFA' : '重新验证资料写入 MFA' }}</button>
-          </div>
-          <p v-if="interviewRoute || compensationRoute || followupRoute">MFA 是会话级近期认证；认证后重载并明确重新确认，不自动提交、审批、生成结论或导出。</p>
-          <p v-if="!identityAvailable">可信登录与 MFA 设施未启用，不能在本地完成验证。</p>
-          <details v-if="identityMode === 'local'" class="identity-account-panel">
-            <summary>账号安全与密码</summary>
-            <form @submit.prevent="changePassword">
-              <label for="current-password">当前密码<input id="current-password" v-model="currentPassword" type="password" autocomplete="current-password" required minlength="12" maxlength="256"></label>
-              <label for="new-password">新密码<input id="new-password" v-model="newPassword" type="password" autocomplete="new-password" required minlength="12" maxlength="256"></label>
-              <button type="submit">修改密码并注销全部会话</button>
-            </form>
-          </details>
-        </div>
+  <section :class="{ 'identity-shell': phase !== 'authenticated' }" aria-label="共同身份与会话" :data-identity-state="phase" :aria-busy="['checking', 'logging-out', 'mfa-starting'].includes(phase)">
+    <template v-if="phase === 'authenticated'">
+      <div :key="protectedGeneration">
+        <slot :expireSession="expireSession" :orgID="session?.org_id" :asOf="globalViewDate" :setAsOf="setGlobalViewDate" />
       </div>
-    </details>
+      <Teleport defer :key="`session-${protectedGeneration}`" to="#identity-session-target">
+        <details ref="sessionPanel" class="identity-session-panel">
+          <summary ref="sessionSummary">
+            <span class="identity-indicator" aria-hidden="true"></span>
+            <span class="identity-copy">
+              <strong>会话正常</strong>
+              <span>{{ session?.mfa_recent ? 'MFA 有效' : identityMode === 'local' ? 'MFA 未提供' : 'MFA 待验证' }}</span>
+            </span>
+            <span class="identity-disclosure" aria-hidden="true"></span>
+            <span class="sr-only">会话与安全</span>
+          </summary>
+          <div class="identity-session-body">
+            <p>身份摘要不是业务访问许可；页面仍按当前scope、purpose和能力独立授权。</p>
+            <div class="identity-actions">
+              <button type="button" @click="closeSessionPanel(); checkSession()">重新核对会话（清空当前页面）</button>
+              <button v-if="canLogout" type="button" @click="closeSessionPanel(); logout()">注销本会话</button>
+            </div>
+            <div class="identity-tools">
+              <div v-if="identityAvailable" class="identity-tools-row">
+                <label v-if="interviewRoute" for="interview-stepup-intent">重新验证意图<select id="interview-stepup-intent" v-model="interviewIntent"><option value="note.publish">发布笔记</option><option value="sensitive.export">敏感导出</option></select></label>
+                <label v-if="compensationRoute" for="compensation-stepup-intent">财务重新验证意图<select id="compensation-stepup-intent" v-model="compensationIntent"><option value="compensation.read">财务读取</option><option value="compensation.propose">薪酬提出</option><option value="compensation.approve">独立薪酬审批</option><option value="bonus.target.manage">奖金目标维护</option><option value="bonus.propose">奖金奖励维护</option><option value="bonus.approve">独立奖金审批</option><option value="bonus.payment.record">奖金支付事实</option><option value="compensation.extension.manage">薪酬有限扩展</option><option value="sensitive.export">财务敏感导出</option></select></label>
+                <button type="button" @click="closeSessionPanel(); stepUp()">{{ compensationRoute ? '重新验证财务 MFA' : stepUpAction === 'access_grant.manage' ? '重新验证授权管理 MFA' : stepUpAction === 'interview_policy.manage' ? '重新验证跟进策略 MFA' : stepUpAction === 'note.publish' ? '重新验证笔记发布 MFA' : stepUpAction === 'sensitive.export' ? '重新验证敏感导出 MFA' : '重新验证资料写入 MFA' }}</button>
+              </div>
+              <p v-if="interviewRoute || compensationRoute || followupRoute">MFA 是会话级近期认证；认证后重载并明确重新确认，不自动提交、审批、生成结论或导出。</p>
+              <p v-if="!identityAvailable">内置账号当前尚未提供 MFA；需要近期 MFA 的敏感操作保持关闭。</p>
+              <details v-if="identityMode === 'local'" class="identity-account-panel">
+                <summary>账号安全与密码</summary>
+                <form @submit.prevent="closeSessionPanel(); changePassword()">
+                  <label for="current-password">当前密码<input id="current-password" v-model="currentPassword" type="password" autocomplete="current-password" required minlength="12" maxlength="256"></label>
+                  <label for="new-password">新密码<input id="new-password" v-model="newPassword" type="password" autocomplete="new-password" required minlength="12" maxlength="256"></label>
+                  <button type="submit">修改密码并注销全部会话</button>
+                </form>
+              </details>
+            </div>
+          </div>
+        </details>
+      </Teleport>
+    </template>
     <template v-else>
       <div class="auth-heading">
         <span class="brand-mark" aria-hidden="true">TL</span>
@@ -402,7 +431,4 @@ onBeforeUnmount(() => {
       <a v-else-if="identityMode === 'oidc' && ['logged-out', 'expired', 'changed', 'unavailable', 'logout-failed', 'mfa-failed'].includes(phase)" :href="loginURL" role="button" @click="login">通过可信身份设施登录</a>
     </template>
   </section>
-  <div v-if="phase === 'authenticated'" :key="protectedGeneration">
-    <slot :expireSession="expireSession" :orgID="session?.org_id" :asOf="globalViewDate" :setAsOf="setGlobalViewDate" />
-  </div>
 </template>
