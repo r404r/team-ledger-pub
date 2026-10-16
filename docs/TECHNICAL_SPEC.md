@@ -136,6 +136,8 @@ DEV-026把`IdentityGate.checkSession`区分为破坏式显式/生命周期核对
 
 DEV-030把认证态`IdentityGate`的原生`details/summary`经deferred Teleport放入`App.vue` sticky顶栏固定target，默认closed且不写local/session storage；浮层absolute定位，不推动业务layout，动态视口限高并内部滚动。DEV-035加入本地TOTP后，未登记/恢复session只渲染账号安全页；business session的本地step-up、factor替换和恢复码重发在模态框完成，不卸载受保护页面，也不自动重放命令。二维码由浏览器本地生成，不调用外部服务；secret/code只保存在当前Vue内存并在取消、失效、离页时清除。
 
+DEV-040把P-SEC-01的客户端grant契约拆分为可签发与可读取集合：`grantCapabilities`加入经bootstrap authority批准的`identity.manage`；`readableGrantCapabilities`另含不可普通签发的`access_grant.manage`。`validPersistedGrantPair/Object`只接受无对象限制的`access_grant.manage / audit / security_administration`固定事实，命令预览仍使用较窄`validGrantPair/Object`，因此不会把读取兼容误变成委派权。bootstrap响应中的合法管理grant不再使整个DTO进入伪503；未知tuple仍fail closed。筛选器同步覆盖`audit`、`security_administration`及两项安全能力。
+
 DEV-028 T1在`GET /session`增加规范Date字段`business_date`，由handler使用同一次授权时钟和snapshot中的组织IANA timezone计算；timezone缺失/不可加载时fail closed。`IdentityGate`验证后以其初始化session级`globalViewDate`，通过受保护slot交给`App.vue`顶部日期控件及Profile/Organization/Compensation页面；单一合法`as_of`深链接优先初始化该内存值，内部导航保留，session销毁时清空。相关页面仍向既有API发送`as_of`并在全局值变化后取消旧请求、清敏感投影、重新读取；授权服务继续使用独立当前业务日，客户端值不参与scope判断。
 
 DEV-028 T2的`OrganizationPage`继续只调用OP-ORG-04 `POST /orgs/:id/employees/query`，PII能力由重读后的scoped session决定：有`pii.read`才发送`include_profile=true`及允许`q`，无权时不发送姓名查询。筛选表单与已应用查询快照分离，opaque cursor历史只保存在页面内存，实现上一页/下一页且不推导总数；新查询或全局日期变化清空cursor历史并回到第一页。DEV-033把同日catalog与每个employee投影组合为No.、Staff Code、双语姓名、Location、Branch、BG、Division、Department、Education、Employment Date、Position、Job Family、Career Level及HOD宽表；BG/Division仅沿Department父链派生，不持久化副本，容器自身横向滚动。

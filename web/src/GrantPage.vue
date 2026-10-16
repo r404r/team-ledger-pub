@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue'
-import { grantCapabilities as capabilities, grantObjectKinds, validGrantPair, validGrantObject, validSourceApproval, type ObjectReference } from './grantPairs'
+import { grantCapabilities as capabilities, readableGrantCapabilities, grantObjectKinds, validGrantPair, validGrantObject, validPersistedGrantPair, validPersistedGrantObject, validSourceApproval, type ObjectReference } from './grantPairs'
 
 const emit = defineEmits<{ 'session-expired': []; 'grant-result': [kind: 'issue' | 'revoke'] }>()
 
@@ -162,11 +162,11 @@ async function readSession(operation: Operation, expected?: Session, replay = fa
 }
 function validGrant(value: Grant): boolean {
   if (!value || !uuid.test(value.id) || value.org_id !== session.value?.org_id || !uuid.test(value.subject_id) ||
-      !validGrantPair(value.capability, value.category, value.purpose) ||
+      !validPersistedGrantPair(value.capability, value.category, value.purpose) ||
       !validScope(value.scope) || !timestamp(value.valid_from) || !timestamp(value.expires_at) ||
       timestamp(value.valid_from)! >= timestamp(value.expires_at)! || typeof value.mfa_required !== 'boolean' ||
       typeof value.relation_bound !== 'boolean' || !validRelation(value.relation_bound, value.relation_ref, value.scope) ||
-      !validGrantObject(value.object_ref, value.capability, value.category, value.purpose) ||
+      !validPersistedGrantObject(value.object_ref, value.capability, value.category, value.purpose) ||
       !validSourceApproval(value.approved_source_refs ?? [], value.capability, value.category) || !validRevision(value.revision) ||
       !['current', 'future', 'expired', 'revoked'].includes(value.status)) return false
   for (const field of ['authority_id', 'approved_by', 'issued_by', 'revoked_by'] as const) {
@@ -221,7 +221,7 @@ async function applyFilters() {
       filters.scopeKind && !['org', 'department', 'employee'].includes(filters.scopeKind) ||
       filters.category && !['metadata', 'pii', 'audit', 'shared', 'manager_private', 'hr_confidential', 'financial'].includes(filters.category) ||
       filters.purpose && !['organization_management', 'security_administration', 'interview_followup', 'compensation_management'].includes(filters.purpose) ||
-      filters.capability && !capabilities.includes(filters.capability) ||
+      filters.capability && !readableGrantCapabilities.includes(filters.capability) ||
       filters.state && !['current', 'future', 'expired', 'revoked'].includes(filters.state) ||
       Boolean(filters.objectKind) !== Boolean(filters.objectID) ||
       filters.objectKind && (!grantObjectKinds.includes(filters.objectKind as ObjectReference['kind']) || !uuid.test(filters.objectID)) ||
@@ -371,7 +371,7 @@ onBeforeUnmount(() => {
 <template>
   <main :aria-busy="busy">
     <h1>明确授权管理</h1>
-    <p>仅管理明确批准的 org / department / employee 授权。Department、经理或身份映射不自动授予权限；关系绑定须填写原任职引用。管理权不授予员工 PII、业务正文或全库审计读取权。</p>
+    <p>把已经批准的权限明确授予具体用户，或查询、撤销已有授权。实际可授予类型以“当前批准的委派范围”为准；本页管理权不自动授予员工 PII、业务正文或审计内容，也不能创建未经批准的权限。Department、经理或身份映射不会自动产生授权；关系绑定须填写原任职引用。</p>
     <button type="button" @click="refresh">刷新授权</button>
     <p v-if="error" role="alert">{{ error }}</p>
     <p v-if="busy" role="status">{{ phase === 'submitting' ? '正在提交命令……' : phase === 'verifying' ? '正在重新验证并读取当前授权……' : '正在验证会话并读取授权……' }}</p>
@@ -395,11 +395,11 @@ onBeforeUnmount(() => {
           <label for="grant-filter-subject">筛选主体 ID</label><input id="grant-filter-subject" v-model="filters.subject" />
           <label for="grant-filter-scope-kind">筛选 scope 类型</label><select id="grant-filter-scope-kind" v-model="filters.scopeKind"><option value="">全部</option><option value="org">org</option><option value="department">department</option><option value="employee">employee</option></select>
           <label for="grant-filter-scope-id">筛选 scope ID</label><input id="grant-filter-scope-id" v-model="filters.scopeID" />
-          <label for="grant-filter-category">筛选类别</label><select id="grant-filter-category" v-model="filters.category"><option value="">全部</option><option v-for="category in ['metadata', 'pii', 'shared', 'manager_private', 'hr_confidential', 'financial']" :key="category" :value="category">{{ category }}</option></select>
-          <label for="grant-filter-purpose">筛选目的</label><select id="grant-filter-purpose" v-model="filters.purpose"><option value="">全部</option><option value="organization_management">organization_management</option><option value="interview_followup">interview_followup</option><option value="compensation_management">compensation_management</option></select>
+          <label for="grant-filter-category">筛选类别</label><select id="grant-filter-category" v-model="filters.category"><option value="">全部</option><option v-for="category in ['metadata', 'pii', 'audit', 'shared', 'manager_private', 'hr_confidential', 'financial']" :key="category" :value="category">{{ category }}</option></select>
+          <label for="grant-filter-purpose">筛选目的</label><select id="grant-filter-purpose" v-model="filters.purpose"><option value="">全部</option><option value="organization_management">organization_management</option><option value="security_administration">security_administration</option><option value="interview_followup">interview_followup</option><option value="compensation_management">compensation_management</option></select>
           <label for="grant-filter-state">筛选状态</label><select id="grant-filter-state" v-model="filters.state"><option value="">全部</option><option value="current">current</option><option value="future">future</option><option value="expired">expired</option><option value="revoked">revoked</option></select>
           <label for="grant-filter-id">筛选授权 ID</label><input id="grant-filter-id" v-model="filters.grantID" />
-          <label for="grant-filter-capability">筛选能力</label><select id="grant-filter-capability" v-model="filters.capability"><option value="">全部</option><option v-for="capability in capabilities" :key="capability" :value="capability">{{ capability }}</option></select>
+          <label for="grant-filter-capability">筛选能力</label><select id="grant-filter-capability" v-model="filters.capability"><option value="">全部</option><option v-for="capability in readableGrantCapabilities" :key="capability" :value="capability">{{ capability }}</option></select>
           <label for="grant-filter-object-kind">筛选对象类型（须与 ID 成对）</label><select id="grant-filter-object-kind" v-model="filters.objectKind"><option value="">全部</option><option v-for="kind in grantObjectKinds" :key="kind" :value="kind">{{ kind }}</option></select>
           <label for="grant-filter-object-id">筛选具体对象 ID</label><input id="grant-filter-object-id" v-model="filters.objectID" />
           <label for="grant-filter-limit">每页条数</label><input id="grant-filter-limit" v-model="filters.limit" type="number" min="1" max="100" />

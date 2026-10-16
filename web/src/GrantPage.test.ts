@@ -3,7 +3,7 @@ import type { VueWrapper } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
-import { validGrantPair, validGrantObject, validSourceApproval } from './grantPairs'
+import { validGrantPair, validGrantObject, validPersistedGrantPair, validPersistedGrantObject, validSourceApproval } from './grantPairs'
 
 const ORG = '10000000-0000-4000-8000-000000000001'
 const MANAGER = '10000000-0000-4000-8000-000000000002'
@@ -33,9 +33,9 @@ function grant(id = GRANT, status = 'current', revision = REVISION) {
     id, org_id: ORG, subject_id: READER, capability: 'pii.read', category: 'pii',
     scope: { kind: 'employee', id: EMPLOYEE }, purpose: 'organization_management',
     valid_from: START, expires_at: END, mfa_required: true, relation_bound: false,
-    relation_ref: null, object_ref: null, revision, status, authority_id: AUTHORITY,
-    policy_version: authority.policy_version, approved_by: OTHER, approved_at: authority.approved_at,
-    issued_by: MANAGER, issued_at: START, revoked_by: status === 'revoked' ? MANAGER : null,
+    relation_ref: null, object_ref: null, revision, status, authority_id: AUTHORITY as string | null,
+    policy_version: authority.policy_version as string | null, approved_by: OTHER as string | null, approved_at: authority.approved_at as string | null,
+    issued_by: MANAGER as string | null, issued_at: START as string | null, revoked_by: status === 'revoked' ? MANAGER : null,
     revoked_at: status === 'revoked' ? END : null, revoke_reason: status === 'revoked' ? 'policy_change' : null,
   }
 }
@@ -144,6 +144,41 @@ describe('P-SEC-01 current independent grant management', () => {
     expect(page.findAll(`a[href*="${EMPLOYEE}"]`)).toHaveLength(0)
     expect(api.requests.some((request) => request.url.pathname.includes('/employees/'))).toBe(false)
     expect(api.requests.every((request) => request.cache === 'no-store')).toBe(true)
+  })
+  it('opens the bootstrap administrator grant list and exposes the approved identity authority', async () => {
+    const identityAuthority = {
+      ...authority, capability: 'identity.manage', category: 'audit', scope: { kind: 'org', id: ORG },
+      purpose: 'security_administration', delegable_scopes: [{ kind: 'org', id: ORG }],
+      policy_version: 'bootstrap_admin.v1',
+    }
+    const securityGrant = (id: string, capability: string) => ({
+      ...grant(id), capability, category: 'audit', scope: { kind: 'org', id: ORG },
+      purpose: 'security_administration', authority_id: null, policy_version: null,
+      approved_by: null, approved_at: null, issued_by: null, issued_at: null,
+    })
+    api.session = { ...session, grant_authorities: [identityAuthority] }
+    api.replies = []
+    api.reply('GET', '/api/v1/access-grants', 200, list([
+      securityGrant(GRANT, 'access_grant.manage'),
+      securityGrant(OTHER, 'identity.manage'),
+    ], EPOCH, null, [identityAuthority]))
+
+    const page = await open()
+
+    expect(page.find('[role="alert"]').exists()).toBe(false)
+    expect(page.find('[aria-label="授权列表"]').text()).toContain('access_grant.manage')
+    expect(page.find('[aria-label="授权列表"]').text()).toContain('identity.manage')
+    expect(page.get('#grant-filter-category').findAll('option').map(item => item.attributes('value'))).toContain('audit')
+    expect(page.get('#grant-filter-purpose').findAll('option').map(item => item.attributes('value'))).toContain('security_administration')
+    expect(page.get('#grant-filter-capability').findAll('option').map(item => item.attributes('value'))).toContain('access_grant.manage')
+    await action(page, /^新建授权$/).trigger('click')
+    expect(page.text()).toContain('identity.manage')
+    expect(field(page, /批准依据|authority/i).findAll('option').map(item => item.text())).toContainEqual(expect.stringContaining('identity.manage'))
+    await field(page, /受授权主体/).setValue(READER)
+    await field(page, /生效时间/).setValue(START)
+    await field(page, /到期时间/).setValue(END)
+    await action(page, /^预览授权$/).trigger('click')
+    expect(page.find('[aria-label="授权预览"]').text()).toContain('identity.manage')
   })
   it('requires preview and human confirmation, then reads committed grant under the intentionally changed epoch', async () => {
     const page = await open(); await draft(page)
@@ -685,10 +720,14 @@ describe('R4 finite financial grants without aggregate or export implication', (
 })
 
 describe('R7 independent audit grant', () => {
-  it('accepts only the audit.read/audit/security_administration tuple without object scope', () => {
+  it('keeps bootstrap management readable while only approved audit and identity capabilities are issuable', () => {
     expect(validGrantPair('audit.read', 'audit', 'security_administration')).toBe(true)
-    expect(validGrantObject(null, 'audit.read', 'audit', 'security_administration')).toBe(true)
+    expect(validGrantPair('identity.manage', 'audit', 'security_administration')).toBe(true)
+    expect(validGrantObject(null, 'identity.manage', 'audit', 'security_administration')).toBe(true)
     expect(validGrantPair('access_grant.manage', 'audit', 'security_administration')).toBe(false)
+    expect(validPersistedGrantPair('access_grant.manage', 'audit', 'security_administration')).toBe(true)
+    expect(validPersistedGrantObject(null, 'access_grant.manage', 'audit', 'security_administration')).toBe(true)
+    expect(validPersistedGrantObject({ kind: 'note_version', id: OTHER }, 'access_grant.manage', 'audit', 'security_administration')).toBe(false)
     expect(validGrantPair('audit.read', 'pii', 'security_administration')).toBe(false)
     expect(validGrantObject({ kind: 'note_version', id: OTHER }, 'audit.read', 'audit', 'security_administration')).toBe(false)
   })

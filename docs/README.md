@@ -24,5 +24,7 @@
 - [DEV-038验证摘要](validation/DEV-038.md)
 - [DEV-039会话后台核对与文件上传连续性](plans/DEV-039.md)：focus核对不再刷新业务页或清除XLSX选择。
 - [DEV-039验证摘要](validation/DEV-039.md)
+- [DEV-040明确授权管理可用性修复](plans/DEV-040.md)：bootstrap安全grant读取、identity委派和管理筛选契约。
+- [DEV-040验证摘要](validation/DEV-040.md)
 
 历史私有计划、review会话、本机路径和旧文档commit台账不复制到public仓库；它们不是当前产品契约。当前行为以本仓库源码、迁移、永久测试和上述文档为准。
