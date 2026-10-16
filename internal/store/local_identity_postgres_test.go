@@ -76,6 +76,7 @@ func TestPostgresLocalBootstrapAndLogin(t *testing.T) {
 	if err != nil {
 		t.Fatal("PostgreSQL bootstrap failed", err)
 	}
+	assertBootstrapAuthorities(t, ctx, repo, orgID, subjectID)
 	service, err := identity.NewLocal(ctx, repo, repo, keys, sensitive.Cipher{Wrapper: localWrapper{}}, sensitive.Cipher{Wrapper: localWrapper{}})
 	if err != nil {
 		t.Fatal(err)

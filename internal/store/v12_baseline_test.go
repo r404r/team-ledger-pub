@@ -11,7 +11,7 @@ import (
 	"github.com/r404r/team-ledger/internal/value"
 )
 
-func TestV15FreshInstallPreservesCleanWorkforceBaseline(t *testing.T) {
+func TestV16FreshInstallPreservesCleanWorkforceBaseline(t *testing.T) {
 	ctx := context.Background()
 	repo, err := store.Open(ctx, "sqlite", filepath.Join(t.TempDir(), "v15.sqlite"))
 	if err != nil {
@@ -29,8 +29,8 @@ func TestV15FreshInstallPreservesCleanWorkforceBaseline(t *testing.T) {
 	if err = repo.DB.QueryRowContext(ctx, "SELECT count(*),max(version) FROM schema_version").Scan(&versionRows, &version); err != nil {
 		t.Fatal(err)
 	}
-	if versionRows != 15 || version != 15 {
-		t.Fatalf("fresh baseline ledger = %d rows/max %d, want complete v1..v15 checksums", versionRows, version)
+	if versionRows != 16 || version != 16 {
+		t.Fatalf("fresh baseline ledger = %d rows/max %d, want complete v1..v16 checksums", versionRows, version)
 	}
 
 	for _, name := range []string{"team", "team_parent_history", "team_membership", "position_assignment"} {
@@ -39,7 +39,7 @@ func TestV15FreshInstallPreservesCleanWorkforceBaseline(t *testing.T) {
 			t.Fatal(err)
 		}
 		if count != 0 {
-			t.Fatalf("legacy table %s exists in v15 clean baseline", name)
+			t.Fatalf("legacy table %s exists in v16 clean baseline", name)
 		}
 	}
 	for _, name := range []string{
@@ -54,12 +54,12 @@ func TestV15FreshInstallPreservesCleanWorkforceBaseline(t *testing.T) {
 			t.Fatal(err)
 		}
 		if count != 1 {
-			t.Fatalf("required v15 table %s count = %d", name, count)
+			t.Fatalf("required v16 table %s count = %d", name, count)
 		}
 	}
 	var passwordChangeColumn int
 	if err = repo.DB.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('local_account') WHERE name='password_change_required'").Scan(&passwordChangeColumn); err != nil || passwordChangeColumn != 1 {
-		t.Fatal("v15 local account password-change state missing", err)
+		t.Fatal("v16 local account password-change state missing", err)
 	}
 	for _, column := range []struct{ table, name string }{
 		{"legal_entity", "name"}, {"org_unit", "name"}, {"employee_business_identifier", "staff_code"}, {"job_assignment", "title"},
@@ -86,18 +86,18 @@ func TestV15FreshInstallPreservesCleanWorkforceBaseline(t *testing.T) {
 		t.Fatalf("fixed catalogs = locations %q education %q ranks %q", locations, education, educationRanks)
 	}
 	if _, err = repo.DB.ExecContext(ctx, "INSERT INTO audit_event(id,operation,purpose,request_id,outcome,recorded_at,actor_kind) VALUES(?,'OP-ORG-02','',?,'allowed',?,'application')", value.NewID(), value.NewID(), repo.BindTime(time.Now())); err == nil {
-		t.Fatal("retired OP-ORG-02 accepted by SQLite v15 audit schema")
+		t.Fatal("retired OP-ORG-02 accepted by SQLite v16 audit schema")
 	}
 }
 
-func TestV15PostgresInstallHasNoTeamEraTables(t *testing.T) {
+func TestV16PostgresInstallHasNoTeamEraTables(t *testing.T) {
 	f := testsupport.NewHarness(t, "postgres")
 	ctx := context.Background()
 	var versionRows, version int
 	if err := f.Repo.DB.QueryRowContext(ctx, "SELECT count(*),max(version) FROM schema_version").Scan(&versionRows, &version); err != nil {
 		t.Fatal(err)
 	}
-	if versionRows != 15 || version != 15 {
+	if versionRows != 16 || version != 16 {
 		t.Fatalf("fresh PostgreSQL baseline ledger = %d rows/max %d", versionRows, version)
 	}
 	for _, name := range []string{"team", "team_parent_history", "team_membership", "position_assignment"} {
@@ -106,7 +106,7 @@ func TestV15PostgresInstallHasNoTeamEraTables(t *testing.T) {
 			t.Fatal(err)
 		}
 		if count != 0 {
-			t.Fatalf("legacy PostgreSQL table %s exists in v15 clean baseline", name)
+			t.Fatalf("legacy PostgreSQL table %s exists in v16 clean baseline", name)
 		}
 	}
 	for _, name := range []string{"bootstrap_admin_policy", "local_user_command_receipt"} {

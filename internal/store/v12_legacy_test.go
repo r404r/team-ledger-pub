@@ -62,7 +62,7 @@ func TestV15MigratesPersistedV12BatchWithoutClearingData(t *testing.T) {
 		t.Fatal(err)
 	}
 	var version, rows int
-	if err = repo.DB.QueryRowContext(ctx, "SELECT max(version),count(*) FROM schema_version").Scan(&version, &rows); err != nil || version != 15 || rows != 15 {
+	if err = repo.DB.QueryRowContext(ctx, "SELECT max(version),count(*) FROM schema_version").Scan(&version, &rows); err != nil || version != 16 || rows != 16 {
 		t.Fatalf("ledger version=%d rows=%d err=%v", version, rows, err)
 	}
 	var code, state string

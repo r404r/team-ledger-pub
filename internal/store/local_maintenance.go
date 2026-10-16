@@ -127,8 +127,8 @@ func (r *Repository) BootstrapLocal(ctx context.Context, input LocalBootstrap) (
 			return empty, err
 		}
 	}
-	for _, capability := range []string{"audit.read", "identity.manage"} {
-		if err = exec("INSERT INTO delegation_authority(id,org_id,manager_subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,mfa_required,approved_by,approved_at,policy_version) VALUES(?,?,?,?,'audit','org',?,'security_administration',?,?,1,?,?,'bootstrap_admin.v1')", "INSERT INTO delegation_authority(id,org_id,manager_subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,mfa_required,approved_by,approved_at,policy_version) VALUES($1,$2,$3,$4,'audit','org',$5,'security_administration',$6,$7,true,$8,$9,'bootstrap_admin.v1')", value.NewID(), input.OrgID, input.SubjectID, capability, input.OrgID, at, expires, input.SubjectID, at); err != nil {
+	for _, authority := range bootstrapAuthorities {
+		if err = exec("INSERT INTO delegation_authority(id,org_id,manager_subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,mfa_required,approved_by,approved_at,policy_version) VALUES(?,?,?,?,?,'org',?,?,?,?,1,?,?,'bootstrap_admin.v1')", "INSERT INTO delegation_authority(id,org_id,manager_subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,mfa_required,approved_by,approved_at,policy_version) VALUES($1,$2,$3,$4,$5,'org',$6,$7,$8,$9,true,$10,$11,'bootstrap_admin.v1')", value.NewID(), input.OrgID, input.SubjectID, authority.capability, authority.category, input.OrgID, authority.purpose, at, expires, input.SubjectID, at); err != nil {
 			return empty, err
 		}
 	}
