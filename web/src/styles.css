@@ -654,8 +654,83 @@
   .auth-heading { display: flex; align-items: center; gap: .8rem; margin-bottom: var(--space-5); }
   .auth-heading h1 { margin: 0; font-size: 1.35rem; }
   .auth-heading p { margin: .1rem 0 0; color: var(--ink-600); font-size: .78rem; }
-  .identity-shell form { grid-template-columns: 1fr; padding: 0; }
+  #app .identity-shell form { grid-template-columns: 1fr; padding: 0; }
   #app .identity-shell form button { width: 100%; }
+  .identity-shell-wide { width: min(calc(100% - 2rem), 48rem); margin-top: clamp(1rem, 4vh, 3rem); }
+  .login-kind-switch {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: .35rem;
+    margin: var(--space-4) 0;
+    border-radius: var(--radius-md);
+    background: var(--surface-muted);
+    padding: .3rem;
+  }
+  #app .login-kind-switch button { min-height: 2.4rem; border-color: transparent; box-shadow: none; }
+  #app .login-kind-switch button[aria-pressed="true"] { border-color: var(--brand-200); background: white; color: var(--brand-800); box-shadow: var(--shadow-sm); }
+  .enrollment-card, .recovery-code-card { display: grid; justify-items: stretch; gap: var(--space-4); }
+  .enrollment-card h2, .recovery-code-card h2, .security-modal h2 { margin: 0; color: var(--ink-950); }
+  .enrollment-card > p, .recovery-code-card > p { margin: 0; color: var(--ink-600); line-height: 1.7; }
+  .totp-qr {
+    width: 13.5rem;
+    height: 13.5rem;
+    max-width: 100%;
+    justify-self: center;
+    border: .55rem solid white;
+    border-radius: var(--radius-md);
+    background: white;
+    box-shadow: 0 0 0 1px var(--line), var(--shadow-sm);
+  }
+  .manual-secret {
+    display: grid;
+    gap: .35rem;
+    border: 1px solid var(--brand-200);
+    border-radius: var(--radius-md);
+    background: var(--brand-50);
+    padding: var(--space-3);
+  }
+  .manual-secret span { color: var(--ink-600); font-size: .75rem; font-weight: 760; text-transform: uppercase; letter-spacing: .05em; }
+  .manual-secret code, .recovery-code-card > code {
+    overflow-wrap: anywhere;
+    color: var(--ink-950);
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: clamp(.92rem, 2.6vw, 1.15rem);
+    font-weight: 780;
+    letter-spacing: .08em;
+  }
+  .recovery-code-card > code {
+    border: 1px dashed var(--brand-400);
+    border-radius: var(--radius-md);
+    background: var(--brand-50);
+    padding: var(--space-4);
+    text-align: center;
+  }
+  .expiry-note { color: var(--ink-500) !important; font-size: .78rem; }
+  .security-modal-backdrop {
+    position: fixed;
+    z-index: 100;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    overflow-y: auto;
+    background: rgb(5 21 38 / 58%);
+    padding: 1rem;
+  }
+  .security-modal {
+    width: min(100%, 35rem);
+    max-height: calc(100dvh - 2rem);
+    overflow-y: auto;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: white;
+    box-shadow: var(--shadow-lg);
+    padding: clamp(1rem, 4vw, 1.6rem);
+  }
+  .security-modal > header { display: flex; align-items: start; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-4); }
+  .security-modal > header p { margin: 0 0 .25rem; }
+  #app .security-modal form { grid-template-columns: 1fr; border: 0; box-shadow: none; padding: 0; }
+  .security-error { border-left: .2rem solid var(--danger-700); background: var(--danger-50); padding: .7rem .8rem; color: var(--danger-700); }
+  .security-success { border-left: .2rem solid var(--brand-500); background: var(--brand-50); padding: .6rem .75rem; color: var(--brand-800) !important; }
   .sr-only {
     position: absolute;
     width: 1px;

@@ -539,6 +539,129 @@ describe('shared protected identity interaction', () => {
     expect(page.text()).not.toContain(SAVED_NAME)
   })
 
+  it('keeps first-time local users in a server-restricted enrollment flow and displays the recovery code once', async () => {
+    api.replies.push({ method: 'GET', path: '/api/v1/session', promise: Promise.resolve(response(401, { code: 'UNAUTHENTICATED' }, { 'X-TeamLedger-Identity-Mode': 'local' })) })
+    api.reply('POST', '/api/v1/auth/local/login', 202, { return_to: '/', next: 'enroll', csrf_token: 'restricted-csrf' })
+    api.reply('POST', '/api/v1/auth/local/mfa/enrollment', 201, {
+      secret: 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP', uri: 'otpauth://totp/TeamLedger?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=TeamLedger',
+      mode: 'initial', expires_at: '2026-10-16T03:10:00Z',
+    })
+    const page = await openGate()
+    await page.get('#local-username').setValue('admin.user')
+    await page.get('#local-password').setValue('correct horse battery staple')
+    await page.get('form').trigger('submit')
+    await settled()
+    expect(identityState(page)).toBe('enrolling')
+    expect(page.text()).toContain('JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP')
+    expect(page.find('[data-protected-surface]').exists()).toBe(false)
+    expect(api.matching('POST', '/api/v1/auth/local/mfa/enrollment')[0]!.headers.get('X-CSRF-Token')).toBe('restricted-csrf')
+
+    api.reply('POST', '/api/v1/auth/local/mfa/confirm', 200, { recovery_code: 'ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567', csrf_token: 'business-csrf' })
+    await page.get('#enrollment-totp').setValue('123456')
+    await page.get('.enrollment-card form').trigger('submit')
+    await settled()
+    expect(identityState(page)).toBe('recovery-code')
+    expect(page.text()).toContain('ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567')
+    expect(api.matching('POST', '/api/v1/auth/local/mfa/confirm')[0]!.headers.get('X-CSRF-Token')).toBe('restricted-csrf')
+    await page.get('.recovery-code-card input[type="checkbox"]').setValue(true)
+    await action(page, /进入 TeamLedger/).trigger('click')
+    await settled()
+    expect(identityState(page)).toBe('authenticated')
+    expect(page.text()).not.toContain('ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567')
+    expect(page.find('[data-protected-surface]').exists()).toBe(true)
+  })
+
+  it('asks for TOTP only after an active local account password challenge requires it', async () => {
+    api.replies.push({ method: 'GET', path: '/api/v1/session', promise: Promise.resolve(response(401, { code: 'UNAUTHENTICATED' }, { 'X-TeamLedger-Identity-Mode': 'local' })) })
+    api.reply('POST', '/api/v1/auth/local/login', 403, { code: 'MFA_REQUIRED' })
+    const page = await openGate()
+    await page.get('#local-username').setValue('admin.user')
+    await page.get('#local-password').setValue('correct horse battery staple')
+    await page.get('form').trigger('submit')
+    await settled()
+    expect(identityState(page)).toBe('login-totp')
+    expect(page.get('#local-totp').isVisible()).toBe(true)
+    expect(JSON.parse(api.matching('POST', '/api/v1/auth/local/login')[0]!.body!)).not.toHaveProperty('totp_code')
+
+    api.reply('POST', '/api/v1/auth/local/login', 200, { return_to: '/' })
+    await page.get('#local-password').setValue('correct horse battery staple')
+    await page.get('#local-totp').setValue('654321')
+    await page.get('form').trigger('submit')
+    await settled()
+    expect(JSON.parse(api.matching('POST', '/api/v1/auth/local/login')[1]!.body!)).toMatchObject({ totp_code: '654321' })
+    expect(providerNavigation).toHaveBeenCalledWith('/')
+  })
+
+  it('uses password plus one-time recovery code only to enter restricted factor recovery', async () => {
+    api.replies.push({ method: 'GET', path: '/api/v1/session', promise: Promise.resolve(response(401, { code: 'UNAUTHENTICATED' }, { 'X-TeamLedger-Identity-Mode': 'local' })) })
+    api.reply('POST', '/api/v1/auth/local/recover', 202, { return_to: '/', next: 'recover', csrf_token: 'recovery-csrf' })
+    api.reply('GET', '/api/v1/auth/local/mfa/pending', 200, {
+      secret: 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP', uri: 'otpauth://totp/TeamLedger?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=TeamLedger',
+      mode: 'recovery', expires_at: '2026-10-16T03:10:00Z',
+    })
+    const page = await openGate()
+    await action(page, /使用恢复码/).trigger('click')
+    await page.get('#local-username').setValue('admin.user')
+    await page.get('#local-password').setValue('correct horse battery staple')
+    await page.get('#local-recovery-code').setValue('ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567')
+    await page.get('form').trigger('submit')
+    await settled()
+    const request = api.matching('POST', '/api/v1/auth/local/recover')[0]!
+    expect(request.headers.get('Idempotency-Key')).toMatch(/^[0-9a-f-]{36}$/)
+    expect(identityState(page)).toBe('enrolling')
+    expect(page.text()).toContain('恢复并设置新验证器')
+    expect(page.find('[data-protected-surface]').exists()).toBe(false)
+  })
+
+  it('reuses the recovery idempotency key after an unknown network outcome', async () => {
+    api.replies.push({ method: 'GET', path: '/api/v1/session', promise: Promise.resolve(response(401, { code: 'UNAUTHENTICATED' }, { 'X-TeamLedger-Identity-Mode': 'local' })) })
+    const lost = api.defer('POST', '/api/v1/auth/local/recover')
+    const page = await openGate()
+    await action(page, /使用恢复码/).trigger('click')
+    await page.get('#local-username').setValue('admin.user')
+    await page.get('#local-password').setValue('correct horse battery staple')
+    await page.get('#local-recovery-code').setValue('ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567')
+    await page.get('form').trigger('submit')
+    lost.reject()
+    await settled()
+    const firstKey = api.matching('POST', '/api/v1/auth/local/recover')[0]!.headers.get('Idempotency-Key')
+    api.reply('POST', '/api/v1/auth/local/recover', 202, { return_to: '/', next: 'recover', csrf_token: 'recovery-csrf' })
+    api.reply('GET', '/api/v1/auth/local/mfa/pending', 200, {
+      secret: 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP', uri: 'otpauth://totp/TeamLedger?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=TeamLedger',
+      mode: 'recovery', expires_at: '2026-10-16T03:10:00Z',
+    })
+    await page.get('#local-password').setValue('correct horse battery staple')
+    await page.get('#local-recovery-code').setValue('ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567')
+    await page.get('form').trigger('submit')
+    await settled()
+    expect(api.matching('POST', '/api/v1/auth/local/recover')[1]!.headers.get('Idempotency-Key')).toBe(firstKey)
+    expect(identityState(page)).toBe('enrolling')
+  })
+
+  it('performs local step-up in a modal, rotates CSRF, and never destroys or replays the protected work', async () => {
+    api.session = { ...api.session, identity_mode: 'local', identity_available: true } as typeof api.session
+    const page = await openGate()
+    await action(page, /重新验证资料写入 MFA/).trigger('click')
+    await settled()
+    expect(identityState(page)).toBe('authenticated')
+    expect(page.find('[data-protected-surface]').exists()).toBe(true)
+    expect(page.get('[role="dialog"]').text()).toContain('重新验证 MFA')
+    api.reply('POST', '/api/v1/auth/step-up', 200, { return_to: '/', csrf_token: 'rotated-local-csrf' })
+    await page.get('#security-current-password').setValue('correct horse battery staple')
+    await page.get('#security-totp').setValue('123456')
+    await page.get('.security-form').trigger('submit')
+    await settled()
+    const request = api.matching('POST', '/api/v1/auth/step-up')[0]!
+    expect(JSON.parse(request.body!)).toEqual({
+      action: 'pii.write', return_to: `/employees/${EMPLOYEE}?as_of=${AS_OF}`,
+      current_password: 'correct horse battery staple', totp_code: '123456',
+    })
+    expect(request.headers.get('X-CSRF-Token')).toBe(initialSession.csrf_token)
+    expect(page.find('[role="dialog"]').exists()).toBe(false)
+    expect(page.text()).toContain('请重新执行刚才的敏感操作')
+    expect(page.find('[data-protected-surface]').exists()).toBe(true)
+  })
+
 })
 
 describe('R3 session-wide interview MFA intents', () => {
