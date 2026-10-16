@@ -1,8 +1,8 @@
 # TeamLedger · 整体最新技术文档
 
 - 当前修订日期：**2026-10-16**。本文件与源码同属 `team-ledger`，是当前架构、HTTP语义、安全边界和运行设计的唯一公开技术说明。
-- 当前实现基线：Go模块化单体、Vue、SQLite/PostgreSQL schema v16、本地keyd、local密码＋首次改密＋TOTP/OIDC互斥身份模式、`identity.manage`用户管理、bootstrap管理员38项当前可委派authority、同库独立audit receiver及Docker Compose独立部署。
-- 历史Task ID用于说明实现阶段；历史私有计划、审查会话、本机路径及旧文档commit台账不属于public文档。实现事实以本仓库源码、v16迁移、永久测试和当前文档为准。
+- 当前实现基线：Go模块化单体、Vue、SQLite/PostgreSQL schema v17、本地keyd、local密码＋首次改密＋TOTP/OIDC互斥身份模式、standalone/Staff关联账号、`identity.manage`用户管理、bootstrap管理员38项当前可委派authority、同库独立audit receiver及Docker Compose独立部署。
+- 历史Task ID用于说明实现阶段；历史私有计划、审查会话、本机路径及旧文档commit台账不属于public文档。实现事实以本仓库源码、v17迁移、永久测试和当前文档为准。
 - 功能/page/OP/AC登记见[功能规范](FUNCTIONAL_SPEC.md)，开发与验证门禁见[开发规则](DEVELOPMENT_RULES.md)，Docker操作见[README](../README.md)。
 
 ## 1. 架构、部署与信任边界
@@ -11,7 +11,7 @@
 
 ### 1.1 上下文与数据流
 
-R7历史实现使用受控外部Transit adapter；DEV-018已用本地keyd替换生产KMS依赖，保留并收窄envelope/AAD/用途分离接口。DEV-019交付内置账号密码，DEV-020交付Compose内置同库audit receiver，DEV-035在v14交付本地TOTP、恢复码、step-up及18-domain keyring，DEV-038在v15交付管理员固定安全权限、本地用户管理及首次改密，DEV-041在v16补齐初始管理员全部38项当前可委派authority。本地keyd和receiver均为同一安装包组件，不抵御整机root。
+R7历史实现使用受控外部Transit adapter；DEV-018已用本地keyd替换生产KMS依赖，保留并收窄envelope/AAD/用途分离接口。DEV-019交付内置账号密码，DEV-020交付Compose内置同库audit receiver，DEV-035在v14交付本地TOTP、恢复码、step-up及18-domain keyring，DEV-038在v15交付管理员固定安全权限、本地用户管理及首次改密，DEV-041在v16补齐初始管理员全部38项当前可委派authority，DEV-043在v17交付Staff关联账号及本人/一层直属下属最小默认访问。本地keyd和receiver均为同一安装包组件，不抵御整机root。
 
 ```mermaid
 flowchart LR
@@ -38,7 +38,7 @@ flowchart LR
         keyring --> keyd
     end
     subgraph storage["边界 D：每次部署只选一个后端"]
-        db["SQLite持久盘 或 PostgreSQL服务<br/>当前schema v16；v12–v15可前向升级<br/>员工、调薪、canonical授权、账号与MFA状态"]
+        db["SQLite持久盘 或 PostgreSQL服务<br/>当前schema v17；v12–v16可前向升级<br/>员工、调薪、canonical授权、账号与MFA状态"]
         outbox["同库 audit_outbox / receipt / job / result<br/>业务事实与投递意图原子提交"]
         archive["每archive随机DEK的认证分块备份包<br/>DEK经keyd backup_archive包装<br/>SQLite VACUUM或PG exported snapshot/custom dump"]
         db --> outbox
@@ -124,11 +124,11 @@ flowchart TB
 
 R2固定C实际路径：[organization契约](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_contracts.go)、[service](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_service.go)、[逐owner权限](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_authority.go)、[queries](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_queries.go)、[graph](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/graph.go)、[cursor](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/cursor.go)；[HTTP handler](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/httpapi/structure.go)与[store](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/store/structure.go)承接现有事务。上述固定代码已实际push，不再用漂移main定位代替版本。查询尽量使用窄`GraphState`/employee关系/SQL候选，不为目录和history读取全org图；写与tree的窗口图仍由组织模块负责。
 
-R3当前源契约：`internal/interview/{contracts,commands,reads,export,service,state}.go`、`internal/store/interview.go`/`interview_tx.go`、`internal/httpapi/interviews.go`、`web/src/InterviewPage.vue`/`interviewDTO.ts`及`internal/authz/object*.go`。当前空库顺序安装至`internal/store/migrations/*_v16.sql`；`*_v6.sql`仅保留历史迁移校验，不是当前安装终点。
+R3当前源契约：`internal/interview/{contracts,commands,reads,export,service,state}.go`、`internal/store/interview.go`/`interview_tx.go`、`internal/httpapi/interviews.go`、`web/src/InterviewPage.vue`/`interviewDTO.ts`及`internal/authz/object*.go`。当前空库顺序安装至`internal/store/migrations/*_v17.sql`；`*_v6.sql`仅保留历史迁移校验，不是当前安装终点。
 
-R4及员工调薪批次当前源：`internal/compensation/`、`internal/store/compensation*.go`、`internal/httpapi/compensation*.go`、`internal/value/financial.go`、`web/src/CompensationPage.vue`/`CompensationBatchPage.vue`及`cmd/api/finance.go`。当前schema v16；`*_v7.sql`/`*_v13.sql`只保留历史迁移校验。
-R5当前代码源：`internal/compensation/bonus*.go`、`internal/store/bonus*.go`、`internal/httpapi/bonus.go`、`web/src/BonusPage.vue`/`bonusDTO.ts`、`cmd/bonus-hmac`及`cmd/api/finance.go`。当前schema v16；`*_v8.sql`只保留历史迁移校验。
-R6a/R6b当前代码源：`internal/assessment/`、`internal/store/assessment*.go`、`internal/httpapi/assessment*.go`、`web/src/FollowupPage.vue`/`assessmentDTO.ts`、`internal/authz`、`internal/providerapproval`及`cmd/assessment-worker`。当前schema v16；`*_v9.sql`/`*_v10.sql`只保留历史迁移校验。
+R4及员工调薪批次当前源：`internal/compensation/`、`internal/store/compensation*.go`、`internal/httpapi/compensation*.go`、`internal/value/financial.go`、`web/src/CompensationPage.vue`/`CompensationBatchPage.vue`及`cmd/api/finance.go`。当前schema v17；`*_v7.sql`/`*_v13.sql`只保留历史迁移校验。
+R5当前代码源：`internal/compensation/bonus*.go`、`internal/store/bonus*.go`、`internal/httpapi/bonus.go`、`web/src/BonusPage.vue`/`bonusDTO.ts`、`cmd/bonus-hmac`及`cmd/api/finance.go`。当前schema v17；`*_v8.sql`只保留历史迁移校验。
+R6a/R6b当前代码源：`internal/assessment/`、`internal/store/assessment*.go`、`internal/httpapi/assessment*.go`、`web/src/FollowupPage.vue`/`assessmentDTO.ts`、`internal/authz`、`internal/providerapproval`及`cmd/assessment-worker`。当前schema v17；`*_v9.sql`/`*_v10.sql`只保留历史迁移校验。
 
 DEV-025前端视觉基础集中在`web/src/styles.css`并由`main.ts`静态导入；Vite production build生成内容hash CSS/JS，由Go静态服务同源返回。`App.vue`负责品牌栏、sticky主导航和当前路由状态，`IdentityGate.vue`负责认证态会话条及未认证/首次改密/MFA gate；10个业务页面继续使用原生语义/ARIA和既有scoped专属布局。无远程字体、CSS框架、图标CDN、分析SDK或运行时主题服务；全局层只改变呈现，不缓存或扩大敏感DTO。
 
@@ -374,7 +374,9 @@ DEV-035分配schema v14并提供SQLite/PostgreSQL v13→v14 migration。`session
 
 DEV-038分配schema v15并提供SQLite/PostgreSQL v14→v15 migration。`session.access_kind`扩展`password_change`，`local_account`新增`password_change_required`且既有行固定false；新增immutable `bootstrap_admin_policy`和`local_user_create_receipt`，授权约束加入`identity.manage`及OP-SEC-07/08。仅存在`local_bootstrap_receipt`的local部署补齐`identity.manage`、`access_grant.manage`、`audit.read`的org assignment/direct grant，以及`identity.manage`/`audit.read`的`bootstrap_admin.v1` authority；批准者固定为bootstrap主体自身并撤销其旧session。SQLite迁移重建受约束父表时先暂存并恢复`session_auth`、`oidc_transaction`、grant receipt/approval和audit outbox等子事实，恢复必要parent unique index后再插回，整Tx失败回滚。v1–v14 migration bytes/checksum保持冻结。
 
-DEV-041分配当前schema v16并提供SQLite/PostgreSQL v15→v16 migration。`BootstrapLocal`对fresh local安装创建38项org级、`mfa_required=true`、100年期限的`bootstrap_admin.v1` authority；migration只对存在`local_bootstrap_receipt`的主体以完整tuple `NOT EXISTS`补齐v15缺少的36项，保留已有两项及所有非bootstrap authority。v16不新增业务grant/assignment、不撤session、不改OIDC组织，也不把`access_grant.manage`变成可委派能力。v1–v15 migration bytes/checksum冻结。
+DEV-041分配schema v16并提供SQLite/PostgreSQL v15→v16 migration。`BootstrapLocal`对fresh local安装创建38项org级、`mfa_required=true`、100年期限的`bootstrap_admin.v1` authority；migration只对存在`local_bootstrap_receipt`的主体以完整tuple `NOT EXISTS`补齐v15缺少的36项，保留已有两项及所有非bootstrap authority。v16不新增业务grant/assignment、不撤session、不改OIDC组织，也不把`access_grant.manage`变成可委派能力。v1–v15 migration bytes/checksum不变；升级前仍须备份恢复验证，未知版本、漂移或备份缺失保持fail closed。
+DEV-043分配当前schema v17并提供SQLite/PostgreSQL v16→v17 migration。新增immutable `staff_account_access(org_id,subject_id,employee_id,policy_version,created_by,created_at)`，同时外键约束既有local account及同一`subject_employee`映射，并保持一名employee最多一个Staff关联账号。migration只建表并登记checksum，不从既有账号或`subject_employee`推断政策。OP-SEC-07显式区分`standalone|staff`；staff用规范Staff Code MAC精确解析当前有效employee，账号、绑定、政策、凭证、receipt和审计同事务提交。`Security`按服务端当前组织日实时加载本人和当前administrative一层直属下属；默认仅放行员工metadata/PII、面谈metadata及OP-INT-02创建，不放行通用`interview.write`、笔记、行动、评估、薪资或导出。v1–v16 migration bytes/checksum冻结。
+
 
 OP-ORG-10是v12唯一跨员工主数据/组织任职命令：一个1..100项typed set可同时处理identifier、employment、education、job_assignment（含membership/position）及administrative/dotted reporting和employee lifecycle。请求携带graph/catalog及每个affected employee revision；服务端先规划全部owner/endpoints，按§6.1锁org graph/auth→subjects→employee UUID→facts，逐owner重验OrgR/OrgW及PII、全窗口/目录/Staff Code owner/单一assignment/reporting无环，然后在**一个事务**写全部facts、canonical projection、graph/catalog/employee revisions、auth/source epochs、一个command receipt、audit/outbox；任一项失败全部rollback。OP-ORG-03在v12不再是writer，不能把两个HTTP请求拼成“原子”。
 
@@ -395,6 +397,7 @@ R2 v5实际字典补充：
 | `structure_change` / `structure_change_item` | actor subject、UTC recorded_at、graph_before/after、reason_payload_id；ordinal0..99、typed action/kind/relation与owner/date/替代refs。typed owner触发器/FK防错org关系，审计历史可追溯原与生效投影 |
 | `organizational_payload` | team_id / employee_id+position_id / change_id的exact owner、record_id/version_id、object_kind/purpose/schema、format_version/algorithm、dek_id/kek_id/kek_version、wrapped_dek、sealed_bytes（nonce/ciphertext/tag包）及created_at；immutable，复合owner FK约束不可交换密文对象 |
 | `subject_employee` | `(org,subject)`唯一、`(org,employee)`唯一；显式批准一对一不可转绑，对应关系不是角色/grant，不由email/name推导 |
+| `staff_account_access` | `(org,subject)`主键、`(org,employee)`唯一；policy固定`staff_default.v1`，created_by/at留痕；同时FK到local account及同一`subject_employee`；immutable，不从既有映射自动推断 |
 | `structure_command_receipt` | subject/op/key、32-byte digest与version1、result_json、result_team_id或result_change_id、graph_revision/auth_epoch、`authority_targets_json`。存原受影响owner的capability/category/kind/id，重放不靠已结束旧任期或旧图CAS |
 | v5 authorization / `audit_event` | capability/authority/grant新增exact team FK；grant用有限relation_kind及reporting_line_id/membership_id/`relation_actor_employee_id` typed绑定，reporting target为既有employee_id，membership scope为team_id。audit新增`target_employee_id`，与actor subject/维护UID/host及target subject分离 |
 
@@ -506,7 +509,7 @@ DB必须执行 PK/NOT NULL、复合org/employee FK、有限state/kind/category C
 
 ## 5. 唯一 HTTP 操作注册
 
-共**53个稳定OP ID**：ORG10、INT8、COMP11、BONUS8、AI8、SEC8；当前v16中OP-ORG-02/03退休且无路由，因此可调用51项。辅助模板、preview和options端点归入对应稳定OP，不另造操作ID。
+共**53个稳定OP ID**：ORG10、INT8、COMP11、BONUS8、AI8、SEC8；当前v17中OP-ORG-02/03退休且无路由，因此可调用51项。辅助模板、preview和options端点归入对应稳定OP，不另造操作ID。
 
 ### 5.1 权限与输入记号（适用于每一行）
 
@@ -581,8 +584,8 @@ DB必须执行 PK/NOT NULL、复合org/employee FK、有限state/kind/category C
 | OP-SEC-04 | GET `/audit-events` | AuditR/独立audit scope/G/P=`security_administration`/近期MFA；不隐含金融read | safe actor/object/op/time filters、cursor/limit | sanitized events/outcomes；缺MFA直接API拒绝；无Money/note/prompt |
 | OP-SEC-05 | POST `/sensitive-exports` | 当前独立read＋Export/类别grant/O/P/MFA；batch另要求org-scope FinR和全员工覆盖，不要求CompW | 单个完整frozen batch或既有有限objects；format=ndjson、I | batch不可选行；≤500行且首byte前验证8MiB。流中撤权/断连可partial/aborted并停止后续chunk；两币种/adjustment increase摘要原样，correction无金额摘要，不造grand total |
 | OP-SEC-06 | GET `/access-grants` | GrantW/明确delegated管理scope/G/P=`security_administration`/MFA；非默认AuditR/PIIR | subject/scope/category/purpose、state current/revoked/expired、grant_id optional、cursor/limit | 200范围内grant列表/详情、revision、有效期/撤销状态、可委派authority摘要；不返回所指对象正文/PII，范围外grant与不存在同404 |
-| OP-SEC-07 | POST `/api/v1/security/users` | `identity.manage`/org scope/audit G/P=`security_administration`/近期MFA；local mode | strict username、initial_password；I | 201 subject/account ID及安全状态；active subject、account、credential、MFA待登记、receipt/audit同Tx；默认零业务权限/employee绑定，密码不回显，重复username/部分失败拒绝 |
-| OP-SEC-08 | GET `/api/v1/security/users` | 同OP-SEC-07读取授权 | limit1..100、签名cursor | 200账号/subject ID、解密username、active、首次改密/MFA状态、created_at；无password/digest/envelope/factor，cursor绑定caller/org/epoch |
+| OP-SEC-07 | POST `/api/v1/security/users` | `identity.manage`/org scope/audit G/P=`security_administration`/近期MFA；local mode | strict username、initial_password、显式`account_type=standalone|staff`；staff另需精确Staff Code；I | 201 subject/account ID、account_type、可选employee_id及安全状态；standalone默认零业务权限；staff原子绑定当前有效唯一employee并建立`staff_default.v1`，重复/未知Staff Code零部分事实；密码/Staff Code不回显 |
+| OP-SEC-08 | GET `/api/v1/security/users` | 同OP-SEC-07读取授权 | limit1..100、签名cursor | 200账号/subject ID、解密username、account_type、可选employee_id、active、首次改密/MFA状态、created_at；无password/Staff Code/digest/envelope/factor，cursor绑定caller/org/epoch |
 
 ### 5.4.1 DEV-003独立授权查授撤 wire 契约
 
@@ -600,7 +603,7 @@ DB必须执行 PK/NOT NULL、复合org/employee FK、有限state/kind/category C
 
 ### 5.5 Supporting协议路由（不是额外业务OP）
 
-身份Supporting协议都以`/api/v1`为前缀，不增加53个业务OP；启动时只启用DB固定mode对应路由，另一模式不fallback。匿名`GET /health/live`只证明进程handler存活；`GET /health/ready`检查当前v16 schema/DB、identity mode、18-domain keyring与DB ack、业务wrapper、审计outbox及receiver heartbeat。missing/false、heartbeat超过15秒、积压超过1000或最老超过5分钟均not-ready；敏感依赖不可用必须fail closed。
+身份Supporting协议都以`/api/v1`为前缀，不增加53个业务OP；启动时只启用DB固定mode对应路由，另一模式不fallback。匿名`GET /health/live`只证明进程handler存活；`GET /health/ready`检查当前v17 schema/DB、identity mode、18-domain keyring与DB ack、业务wrapper、审计outbox及receiver heartbeat。missing/false、heartbeat超过15秒、积压超过1000或最老超过5分钟均not-ready；敏感依赖不可用必须fail closed。
 
 | 方法 / 路由 | 输入与前提 | 成功 / 拒绝边界 |
 | --- | --- | --- |
@@ -1022,9 +1025,11 @@ sequenceDiagram
 
 当前v3身份proof与业务release/授权变化使用同组织guard，跨组织先排序所有org、再排序subject；网络交换不在SQL事务里。callback后仍重验当前mapping/主体/原session撤销与epoch，不以开始认证时的快照授会话；unlink后重bind不得复活旧cookie。已有C3 grant原回执规则不因身份gate改变。
 
-#### 7.1.2 内置账号、首次改密与TOTP协议（DES-008；DEV-019/035/038已实装）
+#### 7.1.2 内置账号、Staff关联、首次改密与TOTP协议（DES-008；DEV-019/035/038/043已实装）
 
-local账号与员工相互独立。P-SEC-03创建新的active subject/account，但不绑定employee、不建立业务capability/grant；`identity.manage`也不等于`access_grant.manage`。canonical username为小写ASCII并匹配`[a-z0-9][a-z0-9._-]{2,63}`；DB保存`local_username_lookup` HMAC索引与以identity mapping domain加密的`identity.local_username.v1` source，owner永不转移。username读写不得使用`identity_mfa` wrapper。密码按原始UTF-8 bytes处理，不trim/normalize，长度12..256且拒NUL；不能进入argv/env/log/audit。
+P-SEC-03显式创建`standalone`或`staff` local账号。两者都建立新的active subject/account且不自动建立普通capability/grant；`identity.manage`也不等于`access_grant.manage`。standalone不绑定employee且默认零业务权限。staff必须提供规范精确Staff Code，并在同一事务解析当前有效且未绑定的employee，写`subject_employee`及immutable `staff_default.v1`；不能按用户名、姓名或邮箱推断，也不能转绑。canonical username为小写ASCII并匹配`[a-z0-9][a-z0-9._-]{2,63}`；DB保存`local_username_lookup` HMAC索引与以identity mapping domain加密的`identity.local_username.v1` source，owner永不转移。username读写不得使用`identity_mfa` wrapper。密码按原始UTF-8 bytes处理，不trim/normalize，长度12..256且拒NUL；不能进入argv/env/log/audit。
+`staff_default.v1`不是普通grant或可委派authority。每次请求用当前组织日、employee生命周期及未结束/未supersede的administrative reporting line动态计算本人＋一层直属下属；不递归二层。它只允许员工metadata/PII读取、面谈metadata读取和OP-INT-02创建。客户端用派生提示`interview.create`显示创建入口，但该提示不进入grant能力目录，也不能执行面谈状态转换、笔记、行动、评估、薪资或导出。关系或本人任职结束后下一请求即失效；历史`as_of`不能恢复权限。
+
 
 `local_password_pepper`不离开keyd。规范MAC frame进入Argon2id `m=65536 KiB,t=3,p=1`、随机16-byte salt、32-byte output；credential保存exact pepper reference＋PHC。不存在/disabled账号执行有效fake PHC。`local_login_throttle`把密码或TOTP失败按username digest原子累计，退避`min(2^(n-1),900)`秒；响应不能暴露账号/factor是否存在。
 
@@ -1303,11 +1308,11 @@ result draft→published/discarded/invalidated；published→invalidated（由so
 
 ### 9.2 迁移与备份
 
-当前v16 binary分四路：①拒绝预检：v1-v11/未知版本/checksum drift只读识别后`SCHEMA_VERSION_UNSUPPORTED`，零DDL/bootstrap/cleanup；②fresh安装：SQLite path必须不存在、PG专用schema/database必须为空，顺序安装至v16；③升级：exact v12/v13/v14/v15按冻结顺序前向执行至v16，保留全部业务行/密文/审计子事实；④正常启动：exact v16即使已有业务数据也正常打开。
+当前v17 binary分四路：①拒绝预检：v1-v11/未知版本/checksum drift只读识别后`SCHEMA_VERSION_UNSUPPORTED`，零DDL/bootstrap/cleanup；②fresh安装：SQLite path必须不存在、PG专用schema/database必须为空，顺序安装至v17；③升级：exact v12/v13/v14/v15/v16按冻结顺序前向执行至v17，保留全部业务行/密文/审计子事实；④正常启动：exact v17即使已有业务数据也正常打开。
 
-v1–v16已发布migration bytes/checksum冻结。升级前必须停写并验证绑定源/目标版本的数据库备份和keyring双介质副本。v13→v14仍须完成16→18 domain升级/ack；v14→v15及v15→v16不增加key domain，可在现有18-domain keyring上执行普通database migration。中断、未知source、漂移或缺恢复条件保持阻塞，不能drop/重建、fallback空库或手工重导冒充migration。
+v1–v17已发布migration bytes/checksum冻结。升级前必须停写并验证绑定源/目标版本的数据库备份和keyring双介质副本。v13→v14仍须完成16→18 domain升级/ack；v14→v15、v15→v16及v16→v17不增加key domain，可在现有18-domain keyring上执行普通database migration。中断、未知source、漂移或缺恢复条件保持阻塞，不能drop/重建、fallback空库或手工重导冒充migration。
 
-v15 migration保留v14账号/MFA及全部子事实，建立固定管理员三项安全direct grant和两项安全authority；v16只为同一local bootstrap主体补齐36项authority，最终精确38项，保留其他authority且不撤session。SQLite v15→v16与真实TLS PostgreSQL 17 fresh/migration已运行；永久测试覆盖exact矩阵、非bootstrap authority保留和migration ledger。
+v15 migration保留v14账号/MFA及全部子事实，建立固定管理员三项安全direct grant和两项安全authority；v16只为同一local bootstrap主体补齐36项authority，最终精确38项，保留其他authority且不撤session；v17只新增空的Staff关联政策表，不推断既有账号或`subject_employee`。SQLite v16→v17与真实TLS PostgreSQL 17 fresh/migration运行证据登记在DEV-043；永久测试覆盖exact矩阵、绑定唯一性、默认policy边界和migration ledger。
 
 R3只新增v6，两方言扩有限typed面谈对象/source批准、事件/密文/receipt及OIDC intent；必要SQLite旧表copy/rebuild完整保旧列，PG按真实v5约束名变更，不改v1-v5 bytes/checksum。有数据v5→v6、原KMS/receipt、真实CHECK/FK/schema漂移/回滚/多连接消费者及最新464.45s all/race/vet绿；四最终binary已build，双库compiled migrate/API原DB重启、精确版本head裁剪/导出/撤权成品及175 Vue已验。此前完整身份CLI bind/unbind与有限敏感扫描保持各自证据边界。标准PG并发all+race曾原生out-of-shared-memory，失败不记绿；最终串行`-p 2`，不减native约束、不加应用重试或调PG容量掩盖。
 
@@ -1370,8 +1375,8 @@ PG身份维护窄入口直接以同descriptor已检查的完整PEM CA bytes构�
 | F-COMP-001 / compensation | CNY/JPY scale0规范整数、HALF_UP边界/溢出、同Branch混币；个人显式换币correction完整闭包；range区间唯一；batch header/reference budget、Staff Code preview、工资差异确认及先纠正后调薪；全批increase分币种摘要、无FX/grand total | 双库/API：manual/XLSX同构candidate、Text-cell exact与numeric拒绝、旧term/event保留、纠正不计次数、固定service零部分写、range重叠拒绝；Vue默认3行/警告确认/预算对照/局部横向滚动及真实浏览器smoke |
 | F-BONUS-001 / compensation | target/award/payment分列、crossorg refs、异常事实、reversal累计、永久业务key、extension拒绝 | 双库异常/冲销/幂等/atomic rollback、UI不跨币种假余额 |
 | F-AI-001 / assessment | 日历/DST/unknown/partial、source digest/交集ACL、lease fencing、provider失败、人工publish重验 | 双库真实job竞争；可控provider边界；真实provider/model/合同与人审质量另验，不pin自然文案 |
-| F-SEC-001 / identity/authz/sensitive/audit | 授权先于keyd；本地首次改密/TOTP/recovery受限session；`identity.manage`与grant/audit分离；38项bootstrap authority精确tuple/object边界；持久replay；openat2/no-replace/lock；AAD/KWP；18-domain inventory与DB ack；MAC staging | bootstrap固定三项安全direct grant＋38项当前可委派authority、用户list/create幂等/分页/拒绝、首次改密直达API隔离；目标assignment仍必需；RFC向量、登记/登录/step-up/恢复/离线reset；secret不入DB明文/日志；真实OIDC/介质责任另验 |
-| F-DB-001 / adapters/ops | PK/FK/owner/CAS/失败回滚、每连接FK、busy/死锁、v12/v13/v14/v15/v16 checksum及前向migration | SQLite/PG空schema安装至v16；v1-v11/未知目标拒绝零写入；exact v12–v15顺序升v16、exact v16重启；v14 audit outbox/session子事实及v15 authority保留；备份恢复、生产构建API/UI smoke与负载目标 |
+| F-SEC-001 / identity/authz/sensitive/audit | 授权先于keyd；本地首次改密/TOTP/recovery受限session；`identity.manage`与grant/audit分离；38项bootstrap authority精确tuple/object边界；standalone/Staff关联原子创建及动态一层默认scope；持久replay；openat2/no-replace/lock；AAD/KWP；18-domain inventory与DB ack；MAC staging | bootstrap固定三项安全direct grant＋38项当前可委派authority、用户list/create幂等/分页/拒绝、Staff关联员工/面谈窄默认权与越界拒绝、首次改密直达API隔离；显式目标assignment仍用于普通grant；RFC向量、登记/登录/step-up/恢复/离线reset；secret不入DB明文/日志；真实OIDC/介质责任另验 |
+| F-DB-001 / adapters/ops | PK/FK/owner/CAS/失败回滚、每连接FK、busy/死锁、v12/v13/v14/v15/v16/v17 checksum及前向migration | SQLite/PG空schema安装至v17；v1-v11/未知目标拒绝零写入；exact v12–v16顺序升v17、exact v17重启；v14 audit outbox/session子事实、v15 authority及v16账号/员工映射保留；v17不推断Staff默认政策；备份恢复、生产构建API/UI smoke与负载目标 |
 
 纵向实施顺序与功能规范一致：安全/双库最小真实读写→组织历史→分区面谈/交接→薪资批准纠错→奖金事实→确定规则/AI人审→生产运行启用门禁；每片已有真实界面/API/存储/授权，不先堆空package再宣称功能。安全与恢复从相关切片落实，末项是上线验收不是此前许可忽略。Go行为table/fuzz/race、双库真实集成、Vue/Vitest和关键浏览器E2E各自证据不互替；分工不跑检查，集成负责人统一验证最终候选，整体task两轮串行实际luna review。
 

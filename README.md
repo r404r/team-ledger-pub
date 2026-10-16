@@ -300,20 +300,45 @@ curl --fail --cacert docker/secrets/tls-cert.pem \
 ```
 
 成功标准：migration以0退出，服务均为`Up`/`healthy`，ready返回`{"status":"ready"}`。原`admin.user`重新登录并完成近期MFA后，**授权** 页应显示38项“当前批准的委派范围”。这些authority只允许管理员在目标主体已具有对应`capability_assignment`时执行明确授权；不会让管理员或目标用户自动读取人员、面谈或薪资正文。失败时保留原volume和错误输出，不执行`down -v`、不重跑bootstrap；从已验证的v15备份恢复后处理。
+#### 1.9 从schema v16升级到v17（既有v16安装执行一次）
 
-#### 1.9 用户管理和一次性初始密码
+v17新增Staff关联账号政策表。该版本不增加key domain、不改密码或TOTP、不撤销session，也不修改既有员工、账号、`subject_employee`、grant或审计事实。**既有账号一律不自动推断为Staff关联账号**；即使已有`subject_employee`映射也不会补默认权限。
 
-完成fresh安装或升级到当前v16后，以具有近期MFA的`admin.user`打开顶部 **用户管理**：
+先按§5完成并验证数据库备份，保持现有`.env.docker`、全部`TEAMLEDGER_*_VOLUME`名称、deployment ID及18-domain keyring不变：
 
-1. 输入符合页面规则的唯一登录账号、一次性初始密码和确认密码。
-2. 点击“创建用户”。成功后初始密码字段立即清空，系统不会再次显示或发送该密码；由管理员通过受控渠道交给用户。
-3. 新用户默认没有员工绑定或任何业务权限。需要访问人员、薪资或其他模块时，必须另行按批准职责在 **授权** 中配置；创建账号本身不授业务数据。
-4. 新用户第一次以初始密码登录时只能修改密码；改密后必须用新密码重新登录并登记TOTP，保存恢复码后才得到business session。
-5. `identity.manage`只允许账号列表/创建，`access_grant.manage`只允许在既有delegation authority内管理授权，`audit.read`只允许读脱敏审计。三项可由同一主体同时持有，但互不替代。
+```bash
+set -eu
+cd ~/team-ledger
+docker compose --env-file .env.docker down
+git pull --ff-only
+docker compose --env-file .env.docker build
+docker compose --env-file .env.docker up \
+  --abort-on-container-exit --exit-code-from migrate migrate
+docker compose --env-file .env.docker up -d --wait
+docker compose --env-file .env.docker ps
+curl --fail --cacert docker/secrets/tls-cert.pem \
+  https://localhost:8443/health/ready
+```
 
-列表只显示账号、登录状态、首次改密/MFA状态、创建时间和主体ID，不显示密码、TOTP secret、恢复码、员工PII或业务权限。账号停用、重置和权限委派仍按各自受控流程处理。
+成功标准：migration以0退出，服务均为`Up`/`healthy`，ready返回`{"status":"ready"}`；原账号、员工资料和授权保持。失败时保留原volume和错误输出，不执行`down -v`、不重跑bootstrap；从已验证的v16备份恢复后处理。
 
-#### 1.10 日常停止、重启和更新
+
+#### 1.10 用户管理和一次性初始密码
+
+完成fresh安装或升级到当前v17后，以具有近期MFA的`admin.user`打开顶部 **用户管理**：
+
+1. 选择账号类型：
+   - **非关联账号**：输入唯一登录账号、一次性初始密码和确认密码；不绑定员工，也不增加业务访问权。
+   - **Staff关联账号**：除上述字段外，输入当前有效员工的精确Staff Code。该员工必须存在且尚未关联其他账号；账号、员工绑定和默认政策在同一事务提交，失败不会留下半成品账号。
+2. 点击“创建用户”。成功后初始密码和Staff Code立即清空，系统不会再次显示或发送初始密码；由管理员通过受控渠道交给用户。
+3. Staff关联账号默认可查看本人及当前一层administrative直属下属的员工metadata/PII和面谈metadata，并可新建面谈。范围按当前员工生命周期和直属关系实时计算；同级、上级、二层下属、已结束关系、薪资、面谈笔记/行动/评估、导出及面谈状态修改不在默认权限内。
+4. 非关联账号默认没有员工绑定或任何业务权限。需要访问人员、薪资或其他模块时，必须另行按批准职责在 **授权** 中配置。
+5. 新用户第一次以初始密码登录时只能修改密码；改密后必须用新密码重新登录并登记TOTP，保存恢复码后才得到business session。
+6. `identity.manage`只允许账号列表/创建，`access_grant.manage`只允许在既有delegation authority内管理授权，`audit.read`只允许读脱敏审计。三项可由同一主体同时持有，但互不替代。
+
+列表显示账号类型；Staff关联账号另显示关联的employee ID。列表不显示密码、TOTP secret、恢复码、Staff Code、员工PII或业务正文。账号停用、重置和显式权限委派仍按各自受控流程处理。
+
+#### 1.11 日常停止、重启和更新
 普通停止不会删除数据：
 
 ```bash
@@ -339,7 +364,7 @@ docker compose --env-file .env.docker up -d --wait
 
 不要重跑key、audit或identity bootstrap。普通启动会运行必要的database migration并复用既有named volumes。
 
-#### 1.10 数据不会放在哪里、哪些命令不能用
+#### 1.12 数据不会放在哪里、哪些命令不能用
 
 业务数据库、keyd材料和audit材料不在容器临时层，而在三个Docker named volumes。`down`、重建image和电脑重启不会删除它们。查看实际名称：
 
@@ -359,7 +384,7 @@ docker system prune --volumes
 
 Named volume不是备份。正式使用前必须按§5建立业务数据库加密备份，并按§3.1把root/keyring保存到两个不同离线介质；数据库备份、key材料和audit材料必须分开保管。
 
-#### 1.11 常见问题
+#### 1.13 常见问题
 
 长期服务或migration失败时运行：
 
@@ -384,7 +409,7 @@ docker compose --env-file .env.docker logs --tail=200 \
 | curl报告证书错误 | 必须保留`--cacert docker/secrets/tls-cert.pem`，URL必须是证书覆盖的`localhost`或`127.0.0.1`。 |
 | TOTP设备遗失，但恢复码仍在 | 在登录页选择“使用恢复码”，输入username、当前密码和一次性恢复码，只进入受限恢复页；设置新验证器并保存新的恢复码。恢复码不能直接进入业务页面。 |
 | TOTP设备和恢复码都遗失 | 不能从网页关闭MFA或绕过第二因素；由有权维护者按下述“离线MFA重置”操作。 |
-| 审计页或用户管理提示缺少权限 | fresh/bootstrap `admin.user`从v15起固定拥有`audit.read`、`access_grant.manage`和`identity.manage` direct grant；先确认已升级到当前v16、已重新登录且近期MFA有效。v16另给该管理员38项当前可委派authority，但不自动创建目标用户的职责assignment或业务grant。其他账号默认零业务/安全权限，须按批准职责显式配置对应assignment＋grant，不能靠TOTP、账号名称或直接改库获得。 |
+| 审计页或用户管理提示缺少权限 | fresh/bootstrap `admin.user`从v15起固定拥有`audit.read`、`access_grant.manage`和`identity.manage` direct grant；先确认已升级到当前v17、已重新登录且近期MFA有效。v16另给该管理员38项当前可委派authority，但不自动创建目标用户的职责assignment或业务grant。v17 Staff关联账号只取得本人/当前一层直属下属的窄默认读取与面谈创建资格；非关联账号仍默认零业务/安全权限。其他访问须按批准职责显式配置对应assignment＋grant，不能靠TOTP、账号名称或直接改库获得。 |
 | 最新人员模板上传后仍提示无法解析 | 展开 **批量上传人员** 查看具体`Employees!单元格`和原因；公式必须转为纯文本，日期必须按`YYYY-MM-DD`文本填写。结构错误会同时显示请求ID，管理员可在API日志中按`PERSONNEL_IMPORT_REJECTED request_id=...`定位同一固定错误码；日志不会记录单元格内容。 |
 
 只有在**确认是全新测试安装且所有数据都可以永久删除**时，才能彻底重置：
