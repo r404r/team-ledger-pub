@@ -46,13 +46,14 @@ func TestV19FreshInstallPreservesCleanWorkforceBaseline(t *testing.T) {
 		"organization", "subject", "authorization_guard", "employee", "employee_profile_version", "encrypted_payload",
 		"job_assignment", "reporting_line", "structure_change", "structure_change_item", "compensation_batch_header_payload",
 		"local_mfa_account", "local_mfa_factor", "local_mfa_enrollment", "local_mfa_recovery_code", "local_mfa_recovery_receipt", "local_mfa_reset_receipt", "key_domain_expansion_receipt", "bootstrap_admin_policy", "local_user_command_receipt", "staff_account_access",
+		"compensation_salary_baseline_counter", "compensation_salary_baseline_batch",
 	} {
 		var count int
 		if err = repo.DB.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name=?", name).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		if count != 1 {
-			t.Fatalf("required v18 table %s count = %d", name, count)
+			t.Fatalf("required v19 table %s count = %d", name, count)
 		}
 	}
 	var passwordChangeColumn int
@@ -111,10 +112,10 @@ func TestV19PostgresInstallHasNoTeamEraTables(t *testing.T) {
 			t.Fatalf("legacy PostgreSQL table %s exists in v19 clean baseline", name)
 		}
 	}
-	for _, name := range []string{"bootstrap_admin_policy", "local_user_command_receipt", "staff_account_access"} {
+	for _, name := range []string{"bootstrap_admin_policy", "local_user_command_receipt", "staff_account_access", "compensation_salary_baseline_counter", "compensation_salary_baseline_batch"} {
 		var count int
 		if err := f.Repo.DB.QueryRowContext(ctx, "SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=$1", name).Scan(&count); err != nil || count != 1 {
-			t.Fatalf("required PostgreSQL v15 table %s count = %d: %v", name, count, err)
+			t.Fatalf("required PostgreSQL v19 table %s count = %d: %v", name, count, err)
 		}
 	}
 	for _, column := range []struct{ table, name string }{

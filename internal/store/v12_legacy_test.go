@@ -91,7 +91,7 @@ func TestV18MigratesEducationCatalogPerOrganization(t *testing.T) {
 	}
 }
 
-func TestV16MigratesPersistedV12BatchWithoutClearingData(t *testing.T) {
+func TestV19MigratesPersistedV12BatchWithoutClearingData(t *testing.T) {
 	ctx := context.Background()
 	repo, err := Open(ctx, "sqlite", filepath.Join(t.TempDir(), "persisted-v12.sqlite"))
 	if err != nil {
@@ -160,6 +160,13 @@ func TestV16MigratesPersistedV12BatchWithoutClearingData(t *testing.T) {
 	}
 	if _, err = repo.DB.ExecContext(ctx, "INSERT INTO compensation_salary_baseline_batch(org_id,batch_id) VALUES(?,?)", org, baseline); err != nil {
 		t.Fatal("v19 baseline subtype:", err)
+	}
+	var baselineMarkers int
+	if err = repo.DB.QueryRowContext(ctx, "SELECT count(*) FROM compensation_salary_baseline_batch WHERE org_id=? AND batch_id=?", org, baseline).Scan(&baselineMarkers); err != nil || baselineMarkers != 1 {
+		t.Fatalf("v19 baseline marker count=%d err=%v", baselineMarkers, err)
+	}
+	if _, err = repo.DB.ExecContext(ctx, "INSERT INTO compensation_adjustment_batch(org_id,id,business_code,cycle_year,adjustment_type,legal_entity_id,default_effective_date,state,revision,creator_subject_id,created_at) VALUES(?,?,'B-2026-0002',2026,'baseline',?,'2026-10-01','draft',1,?,3)", org, "10000000-0000-4000-8000-000000000007", entity, creator); err == nil {
+		t.Fatal("v19 must retain the normal/special parent constraint and represent baseline through the subtype table")
 	}
 	if err = repo.CheckSchema(ctx); err != nil {
 		t.Fatal(err)
