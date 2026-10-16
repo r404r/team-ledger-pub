@@ -273,6 +273,80 @@ func TestAdjustmentBatchPreviewRequiresExplicitSalaryCorrectionAndPreservesHisto
 	}
 }
 
+func TestSalaryBaselineBatchRecordsPointInTimeSalaryWithoutAdjustmentCounts(t *testing.T) {
+	for _, backend := range []string{"sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) {
+			f := testsupport.NewHarness(t, backend)
+			var employee organization.Result
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/employees", createJSON, value.NewID()), http.StatusCreated, &employee)
+			legalEntity := prepareBatchEmployee(t, f, employee.ID, "S-BASE", "Shanghai", "CNY")
+
+			templateRequest := financeHTTPRequest(t, f, f.CompW, http.MethodGet, "/api/v1/compensation-adjustment-batches/import-template?adjustment_type=baseline", "", "")
+			templateResponse, err := f.Server.Client().Do(templateRequest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			templateBytes, readErr := io.ReadAll(templateResponse.Body)
+			closeErr := templateResponse.Body.Close()
+			if templateResponse.StatusCode != http.StatusOK || readErr != nil || closeErr != nil || templateResponse.Header.Get("Content-Disposition") != `attachment; filename="teamledger-salary-baseline.xlsx"` || len(templateBytes) == 0 {
+				t.Fatalf("baseline template response status=%d headers=%v bytes=%d read=%v close=%v", templateResponse.StatusCode, templateResponse.Header, len(templateBytes), readErr, closeErr)
+			}
+
+			activateBaseline := func(effective, target, expectedBefore string) compensation.BatchView {
+				t.Helper()
+				create := compensation.CreateBatchCommand{Name: effective + " Salary Baseline", CycleYear: 2026, AdjustmentType: compensation.BatchBaseline, LegalEntityID: legalEntity, DefaultEffectiveDate: effective}
+				var batch compensation.BatchView
+				apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPost, "/api/v1/compensation-adjustment-batches", structureJSON(t, create), value.NewID()), http.StatusCreated, &batch)
+				if batch.BusinessCode[:2] != "B-" || batch.AdjustmentType != compensation.BatchBaseline || batch.BudgetAmount != "" {
+					t.Fatalf("unexpected baseline batch: %#v", batch)
+				}
+				preview := compensation.PreviewBatchLinesCommand{Revision: batch.Revision, Lines: []compensation.BatchLineCommand{{StaffCode: "S-BASE", Currency: "CNY", SalaryAfter: target}}}
+				var candidate compensation.ImportCandidateView
+				apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPost, "/api/v1/compensation-adjustment-batches/"+batch.ID+"/previews", structureJSON(t, preview), value.NewID()), http.StatusCreated, &candidate)
+				if candidate.State != "valid" || len(candidate.Lines) != 1 || candidate.Lines[0].SalaryBefore != expectedBefore || candidate.Lines[0].SalaryAfter != target || candidate.Lines[0].IncreaseAmount != "" || len(candidate.Warnings) != 0 {
+					t.Fatalf("unexpected baseline candidate: %#v", candidate)
+				}
+				apply := compensation.ReplaceBatchLinesCommand{Revision: batch.Revision, CandidateID: candidate.ID}
+				apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPatch, "/api/v1/compensation-adjustment-batches/"+batch.ID+"/draft", structureJSON(t, apply), value.NewID()), http.StatusOK, &batch)
+				if len(batch.Lines) != 1 || batch.Lines[0].Result != "changed" || len(batch.IncreaseTotalsByCurrency) != 0 || batch.ManifestDigest == "" {
+					t.Fatalf("unexpected frozen baseline: %#v", batch)
+				}
+				transition := compensation.BatchTransitionCommand{Action: "submit", Revision: batch.Revision, ManifestDigest: batch.ManifestDigest}
+				apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPost, "/api/v1/compensation-adjustment-batches/"+batch.ID+"/transitions", structureJSON(t, transition), value.NewID()), http.StatusOK, &batch)
+				if batch.State != "activated" || batch.Lines[0].OriginalAdjustmentEventID != "" || len(batch.Lines[0].CorrectionMembers) != 0 {
+					t.Fatalf("baseline leaked adjustment correction semantics: %#v", batch)
+				}
+				return batch
+			}
+
+			first := activateBaseline("2026-01-01", "10000", "0")
+			_ = activateBaseline("2026-10-01", "9000", "10000")
+			for date, amount := range map[string]string{"2026-06-01": "10000", "2026-10-01": "9000"} {
+				var current compensation.CurrentView
+				apiSend(t, f, financeHTTPRequest(t, f, f.FinR, http.MethodGet, "/api/v1/employees/"+employee.ID+"/compensation?as_of="+date, "", ""), http.StatusOK, &current)
+				if current.CurrentTerm == nil || current.CurrentTerm.Terms.AmountMinor == nil || *current.CurrentTerm.Terms.AmountMinor != amount {
+					t.Fatalf("salary at %s=%#v, want %s", date, current, amount)
+				}
+			}
+			counts, err := f.Repo.AdjustmentBatchCounts(context.Background(), f.OrgID, employee.ID, 2026)
+			if err != nil || counts.CurrentYear != 0 || counts.PreviousYear != 0 {
+				t.Fatalf("baseline inflated adjustment counts: %#v err=%v", counts, err)
+			}
+			apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPost, "/api/v1/compensation-adjustment-batches/"+first.ID+"/corrections", structureJSON(t, compensation.BatchCorrectionCommand{Reason: "NOT_ALLOWED", Lines: []compensation.BatchCorrectionLine{{EmployeeID: employee.ID, Members: []compensation.CorrectionMember{{MemberKey: "x", Action: "reverse", OriginalEventID: value.NewID(), EffectiveDate: "2026-01-01"}}}}}), value.NewID()), http.StatusUnprocessableEntity, nil)
+
+			create := compensation.CreateBatchCommand{Name: "Conflicting Baseline", CycleYear: 2026, AdjustmentType: compensation.BatchBaseline, LegalEntityID: legalEntity, DefaultEffectiveDate: "2026-06-01"}
+			var conflictBatch compensation.BatchView
+			apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPost, "/api/v1/compensation-adjustment-batches", structureJSON(t, create), value.NewID()), http.StatusCreated, &conflictBatch)
+			preview := compensation.PreviewBatchLinesCommand{Revision: conflictBatch.Revision, Lines: []compensation.BatchLineCommand{{StaffCode: "S-BASE", Currency: "CNY", SalaryAfter: "9500"}}}
+			var conflictCandidate compensation.ImportCandidateView
+			apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPost, "/api/v1/compensation-adjustment-batches/"+conflictBatch.ID+"/previews", structureJSON(t, preview), value.NewID()), http.StatusCreated, &conflictCandidate)
+			if conflictCandidate.State != "invalid" || len(conflictCandidate.Errors) != 1 {
+				t.Fatalf("future salary term did not block historical baseline: %#v", conflictCandidate)
+			}
+		})
+	}
+}
+
 func establishMonthlySalary(t *testing.T, f *testsupport.Fixture, employee, effective, amount string) {
 	t.Helper()
 	base := "/api/v1/employees/" + employee + "/compensation"

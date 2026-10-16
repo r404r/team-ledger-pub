@@ -13,29 +13,31 @@ import (
 )
 
 const (
-	BatchNormal  = "normal"
-	BatchSpecial = "special"
+	BatchNormal   = "normal"
+	BatchSpecial  = "special"
+	BatchBaseline = "baseline"
 )
 
 var (
-	batchCodePattern = regexp.MustCompile(`^(N|S)-([0-9]{4})-([0-9]{4,})$`)
+	batchCodePattern = regexp.MustCompile(`^(N|S|B)-([0-9]{4})-([0-9]{4,})$`)
 	moneyPattern     = regexp.MustCompile(`^(0|[1-9][0-9]*)$`)
 	percentPattern   = regexp.MustCompile(`^(0|[1-9][0-9]*)(\.[0-9]+)?%?$`)
 )
 
 type BatchLineBasis struct {
-	IdentifierID        string `json:"identifier_id"`
-	IdentifierRevision  string `json:"identifier_revision"`
-	EmploymentID        string `json:"employment_id"`
-	EmploymentRevision  string `json:"employment_revision"`
-	AssignmentID        string `json:"assignment_id"`
-	AssignmentRevision  string `json:"assignment_revision"`
-	SalaryRangeID       string `json:"salary_range_id"`
-	SalaryRangeRevision string `json:"salary_range_revision"`
-	TermID              string `json:"term_id,omitempty"`
-	TermRevision        string `json:"term_revision,omitempty"`
-	TermEffectiveDate   string `json:"term_effective_date,omitempty"`
-	CurrentSalaryBefore string `json:"current_salary_before"`
+	IdentifierID          string `json:"identifier_id"`
+	IdentifierRevision    string `json:"identifier_revision"`
+	EmploymentID          string `json:"employment_id"`
+	EmploymentRevision    string `json:"employment_revision"`
+	AssignmentID          string `json:"assignment_id"`
+	AssignmentRevision    string `json:"assignment_revision"`
+	SalaryRangeID         string `json:"salary_range_id"`
+	SalaryRangeRevision   string `json:"salary_range_revision"`
+	TermID                string `json:"term_id,omitempty"`
+	TermRevision          string `json:"term_revision,omitempty"`
+	TermEffectiveDate     string `json:"term_effective_date,omitempty"`
+	CurrentSalaryBefore   string `json:"current_salary_before"`
+	CurrentCurrencyBefore string `json:"current_currency_before,omitempty"`
 }
 
 type BatchHeader struct {
@@ -263,11 +265,18 @@ func ValidateCreateBatch(c CreateBatchCommand) error {
 	if c.CycleYear < 2000 || c.CycleYear > 9999 || c.LegalEntityID == "" || !safeText(c.Name, 200, true) {
 		return errors.New("invalid batch header")
 	}
-	if c.AdjustmentType != BatchNormal && c.AdjustmentType != BatchSpecial {
+	if c.AdjustmentType != BatchNormal && c.AdjustmentType != BatchSpecial && c.AdjustmentType != BatchBaseline {
 		return errors.New("invalid adjustment type")
 	}
-	if _, err := time.Parse("2006-01-02", c.DefaultEffectiveDate); err != nil {
+	effective, err := time.Parse("2006-01-02", c.DefaultEffectiveDate)
+	if err != nil {
 		return errors.New("default effective date is required")
+	}
+	if c.AdjustmentType == BatchBaseline {
+		if c.CycleYear != effective.Year() || c.BudgetCurrency != "" || c.BudgetAmount != "" || c.SpecialReasonCode != "" || c.SpecialReasonText != "" {
+			return errors.New("invalid baseline batch header")
+		}
+		return nil
 	}
 	if (c.BudgetCurrency != "CNY" && c.BudgetCurrency != "JPY") || c.BudgetAmount == "" {
 		return errors.New("budget currency and amount are required")
@@ -294,8 +303,17 @@ func containsReason(catalog map[string]string, code string) bool {
 }
 
 func ValidateBusinessCode(code, typ string, year int) error {
+	prefix := ""
+	switch typ {
+	case BatchNormal:
+		prefix = "N"
+	case BatchSpecial:
+		prefix = "S"
+	case BatchBaseline:
+		prefix = "B"
+	}
 	m := batchCodePattern.FindStringSubmatch(code)
-	if m == nil || m[2] != strconv.Itoa(year) || (typ == BatchNormal && m[1] != "N") || (typ == BatchSpecial && m[1] != "S") {
+	if m == nil || prefix == "" || m[2] != strconv.Itoa(year) || m[1] != prefix {
 		return errors.New("invalid batch business code")
 	}
 	return nil
@@ -329,6 +347,25 @@ func ValidateBatchLines(typ string, cycleYear int, defaultDate string, lines []B
 		seen[line.EmployeeID] = struct{}{}
 		if line.Currency != "CNY" && line.Currency != "JPY" {
 			return nil, nil, fmt.Errorf("line %d: unsupported currency", i+1)
+		}
+		if typ == BatchBaseline {
+			if _, err := ParseMoney(line.SalaryAfter); err != nil {
+				return nil, nil, fmt.Errorf("line %d: invalid salary at date", i+1)
+			}
+			if line.SalaryBefore != "" {
+				if _, err := ParseMoney(line.SalaryBefore); err != nil {
+					return nil, nil, fmt.Errorf("line %d: invalid current salary", i+1)
+				}
+			}
+			if line.IncreaseAmount != "" || line.PerformanceGrade != "" || line.AverageMeritIncrease != "" || line.DepartmentSuggestedIncrease != "" || line.EffectiveDate != "" || line.EffectiveMonth != "" || line.ReasonCode != "" || line.ReasonText != "" || line.CorrectSalaryBefore {
+				return nil, nil, fmt.Errorf("line %d: invalid baseline fields", i+1)
+			}
+			result := "changed"
+			if line.Basis.TermID != "" && line.Basis.CurrentCurrencyBefore == line.Currency && line.SalaryBefore == line.SalaryAfter {
+				result = "no_change"
+			}
+			out = append(out, BatchLineView{BatchLineCommand: line, Result: result})
+			continue
 		}
 		before, err := ParseMoney(line.SalaryBefore)
 		if err != nil {
@@ -376,6 +413,9 @@ func ValidateBatchLines(typ string, cycleYear int, defaultDate string, lines []B
 			result = "no_change"
 		}
 		out = append(out, BatchLineView{BatchLineCommand: line, Result: result})
+	}
+	if typ == BatchBaseline {
+		return out, []CurrencyTotal{}, nil
 	}
 	summary := make([]CurrencyTotal, 0, 2)
 	for _, currency := range []string{"CNY", "JPY"} {

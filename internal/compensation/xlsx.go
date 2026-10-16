@@ -25,8 +25,27 @@ func workbookSafetyError(message string) error {
 	return &WorkbookSafetyError{message: message}
 }
 
+func BuildAdjustmentWorkbookTemplate(typ string) ([]byte, error) {
+	var sheet string
+	var headers []string
+	switch typ {
+	case BatchBaseline:
+		sheet = "Salary Baseline"
+		headers = []string{"Staff Code", "Currency", "Salary at Date"}
+	case BatchNormal:
+		sheet = "Normal Adjustment"
+		headers = []string{"Staff Code", "Currency", "Salary Before Adjustment", "Increase amount", "Salary After Adjustment", "Performance Grade", "Average Merit Increase", "Increase range suggested by department", "Effective Date"}
+	case BatchSpecial:
+		sheet = "Special Adjustment"
+		headers = []string{"Staff Code", "Currency", "Salary Before Adjustment", "Increase amount", "Salary After Adjustment", "Special Salary Adjustment Starting Month", "Adjustment Reason Code", "Adjustment Reason"}
+	default:
+		return nil, workbookSafetyError("invalid workbook type")
+	}
+	return xlsx.BuildTemplate(sheet, headers)
+}
+
 func ParseAdjustmentWorkbook(raw []byte, typ string) ([]BatchLineCommand, error) {
-	if typ != BatchNormal && typ != BatchSpecial {
+	if typ != BatchNormal && typ != BatchSpecial && typ != BatchBaseline {
 		return nil, workbookSafetyError("invalid workbook")
 	}
 	rows, err := xlsx.ReadFirstSheet(raw, xlsx.Limits{
@@ -60,6 +79,7 @@ func workbookLines(rows []map[int]string, typ string) ([]BatchLineCommand, error
 		"employeeid": "employee_id", "工号staffcode": "staff_code", "staffcode": "staff_code", "currency": "currency", "币种currency": "currency",
 		"salarybeforeadjustment": "salary_before", "monthlybasesalarybefore": "salary_before", "monthlybasesalarybeforeadjustment": "salary_before", "调整前薪资salarybeforespecialadjustment": "salary_before",
 		"increaseamount": "increase_amount", "调薪额度increaseamount": "increase_amount", "salaryafteradjustment": "salary_after", "monthlybasesalaryafteradjustment": "salary_after", "调整后薪资salaryafterspecialadjustment": "salary_after",
+		"salaryatdate": "salary_after", "指定日工资salaryatdate": "salary_after", "指定日工资": "salary_after",
 		"performancegrade": "performance_grade", "绩效等级performancegrade": "performance_grade", "averagemeritincrease": "average_merit_increase", "increaserangesuggestedbydepartment": "department_suggested_increase",
 		"effectivedate": "effective_date", "specialsalaryadjustmentstartingmonth": "effective_month", "调整月份specialsalaryadjustmentstartingmonth": "effective_month", "adjustmentreasoncode": "reason_code", "adjustmentreason": "reason_text", "调整原因adjustmentreason": "reason_text",
 	}
@@ -74,13 +94,21 @@ func workbookLines(rows []map[int]string, typ string) ([]BatchLineCommand, error
 				columns[field] = column
 			}
 		}
-		if columns["staff_code"] != 0 && columns["currency"] != 0 && columns["increase_amount"] != 0 {
+		requiredHeadersPresent := columns["staff_code"] != 0 && columns["currency"] != 0
+		if typ == BatchBaseline {
+			requiredHeadersPresent = requiredHeadersPresent && columns["salary_after"] != 0
+		} else {
+			requiredHeadersPresent = requiredHeadersPresent && columns["increase_amount"] != 0
+		}
+		if requiredHeadersPresent {
 			headerRow = rowIndex
 			break
 		}
 	}
 	required := []string{"staff_code", "currency", "salary_before", "increase_amount", "salary_after"}
-	if typ == BatchNormal {
+	if typ == BatchBaseline {
+		required = []string{"staff_code", "currency", "salary_after"}
+	} else if typ == BatchNormal {
 		required = append(required, "performance_grade")
 	}
 	if headerRow < 0 {

@@ -11,7 +11,7 @@ import (
 	"github.com/r404r/team-ledger/internal/value"
 )
 
-func TestV18FreshInstallPreservesCleanWorkforceBaseline(t *testing.T) {
+func TestV19FreshInstallPreservesCleanWorkforceBaseline(t *testing.T) {
 	ctx := context.Background()
 	repo, err := store.Open(ctx, "sqlite", filepath.Join(t.TempDir(), "v15.sqlite"))
 	if err != nil {
@@ -29,8 +29,8 @@ func TestV18FreshInstallPreservesCleanWorkforceBaseline(t *testing.T) {
 	if err = repo.DB.QueryRowContext(ctx, "SELECT count(*),max(version) FROM schema_version").Scan(&versionRows, &version); err != nil {
 		t.Fatal(err)
 	}
-	if versionRows != 18 || version != 18 {
-		t.Fatalf("fresh baseline ledger = %d rows/max %d, want complete v1..v18 checksums", versionRows, version)
+	if versionRows != 19 || version != 19 {
+		t.Fatalf("fresh baseline ledger = %d rows/max %d, want complete v1..v19 checksums", versionRows, version)
 	}
 
 	for _, name := range []string{"team", "team_parent_history", "team_membership", "position_assignment"} {
@@ -39,7 +39,7 @@ func TestV18FreshInstallPreservesCleanWorkforceBaseline(t *testing.T) {
 			t.Fatal(err)
 		}
 		if count != 0 {
-			t.Fatalf("legacy table %s exists in v18 clean baseline", name)
+			t.Fatalf("legacy table %s exists in v19 clean baseline", name)
 		}
 	}
 	for _, name := range []string{
@@ -92,14 +92,14 @@ func TestV18FreshInstallPreservesCleanWorkforceBaseline(t *testing.T) {
 	}
 }
 
-func TestV18PostgresInstallHasNoTeamEraTables(t *testing.T) {
+func TestV19PostgresInstallHasNoTeamEraTables(t *testing.T) {
 	f := testsupport.NewHarness(t, "postgres")
 	ctx := context.Background()
 	var versionRows, version int
 	if err := f.Repo.DB.QueryRowContext(ctx, "SELECT count(*),max(version) FROM schema_version").Scan(&versionRows, &version); err != nil {
 		t.Fatal(err)
 	}
-	if versionRows != 18 || version != 18 {
+	if versionRows != 19 || version != 19 {
 		t.Fatalf("fresh PostgreSQL baseline ledger = %d rows/max %d", versionRows, version)
 	}
 	for _, name := range []string{"team", "team_parent_history", "team_membership", "position_assignment"} {
@@ -108,7 +108,7 @@ func TestV18PostgresInstallHasNoTeamEraTables(t *testing.T) {
 			t.Fatal(err)
 		}
 		if count != 0 {
-			t.Fatalf("legacy PostgreSQL table %s exists in v18 clean baseline", name)
+			t.Fatalf("legacy PostgreSQL table %s exists in v19 clean baseline", name)
 		}
 	}
 	for _, name := range []string{"bootstrap_admin_policy", "local_user_command_receipt", "staff_account_access"} {

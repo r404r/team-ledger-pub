@@ -268,7 +268,7 @@ func (r reader) sql(s, p string) string {
 }
 func (r *Repository) read() reader { return reader{r.DB, r.Backend} }
 
-const currentSchemaVersion = 18
+const currentSchemaVersion = 19
 
 func (r *Repository) migration(version int) (string, string, error) {
 	if (r.Backend != "sqlite" && r.Backend != "postgres") || version < 1 || version > currentSchemaVersion {
@@ -307,7 +307,7 @@ func (r *Repository) Migrate(ctx context.Context) error {
 			return err
 		}
 		// v12 is the first persisted deployment baseline. Older development
-		// schemas remain unsupported; exact v12 through v18 schemas are upgraded
+		// schemas remain unsupported; exact v12 through v19 schemas are upgraded
 		// or accepted without clearing operator data.
 		if version < 12 || version > currentSchemaVersion {
 			return fault.Unavailable

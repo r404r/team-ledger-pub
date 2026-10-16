@@ -39,7 +39,8 @@ func (r reader) adjustmentBatchSelect() string {
 	if r.backend == "postgres" {
 		date = "COALESCE(default_effective_date::text,'')"
 	}
-	return "SELECT org_id,id,business_code,cycle_year,adjustment_type,legal_entity_id," + date + ",COALESCE(header_payload_id,''),state,revision,COALESCE(manifest_digest,''),creator_subject_id,(SELECT subject_id FROM compensation_batch_service s WHERE s.org_id=compensation_adjustment_batch.org_id AND s.batch_id=compensation_adjustment_batch.id),created_at,COALESCE(activated_at,0) FROM compensation_adjustment_batch"
+	kind := "CASE WHEN EXISTS(SELECT 1 FROM compensation_salary_baseline_batch sb WHERE sb.org_id=compensation_adjustment_batch.org_id AND sb.batch_id=compensation_adjustment_batch.id) THEN 'baseline' ELSE adjustment_type END"
+	return "SELECT org_id,id,business_code,cycle_year," + kind + ",legal_entity_id," + date + ",COALESCE(header_payload_id,''),state,revision,COALESCE(manifest_digest,''),creator_subject_id,(SELECT subject_id FROM compensation_batch_service s WHERE s.org_id=compensation_adjustment_batch.org_id AND s.batch_id=compensation_adjustment_batch.id),created_at,COALESCE(activated_at,0) FROM compensation_adjustment_batch"
 }
 
 func (r *Repository) CreateAdjustmentBatch(ctx context.Context, org, subject, id, serviceSubject string, command compensation.CreateBatchCommand, header compensation.BatchHeaderPayloadRecord, receipt compensation.BatchCommandReceipt, now time.Time) (compensation.BatchRecord, error) {
@@ -53,26 +54,39 @@ func (r *Repository) CreateAdjustmentBatch(ctx context.Context, org, subject, id
 	if err != nil {
 		return compensation.BatchRecord{}, safeError(err)
 	}
-	_, err = tx.ExecContext(ctx, q.sql("INSERT INTO compensation_batch_number_counter(org_id,cycle_year,adjustment_type,next_sequence) VALUES(?,?,?,1) ON CONFLICT(org_id,cycle_year,adjustment_type) DO NOTHING", "INSERT INTO compensation_batch_number_counter(org_id,cycle_year,adjustment_type,next_sequence) VALUES($1,$2,$3,1) ON CONFLICT(org_id,cycle_year,adjustment_type) DO NOTHING"), org, command.CycleYear, command.AdjustmentType)
+	var sequence int64
+	if command.AdjustmentType == compensation.BatchBaseline {
+		_, err = tx.ExecContext(ctx, q.sql("INSERT INTO compensation_salary_baseline_counter(org_id,cycle_year,next_sequence) VALUES(?,?,1) ON CONFLICT(org_id,cycle_year) DO NOTHING", "INSERT INTO compensation_salary_baseline_counter(org_id,cycle_year,next_sequence) VALUES($1,$2,1) ON CONFLICT(org_id,cycle_year) DO NOTHING"), org, command.CycleYear)
+		if err == nil {
+			err = tx.QueryRowContext(ctx, q.sql("SELECT next_sequence FROM compensation_salary_baseline_counter WHERE org_id=? AND cycle_year=?", "SELECT next_sequence FROM compensation_salary_baseline_counter WHERE org_id=$1 AND cycle_year=$2 FOR UPDATE"), org, command.CycleYear).Scan(&sequence)
+		}
+	} else {
+		_, err = tx.ExecContext(ctx, q.sql("INSERT INTO compensation_batch_number_counter(org_id,cycle_year,adjustment_type,next_sequence) VALUES(?,?,?,1) ON CONFLICT(org_id,cycle_year,adjustment_type) DO NOTHING", "INSERT INTO compensation_batch_number_counter(org_id,cycle_year,adjustment_type,next_sequence) VALUES($1,$2,$3,1) ON CONFLICT(org_id,cycle_year,adjustment_type) DO NOTHING"), org, command.CycleYear, command.AdjustmentType)
+		if err == nil {
+			err = tx.QueryRowContext(ctx, q.sql("SELECT next_sequence FROM compensation_batch_number_counter WHERE org_id=? AND cycle_year=? AND adjustment_type=?", "SELECT next_sequence FROM compensation_batch_number_counter WHERE org_id=$1 AND cycle_year=$2 AND adjustment_type=$3 FOR UPDATE"), org, command.CycleYear, command.AdjustmentType).Scan(&sequence)
+		}
+	}
 	if err != nil {
 		return compensation.BatchRecord{}, safeError(err)
 	}
-	selectCounter := q.sql("SELECT next_sequence FROM compensation_batch_number_counter WHERE org_id=? AND cycle_year=? AND adjustment_type=?", "SELECT next_sequence FROM compensation_batch_number_counter WHERE org_id=$1 AND cycle_year=$2 AND adjustment_type=$3 FOR UPDATE")
-	var sequence int64
-	if err = tx.QueryRowContext(ctx, selectCounter, org, command.CycleYear, command.AdjustmentType).Scan(&sequence); err != nil {
-		return compensation.BatchRecord{}, safeError(err)
-	}
 	prefix := "N"
-	if command.AdjustmentType == compensation.BatchSpecial {
+	switch command.AdjustmentType {
+	case compensation.BatchSpecial:
 		prefix = "S"
+	case compensation.BatchBaseline:
+		prefix = "B"
 	}
 	code := fmt.Sprintf("%s-%04d-%04d", prefix, command.CycleYear, sequence)
-	_, err = tx.ExecContext(ctx, q.sql("UPDATE compensation_batch_number_counter SET next_sequence=next_sequence+1 WHERE org_id=? AND cycle_year=? AND adjustment_type=?", "UPDATE compensation_batch_number_counter SET next_sequence=next_sequence+1 WHERE org_id=$1 AND cycle_year=$2 AND adjustment_type=$3"), org, command.CycleYear, command.AdjustmentType)
+	if command.AdjustmentType == compensation.BatchBaseline {
+		_, err = tx.ExecContext(ctx, q.sql("UPDATE compensation_salary_baseline_counter SET next_sequence=next_sequence+1 WHERE org_id=? AND cycle_year=?", "UPDATE compensation_salary_baseline_counter SET next_sequence=next_sequence+1 WHERE org_id=$1 AND cycle_year=$2"), org, command.CycleYear)
+	} else {
+		_, err = tx.ExecContext(ctx, q.sql("UPDATE compensation_batch_number_counter SET next_sequence=next_sequence+1 WHERE org_id=? AND cycle_year=? AND adjustment_type=?", "UPDATE compensation_batch_number_counter SET next_sequence=next_sequence+1 WHERE org_id=$1 AND cycle_year=$2 AND adjustment_type=$3"), org, command.CycleYear, command.AdjustmentType)
+	}
 	if err != nil {
 		return compensation.BatchRecord{}, safeError(err)
 	}
 	var effective any
-	if command.AdjustmentType == compensation.BatchNormal {
+	if command.AdjustmentType == compensation.BatchNormal || command.AdjustmentType == compensation.BatchBaseline {
 		effective = command.DefaultEffectiveDate
 	}
 	e := header.Envelope
@@ -83,9 +97,18 @@ func (r *Repository) CreateAdjustmentBatch(ctx context.Context, org, subject, id
 	if err != nil {
 		return compensation.BatchRecord{}, safeError(err)
 	}
-	_, err = tx.ExecContext(ctx, q.sql("INSERT INTO compensation_adjustment_batch(org_id,id,business_code,cycle_year,adjustment_type,legal_entity_id,default_effective_date,header_payload_id,state,revision,creator_subject_id,created_at) VALUES(?,?,?,?,?,?,?,?,'draft',1,?,?)", "INSERT INTO compensation_adjustment_batch(org_id,id,business_code,cycle_year,adjustment_type,legal_entity_id,default_effective_date,header_payload_id,state,revision,creator_subject_id,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'draft',1,$9,$10)"), org, id, code, command.CycleYear, command.AdjustmentType, command.LegalEntityID, effective, header.ID, subject, now.UnixMicro())
+	storedType := command.AdjustmentType
+	if storedType == compensation.BatchBaseline {
+		storedType = compensation.BatchNormal
+	}
+	_, err = tx.ExecContext(ctx, q.sql("INSERT INTO compensation_adjustment_batch(org_id,id,business_code,cycle_year,adjustment_type,legal_entity_id,default_effective_date,header_payload_id,state,revision,creator_subject_id,created_at) VALUES(?,?,?,?,?,?,?,?,'draft',1,?,?)", "INSERT INTO compensation_adjustment_batch(org_id,id,business_code,cycle_year,adjustment_type,legal_entity_id,default_effective_date,header_payload_id,state,revision,creator_subject_id,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'draft',1,$9,$10)"), org, id, code, command.CycleYear, storedType, command.LegalEntityID, effective, header.ID, subject, now.UnixMicro())
 	if err != nil {
 		return compensation.BatchRecord{}, safeError(err)
+	}
+	if command.AdjustmentType == compensation.BatchBaseline {
+		if _, err = tx.ExecContext(ctx, q.structureSQL("INSERT INTO compensation_salary_baseline_batch(org_id,batch_id) VALUES(?,?)"), org, id); err != nil {
+			return compensation.BatchRecord{}, safeError(err)
+		}
 	}
 	if _, err = tx.ExecContext(ctx, q.structureSQL("INSERT INTO compensation_batch_state_history(org_id,batch_id,revision,state,recorded_at,subject_id) VALUES(?,?,1,'draft',?,?)"), org, id, now.UnixMicro(), subject); err != nil {
 		return compensation.BatchRecord{}, safeError(err)
@@ -162,9 +185,14 @@ func (r *Repository) AdjustmentBatches(ctx context.Context, org string, year int
 		predicate += " AND cycle_year=?"
 		args = append(args, year)
 	}
-	if typ != "" {
+	if typ == compensation.BatchBaseline {
+		predicate += " AND EXISTS(SELECT 1 FROM compensation_salary_baseline_batch sb WHERE sb.org_id=compensation_adjustment_batch.org_id AND sb.batch_id=compensation_adjustment_batch.id)"
+	} else if typ != "" {
 		predicate += " AND adjustment_type=?"
 		args = append(args, typ)
+		if typ == compensation.BatchNormal {
+			predicate += " AND NOT EXISTS(SELECT 1 FROM compensation_salary_baseline_batch sb WHERE sb.org_id=compensation_adjustment_batch.org_id AND sb.batch_id=compensation_adjustment_batch.id)"
+		}
 	}
 	args = append(args, limit)
 	rows, err := q.db.QueryContext(ctx, q.structureSQL(q.adjustmentBatchSelect()+predicate+" ORDER BY cycle_year DESC,business_code DESC LIMIT ?"), args...)

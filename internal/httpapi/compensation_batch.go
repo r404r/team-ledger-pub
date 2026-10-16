@@ -75,6 +75,26 @@ func (h *handler) compensationBatchRoute(w http.ResponseWriter, r *http.Request,
 		}
 		return true
 	}
+	if len(parts) == 2 && parts[1] == "import-template" && r.Method == http.MethodGet {
+		q, err := url.ParseQuery(r.URL.RawQuery)
+		if err != nil || !singleQuery(q, []string{"adjustment_type"}) {
+			h.fail(w, fault.Invalid, req.RequestID)
+			return true
+		}
+		raw, err := h.compensation.AdjustmentBatchTemplate(r.Context(), req, org, q.Get("adjustment_type"))
+		if err != nil {
+			h.fail(w, err, req.RequestID)
+			return true
+		}
+		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+		w.Header().Set("Content-Disposition", `attachment; filename="teamledger-salary-baseline.xlsx"`)
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(raw)
+		clear(raw)
+		return true
+	}
 	if len(parts) == 2 && parts[1] == "options" && r.Method == http.MethodGet && r.URL.RawQuery == "" {
 		view, err := h.compensation.AdjustmentBatchOptions(r.Context(), req, org)
 		if err != nil {

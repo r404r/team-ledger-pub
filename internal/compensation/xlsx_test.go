@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"fmt"
 	"testing"
+
+	"github.com/r404r/team-ledger/internal/xlsx"
 )
 
 func TestParseAdjustmentWorkbookRequiresTextMoneyAndBoundsRows(t *testing.T) {
@@ -22,6 +24,24 @@ func TestParseAdjustmentWorkbookRequiresTextMoneyAndBoundsRows(t *testing.T) {
 	}
 	if _, err = ParseAdjustmentWorkbook(testFormulaWorkbook(t, headers, row), BatchNormal); err == nil {
 		t.Fatal("empty shared formula element with cached value must be rejected")
+	}
+}
+
+func TestSalaryBaselineTemplateAndWorkbookUseThreeTextFields(t *testing.T) {
+	template, err := BuildAdjustmentWorkbookTemplate(BatchBaseline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := xlsx.ReadFirstSheet(template, xlsx.Limits{CompressedBytes: maxWorkbookCompressed, ExpandedBytes: maxWorkbookExpanded, Entries: maxWorkbookEntries, Rows: 510, Cells: 20_000, XMLNodes: 200_000})
+	if err != nil || len(rows) != 1 || rows[0].Cells[1].Text != "Staff Code" || rows[0].Cells[2].Text != "Currency" || rows[0].Cells[3].Text != "Salary at Date" {
+		t.Fatalf("unexpected baseline template: rows=%#v err=%v", rows, err)
+	}
+	lines, err := ParseAdjustmentWorkbook(testWorkbook(t, []string{"Staff Code", "Currency", "Salary at Date"}, []string{"S001", "JPY", "500000"}, -1), BatchBaseline)
+	if err != nil || len(lines) != 1 || lines[0].StaffCode != "S001" || lines[0].Currency != "JPY" || lines[0].SalaryAfter != "500000" || lines[0].SalaryBefore != "" || lines[0].IncreaseAmount != "" {
+		t.Fatalf("unexpected baseline workbook lines=%#v err=%v", lines, err)
+	}
+	if _, err = ParseAdjustmentWorkbook(testWorkbook(t, []string{"Staff Code", "Currency", "Salary at Date"}, []string{"S001", "JPY", "500000"}, 2), BatchBaseline); err == nil {
+		t.Fatal("numeric baseline salary must be rejected instead of converted")
 	}
 }
 

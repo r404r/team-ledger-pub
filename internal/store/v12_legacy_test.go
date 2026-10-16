@@ -143,7 +143,7 @@ func TestV16MigratesPersistedV12BatchWithoutClearingData(t *testing.T) {
 		t.Fatal(err)
 	}
 	var version, rows int
-	if err = repo.DB.QueryRowContext(ctx, "SELECT max(version),count(*) FROM schema_version").Scan(&version, &rows); err != nil || version != 18 || rows != 18 {
+	if err = repo.DB.QueryRowContext(ctx, "SELECT max(version),count(*) FROM schema_version").Scan(&version, &rows); err != nil || version != 19 || rows != 19 {
 		t.Fatalf("ledger version=%d rows=%d err=%v", version, rows, err)
 	}
 	var code, state string
@@ -153,6 +153,13 @@ func TestV16MigratesPersistedV12BatchWithoutClearingData(t *testing.T) {
 	}
 	if code != "N-2026-0001" || state != "draft" || header != nil {
 		t.Fatalf("migrated batch code=%q state=%q header=%v", code, state, header)
+	}
+	baseline := "10000000-0000-4000-8000-000000000006"
+	if _, err = repo.DB.ExecContext(ctx, "INSERT INTO compensation_adjustment_batch(org_id,id,business_code,cycle_year,adjustment_type,legal_entity_id,default_effective_date,state,revision,creator_subject_id,created_at) VALUES(?,?,'B-2026-0001',2026,'normal',?,'2026-10-01','draft',1,?,2)", org, baseline, entity, creator); err != nil {
+		t.Fatal("v19 baseline storage row:", err)
+	}
+	if _, err = repo.DB.ExecContext(ctx, "INSERT INTO compensation_salary_baseline_batch(org_id,batch_id) VALUES(?,?)", org, baseline); err != nil {
+		t.Fatal("v19 baseline subtype:", err)
 	}
 	if err = repo.CheckSchema(ctx); err != nil {
 		t.Fatal(err)
@@ -328,7 +335,7 @@ func TestV16MigratesPersistedV14AuditOutboxWithoutClearingData(t *testing.T) {
 	if err = repo.DB.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM audit_event WHERE id=?),(SELECT count(*) FROM audit_outbox WHERE event_id=?),(SELECT max(version) FROM schema_version)", event, event).Scan(&events, &outbox, &versions); err != nil {
 		t.Fatal(err)
 	}
-	if events != 1 || outbox != 1 || versions != 18 {
+	if events != 1 || outbox != 1 || versions != 19 {
 		t.Fatalf("migrated audit event=%d outbox=%d schema=%d", events, outbox, versions)
 	}
 	if err = repo.CheckSchema(ctx); err != nil {
