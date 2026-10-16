@@ -30,7 +30,6 @@ async function selectAndPreview(page: ReturnType<typeof mount>) {
   const input = page.get('input[type=file]')
   Object.defineProperty(input.element, 'files', { value: [workbookFile()] })
   await input.trigger('change')
-  await page.findAll('button').find(button => button.text() === '校验并预览')!.trigger('click')
   await flushPromises()
 }
 
@@ -41,6 +40,33 @@ afterEach(() => {
 })
 
 describe('personnel batch import panel', () => {
+  it('uploads and previews the selected workbook without a second button click', async () => {
+    const requests: { path: string; method: string; headers: Headers; body: unknown }[] = []
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const path = new URL(String(input), location.href).pathname
+      requests.push({ path, method: init.method ?? 'GET', headers: new Headers(init.headers), body: init.body })
+      if (path.endsWith('/import-preview')) return json(200, { row_count: 1, catalog_revision: '4', graph_revision: '9', errors: [], rows: [
+        { ...workforce, row_number: 2, staff_code: 'AUTO-001', local_name: '自动预览员工', hire_date: AS_OF, departure_date: null },
+      ] })
+      throw new Error(`unexpected request ${path}`)
+    })
+    const page = mount(PersonnelImportPanel, { props: { session: SESSION, asOf: AS_OF } })
+    const input = page.get('input[type=file]')
+    Object.defineProperty(input.element, 'files', { value: [workbookFile()] })
+    await input.trigger('change')
+    await flushPromises()
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0]!.path).toBe(`/api/v1/orgs/${ORG}/employees/import-preview`)
+    expect(requests[0]!.method).toBe('POST')
+    expect(requests[0]!.headers.get('Content-Type')).toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    expect(requests[0]!.body).toBeInstanceOf(File)
+    expect(page.text()).toContain('people.xlsx 已校验 1 行')
+    expect(page.text()).toContain('自动预览员工')
+    expect(page.findAll('button').find(button => button.text() === '重新校验')).toBeDefined()
+    page.unmount()
+  })
+
   it('replays an uncertain reporting command once, then keeps the completed batch terminal', async () => {
     const requests: { path: string; method: string; headers: Headers; body: unknown }[] = []
     let createCount = 0
@@ -139,7 +165,7 @@ describe('personnel batch import panel', () => {
     expect(page.text()).toContain('结果不确定')
     expect(page.text()).toContain('Staff Code 已存在或组织版本已变化')
     expect(page.get('input[type=file]').attributes('disabled')).toBeDefined()
-    expect(page.findAll('button').find(button => button.text() === '校验并预览')!.attributes('disabled')).toBeDefined()
+    expect(page.get('.import-controls button.secondary').attributes('disabled')).toBeDefined()
     await page.findAll('button').find(button => button.text() === '确认原提交并继续')!.trigger('click')
     await flushPromises()
     expect(creates).toHaveLength(3)

@@ -130,11 +130,12 @@ function resetResults() {
   errorMessage.value = ''
   notice.value = ''
 }
-function chooseWorkbook(event: Event) {
+async function chooseWorkbook(event: Event) {
   if (busy.value || executionLocked.value) return
   const input = event.target as HTMLInputElement
   workbook.value = input.files?.[0] ?? null
   resetResults()
+  if (workbook.value) await previewWorkbook()
 }
 function startNewBatch() {
   if (busy.value || !batchComplete.value) return
@@ -178,7 +179,7 @@ async function previewWorkbook() {
   }
   phase.value = 'previewing'
   errorMessage.value = ''
-  notice.value = ''
+  notice.value = `${file.name} 正在上传并校验…`
   controller = new AbortController()
   try {
     const response = await api(`/orgs/${props.session.org_id}/employees/import-preview`, {
@@ -191,9 +192,12 @@ async function previewWorkbook() {
     if (!parsed || !Array.isArray(parsed.rows) || !Array.isArray(parsed.errors) || parsed.row_count !== parsed.rows.length || parsed.row_count < 1 || parsed.row_count > 100 || !/^[1-9]\d*$/.test(parsed.catalog_revision) || !/^[1-9]\d*$/.test(parsed.graph_revision)) throw new Error('503')
     preview.value = parsed
     executions.value = parsed.rows.map(row => ({ ...row, status: 'pending', message: '' }))
-    notice.value = parsed.errors.length ? '预览发现错误；修正工作簿后重新上传。' : `已校验 ${parsed.row_count} 行，尚未创建人员。`
+    notice.value = parsed.errors.length ? `${file.name} 预览发现错误；修正工作簿后重新上传。` : `${file.name} 已校验 ${parsed.row_count} 行，尚未创建人员。`
   } catch (error) {
-    if ((error as Error).name !== 'AbortError') errorMessage.value = '工作簿无法安全解析。请使用最新模板并检查所有单元格均为文本。'
+    if ((error as Error).name !== 'AbortError') {
+      notice.value = ''
+      errorMessage.value = '工作簿无法安全解析。请使用最新模板并检查所有单元格均为文本。'
+    }
   } finally {
     if (phase.value === 'previewing') stopOperation()
   }
@@ -460,7 +464,7 @@ onBeforeUnmount(() => stopOperation())
       </ol>
       <div class="import-controls">
         <label>选择 XLSX<input :key="fileGeneration" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" :disabled="busy || executionLocked" @change="chooseWorkbook"></label>
-        <button type="button" class="secondary" :disabled="busy || !workbook || executionLocked" @click="previewWorkbook">校验并预览</button>
+        <button type="button" class="secondary" :disabled="busy || !workbook || executionLocked" @click="previewWorkbook">{{ phase === 'previewing' ? '正在上传并校验…' : preview ? '重新校验' : '校验并预览' }}</button>
         <button type="button" :disabled="busy || !preview || hasPreviewErrors || batchComplete" @click="applyBatch">{{ batchComplete ? '批量处理已完成' : executions.some(row => row.status === 'uncertain') ? '确认原提交并继续' : '确认并批量创建' }}</button>
         <button v-if="batchComplete" type="button" class="secondary" :disabled="busy" @click="startNewBatch">开始下一批</button>
       </div>
