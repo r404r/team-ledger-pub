@@ -458,6 +458,19 @@ describe('shared protected identity interaction', () => {
     expect(providerNavigation).toHaveBeenCalledOnce()
     expect(api.matching('POST', '/api/v1/access-grants')).toHaveLength(0)
   })
+  it('uses the independent audit action for audit-route MFA and never queries audit events before step-up', async () => {
+    history.replaceState({}, '', '/security/audit')
+    api.session = { ...initialSession, capabilities: ['audit.read'], mfa_recent: false }
+    const page = await open()
+    expect(page.text()).toContain('近期 MFA 已过期')
+    expect(api.matching('GET', '/api/v1/audit-events')).toHaveLength(0)
+    const starting = api.defer('POST', '/api/v1/auth/step-up')
+    await action(page, /重新验证审计 MFA/).trigger('click'); await settled()
+    expect(identityState(page)).toBe('mfa-starting'); closed(page)
+    expect(JSON.parse(api.matching('POST', '/api/v1/auth/step-up')[0]!.body!)).toEqual({ action: 'audit.read', return_to: '/security/audit' })
+    starting.resolve(200, { authorization_url: PROVIDER_URL }); await settled()
+    expect(identityState(page)).toBe('mfa-redirecting'); closed(page)
+  })
 
   it('logout supersedes pending MFA and rejects the earlier provider redirect', async () => {
     api.reply('GET', PROFILE_PATH, 200, profile())
@@ -660,6 +673,23 @@ describe('shared protected identity interaction', () => {
     expect(page.find('[role="dialog"]').exists()).toBe(false)
     expect(page.text()).toContain('请重新执行刚才的敏感操作')
     expect(page.find('[data-protected-surface]').exists()).toBe(true)
+  })
+
+  it('submits audit.read from the local audit-route TOTP modal', async () => {
+    history.replaceState({}, '', '/security/audit')
+    api.session = { ...api.session, identity_mode: 'local', identity_available: true } as typeof api.session
+    const page = await openGate()
+    await action(page, /重新验证审计 MFA/).trigger('click')
+    await settled()
+    api.reply('POST', '/api/v1/auth/step-up', 200, { return_to: '/security/audit', csrf_token: 'rotated-audit-csrf' })
+    await page.get('#security-current-password').setValue('correct horse battery staple')
+    await page.get('#security-totp').setValue('123456')
+    await page.get('.security-form').trigger('submit')
+    await settled()
+    expect(JSON.parse(api.matching('POST', '/api/v1/auth/step-up')[0]!.body!)).toEqual({
+      action: 'audit.read', return_to: '/security/audit',
+      current_password: 'correct horse battery staple', totp_code: '123456',
+    })
   })
 
 })

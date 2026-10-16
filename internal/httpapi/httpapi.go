@@ -276,7 +276,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			InterviewPermissions    []interview.Permission    `json:"interview_permissions"`
 			CompensationPermissions []compensation.Permission `json:"compensation_permissions"`
 			SensitivityUntil        time.Time                 `json:"sensitivity_valid_until"`
-		}{snap.SubjectID, snap.OrgID, strconv.FormatInt(snap.AuthEpoch, 10), businessDate, caps, token, scopeKind, scopeID, now.Before(snap.MFAUntil), snap.MFAUntil, authorities, h.identities.Available(), h.identities.Mode(), interviewPermissions, compensationPermissions, sensitivityUntil})
+		}{snap.SubjectID, snap.OrgID, strconv.FormatInt(snap.AuthEpoch, 10), businessDate, caps, token, scopeKind, scopeID, now.Before(snap.MFAUntil), snap.MFAUntil, authorities, h.identities.Mode() == "local" || h.identities.Available(), h.identities.Mode(), interviewPermissions, compensationPermissions, sensitivityUntil})
 		return
 	}
 	if r.URL.Path == "/api/v1/access-grants" || strings.HasPrefix(r.URL.Path, "/api/v1/access-grants/") {
@@ -541,7 +541,7 @@ func walkJSON(d *json.Decoder, depth int, object string) error {
 		return nil
 	}
 	switch object {
-	case "subject_id", "capability", "category", "kind", "id", "purpose", "expires_at", "authority_id", "expected_revision", "expected_auth_epoch", "reason", "code", "label", "expected_catalog_revision", "expected_graph_revision", "staff_code", "action", "ref", "employee_id", "department_id", "manager_employee_id", "reporting_kind", "end_date", "title", "position_code", "description", "legal_entity_id", "location_code", "level", "job_family_id", "career_level_id", "as_of", "q", "cursor", "scheduled_at", "expected_head_revision", "text", "edit_reason", "expected_version", "minimal_shared_text", "safe_blocker_text", "format", "return_to":
+	case "subject_id", "capability", "category", "kind", "id", "purpose", "expires_at", "authority_id", "expected_revision", "expected_auth_epoch", "reason", "code", "label", "expected_catalog_revision", "expected_graph_revision", "staff_code", "action", "ref", "employee_id", "department_id", "manager_employee_id", "reporting_kind", "end_date", "title", "position_code", "description", "legal_entity_id", "location_code", "level", "job_family_id", "career_level_id", "as_of", "q", "cursor", "scheduled_at", "expected_head_revision", "text", "edit_reason", "expected_version", "minimal_shared_text", "safe_blocker_text", "format", "return_to", "current_password", "totp_code":
 		if _, ok := t.(string); !ok {
 			return fault.Invalid
 		}
@@ -634,7 +634,7 @@ func walkJSON(d *json.Decoder, depth int, object string) error {
 func allowedField(object, key string) bool {
 	switch object {
 	case "step_up":
-		return key == "action" || key == "return_to"
+		return key == "action" || key == "return_to" || key == "current_password" || key == "totp_code"
 	case "issue":
 		switch key {
 		case "subject_id", "capability", "category", "scope", "purpose", "valid_from", "expires_at", "mfa_required", "relation_bound", "relation_ref", "object_ref", "authority_id", "expected_revision", "approved_source_refs":

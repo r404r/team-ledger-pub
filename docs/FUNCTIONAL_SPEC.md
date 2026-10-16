@@ -342,7 +342,7 @@ purpose 从组织政策批准的有限集合选择；自由说明只解释请求
 
 DEV-006共同身份交互已实装/实跑：未核对/401/设施不可用时不挂载受保护页面；登录只前往受信IdP，回调按批准issuer/sub映射，不按email/角色自动建主体/grant。MFA前往同身份真实认证，可信声明不足仍拒绝；成功轮换session/CSRF、重载权限与版本，**不自动提交资料、授权、批准或支付**。注销请求前立即销毁页面/表单/在途操作；仅服务端撤销提交并204才确认，失败关闭并允许明确重试，不声称IdP全局登出。焦点/后退/旧回包不得复活资料；核对subject/org/epoch变化清空旧树再明确重核。原提交grant命令epoch/原回执确认仍按独立契约，不把正常提交当外部换身份。唯一技术协议与时序在[TECH §7.1](TECHNICAL_SPEC.md#71-身份部署模式session与step-up)；生产政策未验。
 
-近期MFA沿原安全设计是**会话级认证条件**，不是指定业务动作的一次性授权票据。step-up的action绑定认证事务与回跳意图，不创造能力、scope或grant；为一个动作完成MFA可满足其他**已经完整获权**动作的近期MFA门槛，无管理资格者即使请求`access_grant.manage`并完成认证仍不能管理，现有授权撤销后也不能继续。生产MFA映射及窗口政策尚待接受。
+近期MFA沿原安全设计是**会话级认证条件**，不是指定业务动作的一次性授权票据。step-up的action绑定认证事务与回跳意图，不创造能力、scope或grant；为一个动作完成MFA可满足其他**已经完整获权**动作的近期MFA门槛，无管理资格者即使请求`access_grant.manage`并完成认证仍不能管理，现有授权撤销后也不能继续。审计路由使用独立`audit.read`意图；MFA过期与缺少审计grant分别提示，不能把TOTP成功显示成已获审计权。
 
 显式身份映射维护由持有受保护DB配置与本地keyd socket的受控进程执行，不把目标员工当操作者，也不借目标业务grant。CLI可选`-employee-id`，绑定已存在同org员工的一对一不可改绑`subject_employee`；省略保留已有对应，不推断、不转移、不创建capability/grant。检查已有approved active subject，**schema没有human-kind分类，不声称active-human核验或实名真人归责**。新事件的`local_maintenance`actor独立记录实际kernel有效UID＋域隔离host hash，应用actor subject为NULL；target subject/employee分列，不是共享/sudo账号背后真人证明。
 
@@ -410,7 +410,7 @@ flowchart LR
 | P-BONUS-01 / F-BONUS-001 | DEV-010固定代码路由`/employees/:employee_id/bonuses`；目标、奖励、支付/冲销、余额/异常、扩展分离（F，OP-BONUS-01），日期/状态（M） | 目标 OP-BONUS-02/07、奖励 OP-BONUS-03/04/05、支付 OP-BONUS-06、有限扩展 OP-BONUS-08；能力分别检查，命令前重验会话并按bonus/comp revision CAS，不放一个“财务编辑”总开关 |
 | P-AI-01 / F-AI-001 | `/employees/:employee_id/followup`；确定规则、standing policy、最小输入请求/独立批准、持久任务、草稿打开/编辑/发布/丢弃（M，OP-AI-01-05/08） | 表单不预填业务默认；明确cadence/anchor/IANA timezone/due/pause/purpose/AI模式。请求与批准主体分离；worker凭据不进入浏览器。规则与AI状态分栏，draft不冒充published；生产provider许可缺失时不外传 |
 | P-SEC-01 / F-SEC-001 | 主导航“授权”；当前会话、delegated grant列表/详情及全typed对象类别；PII/面谈/金融/AI结果有限导出由各业务入口显式选择对象 | OP-SEC-02/03独立预览/确认/真实revision撤销；canonical owner/独立能力/有限类别校验、敏感导出强制近期MFA。管理权不授正文；全部导出≤100对象/8MiB、prepare及逐批release重验，不落明文temp |
-| P-SEC-02 / F-SEC-001 | 主导航`/security/audit`；独立`audit.read`＋audit类别＋`security_administration`目的及MFA，按时间、actor/object/action/purpose/结果/request ID查询（U，OP-SEC-04） | 签名cursor绑定caller/query/epoch；只返回脱敏事实，无正文/金额/prompt。拒绝/离页清旧结果；查看审计不获得关联业务对象读取权 |
+| P-SEC-02 / F-SEC-001 | 主导航`/security/audit`；独立`audit.read`＋audit类别＋`security_administration`目的及MFA，按时间、actor/object/action/purpose/结果/request ID查询（U，OP-SEC-04） | 签名cursor绑定caller/query/epoch；只返回脱敏事实，无正文/金额/prompt。MFA过期、缺少独立grant、在途撤权和服务错误分别反馈；拒绝时不挂载筛选工作台且不调用查询，离页/拒绝清旧结果；查看审计不获得关联业务对象读取权 |
 
 导航只出现可申请使用的工作区；无 grant 的 tab 不显示敏感数量或隐藏分区的存在提示。直接 URL/API 不能绕过拒绝。切换 employee、purpose、查询日或授权变化时丢弃不匹配的在途响应和旧内容；返回按钮不得从缓存复活敏感数据。`as_of` 改变历史投影，不改变服务器“当前业务日”的授权判断。
 
@@ -1007,7 +1007,7 @@ flowchart TB
 9. `local`模式无公开注册：fresh空库由maintenance profile一次性创建唯一集团、首个active subject/account及固定`bootstrap_policy.v1`最小组织/PII维护权；输入不能选择金融、面谈、审计、导出或grant管理权。其后维护者只把唯一username绑定既有active subject；后续subject创建本身不授职责。登录错误、未知或停用账号给相同提示并指数延迟；密码更改/重置/停用撤销该主体全部会话。登录不创建角色、grant或员工绑定。
 10. `local`模式由TeamLedger独立验证密码＋TOTP，不依赖外部IdP或网络MFA服务。新建及v13迁移的active账号进入`enrollment_required`：正确密码只签发10分钟受限登记session，不能访问`/session`或业务API。TOTP为RFC 6238 SHA-1/6位/30秒、允许±1窗口，并以持久`last_accepted_step`拒绝登录和step-up间的重复验证码。
 11. TOTP secret和pending secret使用独立`identity_mfa` KEK密封；二维码及人工密钥仅在当前页面内存显示。确认后生成一次显示恢复码，数据库只保存独立`local_recovery_code` MAC。恢复码必须与当前密码一起原子消费，只能进入受限新TOTP登记；同请求响应丢失可用同一幂等键恢复pending，并发消费仅一方成功。
-12. 本地敏感step-up重新验证当前密码＋TOTP，轮换session/CSRF并签发10分钟`mfa_until`，但不自动执行先前业务命令。主动替换TOTP和重发恢复码同样要求当前密码＋未重放TOTP；遗失全部因子只能用离线CLI重置，网页不能关闭或绕过MFA。
+12. 本地敏感step-up重新验证当前密码＋TOTP，轮换session/CSRF并签发10分钟`mfa_until`，但不自动执行先前业务命令。本地mode的`/session`明确报告内置身份设施可用；共同页面按实际路由发送`pii.write`、`access_grant.manage`、`audit.read`等受控意图，本地请求允许并要求密码/TOTP字段，OIDC流程不依赖它们。主动替换TOTP和重发恢复码同样要求当前密码＋未重放TOTP；遗失全部因子只能用离线CLI重置，网页不能关闭或绕过MFA。
 13. Compose内置receiver是独立进程但与业务共用DB：业务事务先原子写安全事件/outbox，forwarder以mTLS投递；receiver先构造/签名receipt，再将ledger与完整signed receipt在同一事务INSERT/commit，commit后才返回，forwarder验签才确认outbox。服务中断保留事件重试，同event/digest逐byte返回已持久化原receipt；forwarder另以5秒mTLS探测写单例heartbeat，API仅接受本部署ID且成功状态不老于15秒。此同库方案不宣称抵御DBA/host root。
 14. root/keyring离线副本每次同时导出到两份分别加密、分离保管的可移动介质；停止写入并锁定同一generation，inventory包含全部active/staged/decrypt-only/verify-only key entry状态与每domain active pointer，A/B都经隔离只读hash/auth/完整probe后才登记成功。副本不含DB或audit/OIDC私钥，不是完整灾备，当前不承诺RPO/RTO。
 
@@ -1038,7 +1038,7 @@ OP-SEC-02授权表单只允许批准身份、可委派capability、org/departmen
 
 OP-SEC-05各入口逐对象当前read/export/MFA先于keyd，prepare审计先提交、逐chunk释放再验；仅内存且无明文temp。历史R7 KMS实现是旧证据，目标不得回退外部KMS。
 
-P-SEC-02 通过 OP-SEC-04 按时间窗口、actor/object/action/purpose/结果和 request ID 过滤分页，审计 scope 独立检查；没有工资/笔记/模型输入输出。查看审计不默认解锁关联业务详情。异常只给安全原因/request ID，定位服务故障不能借“调试日志”读取正文。
+P-SEC-02 通过 OP-SEC-04 按时间窗口、actor/object/action/purpose/结果和 request ID 过滤分页，审计 scope 独立检查；没有工资/笔记/模型输入输出。查看审计不默认解锁关联业务详情。页面先读取当前session：近期MFA过期时引导以`audit.read`重新验证；MFA有效但缺grant时明确说明独立授权缺失且不请求事件；已进入查询后的403/404视为授权变化并清空。异常只给安全原因/request ID，定位服务故障不能借“调试日志”读取正文。
 
 | 源 | 动作 / OP | 前置 | 目标 / 不可变事实 | 拒绝及边界 |
 | --- | --- | --- | --- | --- |

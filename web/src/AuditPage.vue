@@ -26,10 +26,14 @@ function validEvent(item: AuditEvent) {
 }
 async function load(query = applied) {
   const op = begin(); page.value = null
+  let accessChecked = false
   try {
     const nextSession = await get<Session>('/session', op)
-    if (!nextSession || !uuid.test(nextSession.subject_id) || !uuid.test(nextSession.org_id) || !Array.isArray(nextSession.capabilities) || !nextSession.capabilities.includes('audit.read') || !nextSession.mfa_recent || !timestamp(nextSession.mfa_valid_until)) throw Object.assign(new Error('forbidden'), { status: 403 })
+    if (!nextSession || !uuid.test(nextSession.subject_id) || !uuid.test(nextSession.org_id) || !Array.isArray(nextSession.capabilities) || typeof nextSession.mfa_recent !== 'boolean' || !timestamp(nextSession.mfa_valid_until)) throw Object.assign(new Error('invalid response'), { status: 503 })
+    if (!nextSession.mfa_recent) throw Object.assign(new Error('mfa required'), { status: 428 })
+    if (!nextSession.capabilities.includes('audit.read')) throw Object.assign(new Error('forbidden'), { status: 403 })
     session.value = nextSession
+    accessChecked = true
     const next = await get<Page>(`/audit-events?${query || 'limit=50'}`, op)
     if (!next || next.consistency !== 'current' || !timestamp(next.authorization_until) || !Array.isArray(next.items) || next.items.length > 100 || !next.items.every(validEvent) || next.next_cursor !== null && typeof next.next_cursor !== 'string') throw Object.assign(new Error('invalid response'), { status: 503 })
     page.value = next
@@ -37,7 +41,15 @@ async function load(query = applied) {
     if (!current(op)) return
     const status = Number((cause as { status?: number }).status ?? 503)
     clear()
-    error.value = status === 401 ? '会话已失效，审计数据已清空。' : status === 403 || status === 404 ? '当前独立审计权限或近期 MFA 不满足，数据已清空。' : '审计服务不可用，未显示缓存结果。'
+    error.value = status === 401
+      ? '会话已失效，审计数据已清空。'
+      : status === 428
+        ? '安全审计已启用，但当前会话的近期 MFA 已过期。请在右上角“会话与安全”中执行“重新验证审计 MFA”，然后重新进入本页。'
+        : status === 403 || status === 404
+          ? accessChecked
+            ? '审计授权在读取期间已失效，数据已清空。'
+            : '安全审计已启用，但当前账号没有独立 audit.read 权限。须由已获授权的安全管理员授予 audit.read / audit / security_administration；TOTP 本身不会授予权限。'
+          : '审计服务不可用，未显示缓存结果。'
     if (status === 401) emit('session-expired')
   } finally { if (current(op)) { busy.value = false; controller = null } }
 }
@@ -56,7 +68,7 @@ onBeforeUnmount(() => { alive = false; generation++; controller?.abort(); clear(
   <main>
     <header><p class="eyebrow">P-SEC-02 · 独立审计</p><h1>安全审计事件</h1><p>仅安全 metadata；不显示正文、金额、模型请求内容或底层日志。</p></header>
     <p v-if="error" role="alert">{{ error }}</p>
-    <form @submit.prevent="apply">
+    <form v-if="session" @submit.prevent="apply">
       <label>主体 ID<input v-model.trim="filters.subject"></label><label>员工 ID<input v-model.trim="filters.employee"></label><label>授权 ID<input v-model.trim="filters.grant"></label>
       <label>操作<input v-model.trim="filters.operation" placeholder="OP-SEC-04"></label><label>目的<input v-model.trim="filters.purpose"></label>
       <label>结果<select v-model="filters.outcome"><option value="">全部</option><option>allowed</option><option>denied</option><option>partial</option></select></label>

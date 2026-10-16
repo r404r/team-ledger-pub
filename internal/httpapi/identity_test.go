@@ -353,4 +353,17 @@ func TestLocalMFAHTTPEnrollmentCreatesBusinessSession(t *testing.T) {
 	if sessionResponse.StatusCode != http.StatusOK {
 		t.Fatal("confirmed MFA session did not enter business API", sessionResponse.StatusCode)
 	}
+	var businessSession map[string]any
+	if err = json.NewDecoder(sessionResponse.Body).Decode(&businessSession); err != nil {
+		t.Fatal(err)
+	}
+	if businessSession["identity_mode"] != "local" || businessSession["identity_available"] != true {
+		t.Fatal("local TOTP was not exposed as an available step-up facility", businessSession)
+	}
+	f.Now = f.Now.Add(31 * time.Second)
+	stepUpBody := `{"action":"audit.read","return_to":"/security/audit","current_password":"correct horse battery staple","totp_code":"` + httpTOTP(t, pending["secret"].(string), f.Now) + `"}`
+	stepUpResponse, stepped := send("/api/v1/auth/step-up", stepUpBody, confirmed["csrf_token"].(string), confirmResponse.Cookies()[0])
+	if stepUpResponse.StatusCode != http.StatusOK || stepped["return_to"] != "/security/audit" || stepped["csrf_token"] == "" || len(stepUpResponse.Cookies()) != 1 {
+		t.Fatal("local audit MFA step-up did not rotate the business session", stepUpResponse.StatusCode, stepped)
+	}
 }

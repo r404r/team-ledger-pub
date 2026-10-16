@@ -65,7 +65,7 @@ const canLogout = computed(() => session.value !== null && !['logging-out', 'log
 const interviewRoute = computed(() => /^\/interviews(?:\/|$)/.test(returnTo.value) || /^\/employees\/[^/]+\/interviews$/.test(returnTo.value))
 const followupRoute = computed(() => /^\/employees\/[^/]+\/followup$/.test(returnTo.value))
 const compensationRoute = computed(() => /^\/employees\/[^/]+\/(?:compensation|bonuses)(?:\?|$)/.test(returnTo.value) || /^\/orgs\/[^/]+\/compensation-adjustments(?:\?|$)/.test(returnTo.value))
-const stepUpAction = computed(() => returnTo.value.split('?')[0] === '/security/grants' ? 'access_grant.manage' : compensationRoute.value ? compensationIntent.value : followupRoute.value ? 'interview_policy.manage' : interviewRoute.value ? interviewIntent.value : 'pii.write')
+const stepUpAction = computed(() => returnTo.value.split('?')[0] === '/security/grants' ? 'access_grant.manage' : returnTo.value.split('?')[0] === '/security/audit' ? 'audit.read' : compensationRoute.value ? compensationIntent.value : followupRoute.value ? 'interview_policy.manage' : interviewRoute.value ? interviewIntent.value : 'pii.write')
 
 function validDate(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
@@ -101,6 +101,7 @@ function knownReturnRoute() {
   else if (compensationBatches && uuid.test(compensationBatches[1]!)) path = `/orgs/${compensationBatches[1]}/compensation-adjustments`
   else if (/^\/interviews\/?$/.test(url.pathname)) path = '/interviews'
   else if (/^\/security\/grants\/?$/.test(url.pathname)) path = '/security/grants'
+  else if (/^\/security\/audit\/?$/.test(url.pathname)) path = '/security/audit'
   else if (url.pathname === '/') path = '/'
   else return '/'
   const query = Array.from(url.searchParams.entries())
@@ -686,9 +687,9 @@ onBeforeUnmount(() => {
               <div v-if="identityAvailable" class="identity-tools-row">
                 <label v-if="interviewRoute" for="interview-stepup-intent">重新验证意图<select id="interview-stepup-intent" v-model="interviewIntent"><option value="note.publish">发布笔记</option><option value="sensitive.export">敏感导出</option></select></label>
                 <label v-if="compensationRoute" for="compensation-stepup-intent">财务重新验证意图<select id="compensation-stepup-intent" v-model="compensationIntent"><option value="compensation.read">财务读取</option><option value="compensation.propose">薪酬提出</option><option value="compensation.approve">独立薪酬审批</option><option value="bonus.target.manage">奖金目标维护</option><option value="bonus.propose">奖金奖励维护</option><option value="bonus.approve">独立奖金审批</option><option value="bonus.payment.record">奖金支付事实</option><option value="compensation.extension.manage">薪酬有限扩展</option><option value="sensitive.export">财务敏感导出</option></select></label>
-                <button type="button" @click="closeSessionPanel(); stepUp()">{{ compensationRoute ? '重新验证财务 MFA' : stepUpAction === 'access_grant.manage' ? '重新验证授权管理 MFA' : stepUpAction === 'interview_policy.manage' ? '重新验证跟进策略 MFA' : stepUpAction === 'note.publish' ? '重新验证笔记发布 MFA' : stepUpAction === 'sensitive.export' ? '重新验证敏感导出 MFA' : '重新验证资料写入 MFA' }}</button>
+                <button type="button" @click="closeSessionPanel(); stepUp()">{{ compensationRoute ? '重新验证财务 MFA' : stepUpAction === 'access_grant.manage' ? '重新验证授权管理 MFA' : stepUpAction === 'audit.read' ? '重新验证审计 MFA' : stepUpAction === 'interview_policy.manage' ? '重新验证跟进策略 MFA' : stepUpAction === 'note.publish' ? '重新验证笔记发布 MFA' : stepUpAction === 'sensitive.export' ? '重新验证敏感导出 MFA' : '重新验证资料写入 MFA' }}</button>
               </div>
-              <p v-if="interviewRoute || compensationRoute || followupRoute">MFA 是会话级近期认证；认证后重载并明确重新确认，不自动提交、审批、生成结论或导出。</p>
+              <p v-if="interviewRoute || compensationRoute || followupRoute || stepUpAction === 'audit.read'">MFA 是会话级近期认证；认证后重载并明确重新确认，不自动提交、审批、生成结论、查询审计或导出。</p>
               <p v-if="securityNotice" class="security-success" role="status">{{ securityNotice }}</p>
               <details v-if="identityMode === 'local'" class="identity-account-panel">
                 <summary>账号安全、验证器与密码</summary>

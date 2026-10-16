@@ -180,9 +180,9 @@ DEV-034的`CompensationBatchPage.vue`以批次header和默认3行工作表取代
 | P-AI-01 | `/employees/:employee_id/followup` | R6a policy/facts与R6b job/result/source review、人审发布已接通；生产provider未批准时外传disabled |
 | P-SEC-01 / P-SEC-02 | `/security/grants` / `/security/audit` | 可委派 authority 和安全 grant DTO / sanitized cursor audit |
 
-共同 login/MFA/denied/unavailable/conflict 弹层不是员工门户；DSN/密钥配置在受控运维，不提供任意 SQL 管理页。TypeScript 的 `MoneyDTO.amount_minor`/revision 使用字符串，转换金额只用 exact 整数/decimal，不用 `Number`。`/session` 只影响按钮/导航提示，handler 仍逐请求授权。
+共同 login/MFA/denied/unavailable/conflict 弹层不是员工门户；DSN/密钥配置在受控运维，不提供任意 SQL 管理页。TypeScript 的 `MoneyDTO.amount_minor`/revision 使用字符串，转换金额只用 exact 整数/decimal，不用 `Number`。`/session` 只影响按钮/导航提示，handler 仍逐请求授权；`identity_available`在OIDC verifier可用或local内置密码/TOTP模式可用时为true，不能把local误报为“设施未启用”。
 
-R2-R5页面保持；R6a FollowupPage与R6b最小输入/job/result/source review、人审发布均已接通，P-SEC-02独立audit页面也已交付。页面只显示获准事实/覆盖与明确生产阻断；真实provider质量、外传许可及生产设施未批准时调用disabled，不把“生产未启用”误写成机制未实装。
+R2-R5页面保持；R6a FollowupPage与R6b最小输入/job/result/source review、人审发布均已接通，P-SEC-02独立audit页面也已交付。审计页在session预检阶段区分近期MFA过期与缺少`audit.read`；前者只引导`audit.read` step-up，后者不调用事件API且不显示筛选工作台；查询后的403/404清空为授权变化。页面只显示获准事实/覆盖与明确生产阻断；真实provider质量、外传许可及生产设施未批准时调用disabled，不把“生产未启用”误写成机制未实装。
 
 全局仅保留安全 session/capabilities、非敏感筛选与 request generation；敏感 DTO 在对应页面短时内存，禁止 localStorage/sessionStorage/IndexedDB、service worker、跨页 Pinia缓存、分析 SDK/console/trace 截取正文。路由离开/登出/401/403/404/epoch变化清空；取消 fetch并以 generation＋employee ID 丢弃乱序旧响应，撤权提示不得被晚回包重新显示。`Cache-Control: no-store`；笔记/AI仅文本呈现，禁止模板解释/未经清洗 `v-html`。[S4] 这些降低残留，不承诺回收截图/下载或浏览器已获得明文。
 
@@ -965,7 +965,7 @@ HMAC状态不是可忽略运维标记：所有新增奖金写在事务内读取�
 
 所有cookie mutation及敏感POST校验session绑定CSRF token、Origin与Fetch Metadata。[S3] token只经keyd当前`csrf_token` MAC：规范输入为domain＋原始32-byte session随机值，DB存token hash/key version，`/session`从已验证cookie以**当前同version key**重算。CSRF key rotation必须停写，并在激活前同一DB事务撤销全部旧version session、推进subject/session epoch及写audit；因此不提供历史MAC派生。旧tab/reload/POST统一401并清敏感状态，按当前部署模式重新登录才取得新session/token；多tab不静默换token。OIDC callback仍以state/nonce/PKCE而非普通CSRF。
 
-两种模式均提供step-up。OIDC通过同login流程绑定当前主体、action/return和可信`auth_time/acr/amr`；local在当前business session中重新验证当前密码＋未重放TOTP。两者成功均撤销旧session、轮换opaque cookie/CSRF，并从本次证明时间签发10分钟`mfa_until`。合格近期MFA是会话级认证条件，不是一次性动作票据；action只约束认证意图，不创造能力、scope或grant，UI不得自动重放先前业务命令。
+两种模式均提供step-up。OIDC通过同login流程绑定当前主体、action/return和可信`auth_time/acr/amr`；local在当前business session中重新验证当前密码＋未重放TOTP。`/security/audit`的canonical return及action固定为`audit.read`，local JSON shape接受密码/TOTP凭据后由identity service验证，不再因通用OIDC shape丢弃；OIDC不以这些本地凭据替代IdP证明。两者成功均撤销旧session、轮换opaque cookie/CSRF，并从本次证明时间签发10分钟`mfa_until`。合格近期MFA是会话级认证条件，不是一次性动作票据；action只约束认证意图，不创造能力、scope或grant，UI不得自动重放先前业务命令。
 
 #### 7.1.1 OIDC身份协议时序（DEV-006候选已实际运行，生产设施另验）
 

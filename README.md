@@ -327,6 +327,7 @@ docker compose --env-file .env.docker logs --tail=200 \
 | curl报告证书错误 | 必须保留`--cacert docker/secrets/tls-cert.pem`，URL必须是证书覆盖的`localhost`或`127.0.0.1`。 |
 | TOTP设备遗失，但恢复码仍在 | 在登录页选择“使用恢复码”，输入username、当前密码和一次性恢复码，只进入受限恢复页；设置新验证器并保存新的恢复码。恢复码不能直接进入业务页面。 |
 | TOTP设备和恢复码都遗失 | 不能从网页关闭MFA或绕过第二因素；由有权维护者按下述“离线MFA重置”操作。 |
+| 审计页提示缺少`audit.read` | 审计API和独立receiver已经运行，但当前账号没有独立审计授权；TOTP只满足近期认证，不会创造权限。fresh bootstrap按最小权限原则不授`audit.read`或`access_grant.manage`。须按已批准的安全职责、批准者和期限配置`audit.read / audit / security_administration`，不要直接改库或把组织管理员自动升级为审计员。 |
 
 只有在**确认是全新测试安装且所有数据都可以永久删除**时，才能彻底重置：
 
