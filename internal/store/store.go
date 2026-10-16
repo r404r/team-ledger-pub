@@ -268,7 +268,7 @@ func (r reader) sql(s, p string) string {
 }
 func (r *Repository) read() reader { return reader{r.DB, r.Backend} }
 
-const currentSchemaVersion = 12
+const currentSchemaVersion = 13
 
 func (r *Repository) migration(version int) (string, string, error) {
 	if (r.Backend != "sqlite" && r.Backend != "postgres") || version < 1 || version > currentSchemaVersion {
@@ -306,10 +306,10 @@ func (r *Repository) Migrate(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		// v12 is a clean development baseline. Existing schemas are never
-		// upgraded or cleared; operators must point the process at an empty
-		// database/schema.
-		if version != currentSchemaVersion {
+		// v12 is the first persisted deployment baseline. Older development
+		// schemas remain unsupported; exact v12 and current schemas are upgraded
+		// or accepted without clearing operator data.
+		if version < 12 || version > currentSchemaVersion {
 			return fault.Unavailable
 		}
 		if r.Backend == "sqlite" {
@@ -319,7 +319,7 @@ func (r *Repository) Migrate(ctx context.Context) error {
 			}
 		} else {
 			// Stop concurrent application writes for the controlled cutover.
-			if _, err = tx.ExecContext(ctx, "LOCK TABLE schema_version,organization,authorization_guard,subject,session,employee,capability_assignment,access_grant,encrypted_payload,employee_profile_version,command_receipt,audit_event IN ACCESS EXCLUSIVE MODE"); err != nil {
+			if _, err = tx.ExecContext(ctx, "LOCK TABLE schema_version,organization,authorization_guard,subject,session,employee,capability_assignment,access_grant,encrypted_payload,employee_profile_version,command_receipt,audit_event,compensation_adjustment_batch,compensation_batch_payload,compensation_batch_import_candidate IN ACCESS EXCLUSIVE MODE"); err != nil {
 				return safeError(err)
 			}
 		}

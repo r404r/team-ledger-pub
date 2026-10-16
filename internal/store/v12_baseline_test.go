@@ -11,9 +11,9 @@ import (
 	"github.com/r404r/team-ledger/internal/value"
 )
 
-func TestV12FreshInstallIsCleanWorkforceBaseline(t *testing.T) {
+func TestV13FreshInstallPreservesCleanWorkforceBaseline(t *testing.T) {
 	ctx := context.Background()
-	repo, err := store.Open(ctx, "sqlite", filepath.Join(t.TempDir(), "v12.sqlite"))
+	repo, err := store.Open(ctx, "sqlite", filepath.Join(t.TempDir(), "v13.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,8 +29,8 @@ func TestV12FreshInstallIsCleanWorkforceBaseline(t *testing.T) {
 	if err = repo.DB.QueryRowContext(ctx, "SELECT count(*),max(version) FROM schema_version").Scan(&versionRows, &version); err != nil {
 		t.Fatal(err)
 	}
-	if versionRows != 12 || version != 12 {
-		t.Fatalf("fresh baseline ledger = %d rows/max %d, want complete v1..v12 checksums", versionRows, version)
+	if versionRows != 13 || version != 13 {
+		t.Fatalf("fresh baseline ledger = %d rows/max %d, want complete v1..v13 checksums", versionRows, version)
 	}
 
 	for _, name := range []string{"team", "team_parent_history", "team_membership", "position_assignment"} {
@@ -39,21 +39,21 @@ func TestV12FreshInstallIsCleanWorkforceBaseline(t *testing.T) {
 			t.Fatal(err)
 		}
 		if count != 0 {
-			t.Fatalf("legacy table %s exists in v12 clean baseline", name)
+			t.Fatalf("legacy table %s exists in v13 clean baseline", name)
 		}
 	}
 	for _, name := range []string{
 		"legal_entity", "legal_entity_version", "work_location", "org_unit", "org_unit_version", "org_unit_parent_history",
 		"workforce_payload", "employee_business_identifier", "employee_identifier_owner", "employment_spell",
 		"education_level", "education_record", "job_family", "job_family_version", "career_level", "career_level_version",
-		"job_assignment", "reporting_line", "structure_change", "structure_change_item",
+		"job_assignment", "reporting_line", "structure_change", "structure_change_item", "compensation_batch_header_payload",
 	} {
 		var count int
 		if err = repo.DB.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name=?", name).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		if count != 1 {
-			t.Fatalf("required v12 table %s count = %d", name, count)
+			t.Fatalf("required v13 table %s count = %d", name, count)
 		}
 	}
 	for _, column := range []struct{ table, name string }{
@@ -81,18 +81,18 @@ func TestV12FreshInstallIsCleanWorkforceBaseline(t *testing.T) {
 		t.Fatalf("fixed catalogs = locations %q education %q ranks %q", locations, education, educationRanks)
 	}
 	if _, err = repo.DB.ExecContext(ctx, "INSERT INTO audit_event(id,operation,purpose,request_id,outcome,recorded_at,actor_kind) VALUES(?,'OP-ORG-02','',?,'allowed',?,'application')", value.NewID(), value.NewID(), repo.BindTime(time.Now())); err == nil {
-		t.Fatal("retired OP-ORG-02 accepted by SQLite v12 audit schema")
+		t.Fatal("retired OP-ORG-02 accepted by SQLite v13 audit schema")
 	}
 }
 
-func TestV12PostgresInstallHasNoTeamEraTables(t *testing.T) {
+func TestV13PostgresInstallHasNoTeamEraTables(t *testing.T) {
 	f := testsupport.NewHarness(t, "postgres")
 	ctx := context.Background()
 	var versionRows, version int
 	if err := f.Repo.DB.QueryRowContext(ctx, "SELECT count(*),max(version) FROM schema_version").Scan(&versionRows, &version); err != nil {
 		t.Fatal(err)
 	}
-	if versionRows != 12 || version != 12 {
+	if versionRows != 13 || version != 13 {
 		t.Fatalf("fresh PostgreSQL baseline ledger = %d rows/max %d", versionRows, version)
 	}
 	for _, name := range []string{"team", "team_parent_history", "team_membership", "position_assignment"} {
@@ -101,7 +101,7 @@ func TestV12PostgresInstallHasNoTeamEraTables(t *testing.T) {
 			t.Fatal(err)
 		}
 		if count != 0 {
-			t.Fatalf("legacy PostgreSQL table %s exists in v12 clean baseline", name)
+			t.Fatalf("legacy PostgreSQL table %s exists in v13 clean baseline", name)
 		}
 	}
 	for _, column := range []struct{ table, name string }{
@@ -129,6 +129,6 @@ func TestV12PostgresInstallHasNoTeamEraTables(t *testing.T) {
 		t.Fatalf("fixed PostgreSQL catalogs = locations %q education %q ranks %q", locations, education, educationRanks)
 	}
 	if _, err := f.Repo.DB.ExecContext(ctx, "INSERT INTO audit_event(id,operation,purpose,request_id,outcome,recorded_at,actor_kind) VALUES($1,'OP-ORG-02','',$2,'allowed',$3,'application')", value.NewID(), value.NewID(), f.Repo.BindTime(time.Now())); err == nil {
-		t.Fatal("retired OP-ORG-02 accepted by PostgreSQL v12 audit schema")
+		t.Fatal("retired OP-ORG-02 accepted by PostgreSQL v13 audit schema")
 	}
 }

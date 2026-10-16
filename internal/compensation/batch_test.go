@@ -77,10 +77,10 @@ func TestValidateBatchLinesRejectsMoreThanFiveHundredEmployees(t *testing.T) {
 }
 
 func TestValidateCreateBatchAndBusinessCode(t *testing.T) {
-	if err := ValidateCreateBatch(CreateBatchCommand{CycleYear: 2026, AdjustmentType: BatchNormal, LegalEntityID: "le", DefaultEffectiveDate: "2026-04-01"}); err != nil {
+	if err := ValidateCreateBatch(CreateBatchCommand{Name: "2026 Normal", CycleYear: 2026, AdjustmentType: BatchNormal, LegalEntityID: "le", DefaultEffectiveDate: "2026-04-01", BudgetCurrency: "CNY", BudgetAmount: "1000000"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateCreateBatch(CreateBatchCommand{CycleYear: 2026, AdjustmentType: BatchSpecial, LegalEntityID: "le"}); err != nil {
+	if err := ValidateCreateBatch(CreateBatchCommand{Name: "2026 Special", CycleYear: 2026, AdjustmentType: BatchSpecial, LegalEntityID: "le", DefaultEffectiveDate: "2026-10-01", SpecialReasonCode: "promotion", SpecialReasonText: "Promotion", BudgetCurrency: "JPY", BudgetAmount: "1000000"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := ValidateBusinessCode("N-2026-0001", BatchNormal, 2026); err != nil {

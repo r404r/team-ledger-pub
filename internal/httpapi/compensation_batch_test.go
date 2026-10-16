@@ -24,7 +24,7 @@ func TestAdjustmentBatchNormalActivatesExactScaleZeroSalaryAtomically(t *testing
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/employees", createJSON, value.NewID()), http.StatusCreated, &employee)
 			legalEntity := prepareBatchEmployee(t, f, employee.ID, "S-001", "Shanghai", "CNY")
 
-			create := compensation.CreateBatchCommand{CycleYear: 2026, AdjustmentType: compensation.BatchNormal, LegalEntityID: legalEntity, DefaultEffectiveDate: "2026-04-01"}
+			create := compensation.CreateBatchCommand{Name: "2026 Normal", CycleYear: 2026, AdjustmentType: compensation.BatchNormal, LegalEntityID: legalEntity, DefaultEffectiveDate: "2026-04-01", BudgetCurrency: "CNY", BudgetAmount: "1000000"}
 			createKey := value.NewID()
 			var batch compensation.BatchView
 			apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPost, "/api/v1/compensation-adjustment-batches", structureJSON(t, create), createKey), http.StatusCreated, &batch)
@@ -45,11 +45,11 @@ func TestAdjustmentBatchNormalActivatesExactScaleZeroSalaryAtomically(t *testing
 				t.Fatal("mismatched Staff Code changed the draft")
 			}
 
-			headers := []string{"Employee ID", "Staff Code", "Currency", "Salary Before Adjustment", "Increase amount", "Salary After Adjustment", "Performance Grade", "Average Merit Increase", "Department Suggested Increase"}
-			row := []string{employee.ID, "S-001", "CNY", "0", "650", "650", "G", "6.0%", "6%"}
+			headers := []string{"Staff Code", "Currency", "Salary Before Adjustment", "Increase amount", "Salary After Adjustment", "Performance Grade", "Average Merit Increase", "Department Suggested Increase"}
+			row := []string{"S-001", "CNY", "0", "650", "650", "G", "6.0%", "6%"}
 			workbook := batchWorkbook(t, headers, row)
 			invalidRow := append([]string(nil), row...)
-			invalidRow[6] = ""
+			invalidRow[5] = ""
 			invalidWorkbook := batchWorkbook(t, headers, invalidRow)
 			importPath := "/api/v1/compensation-adjustment-batches/" + batch.ID + "/imports?revision=" + batch.Revision
 			var invalidCandidate compensation.ImportCandidateView
@@ -136,7 +136,7 @@ func TestAdjustmentBatchActivationRechecksAuthorizationAfterDecrypt(t *testing.T
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/employees", createJSON, value.NewID()), http.StatusCreated, &employee)
 			legalEntity := prepareBatchEmployee(t, f, employee.ID, "R-001", "Shanghai", "CNY")
 			var batch compensation.BatchView
-			apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPost, "/api/v1/compensation-adjustment-batches", structureJSON(t, compensation.CreateBatchCommand{CycleYear: 2026, AdjustmentType: compensation.BatchNormal, LegalEntityID: legalEntity, DefaultEffectiveDate: "2026-04-01"}), value.NewID()), http.StatusCreated, &batch)
+			apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPost, "/api/v1/compensation-adjustment-batches", structureJSON(t, compensation.CreateBatchCommand{Name: "2026 Normal", CycleYear: 2026, AdjustmentType: compensation.BatchNormal, LegalEntityID: legalEntity, DefaultEffectiveDate: "2026-04-01", BudgetCurrency: "CNY", BudgetAmount: "1000000"}), value.NewID()), http.StatusCreated, &batch)
 			draft := compensation.ReplaceBatchLinesCommand{Revision: batch.Revision, Lines: []compensation.BatchLineCommand{{EmployeeID: employee.ID, StaffCode: "R-001", Currency: "CNY", SalaryBefore: "0", IncreaseAmount: "100", SalaryAfter: "100", PerformanceGrade: "A", EffectiveDate: "2026-04-01"}}}
 			apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPatch, "/api/v1/compensation-adjustment-batches/"+batch.ID+"/draft", structureJSON(t, draft), value.NewID()), http.StatusOK, &batch)
 			transition := compensation.BatchTransitionCommand{Action: "submit", Revision: batch.Revision, ManifestDigest: batch.ManifestDigest}
@@ -180,7 +180,7 @@ func TestAdjustmentBatchSpecialUsesControlledReasonAndReportsYearCounts(t *testi
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/employees", createJSON, value.NewID()), http.StatusCreated, &employee)
 			legalEntity := prepareBatchEmployee(t, f, employee.ID, "T-001", "Tokyo", "JPY")
 			var batch compensation.BatchView
-			create := compensation.CreateBatchCommand{CycleYear: 2026, AdjustmentType: compensation.BatchSpecial, LegalEntityID: legalEntity}
+			create := compensation.CreateBatchCommand{Name: "2026 Special", CycleYear: 2026, AdjustmentType: compensation.BatchSpecial, LegalEntityID: legalEntity, DefaultEffectiveDate: "2025-03-01", SpecialReasonCode: "market_adjustment", SpecialReasonText: "market alignment", BudgetCurrency: "JPY", BudgetAmount: "1000000"}
 			apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPost, "/api/v1/compensation-adjustment-batches", structureJSON(t, create), value.NewID()), http.StatusCreated, &batch)
 			if err := f.Exec(t.Context(), "INSERT INTO compensation_special_reason(org_id,code,label,active) VALUES(?,?,?,1)", "INSERT INTO compensation_special_reason(org_id,code,label,active) VALUES($1,$2,$3,TRUE)", f.OrgID, "obsolete_reason", "Obsolete"); err != nil {
 				t.Fatal(err)
@@ -205,6 +205,81 @@ func TestAdjustmentBatchSpecialUsesControlledReasonAndReportsYearCounts(t *testi
 			}
 		})
 	}
+}
+
+func TestAdjustmentBatchPreviewRequiresExplicitSalaryCorrectionAndPreservesHistory(t *testing.T) {
+	for _, backend := range []string{"sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) {
+			f := testsupport.NewHarness(t, backend)
+			var employee organization.Result
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/employees", createJSON, value.NewID()), http.StatusCreated, &employee)
+			legalEntity := prepareBatchEmployee(t, f, employee.ID, "M-001", "Shanghai", "CNY")
+			establishMonthlySalary(t, f, employee.ID, "2026-01-01", "10000")
+
+			var batch compensation.BatchView
+			create := compensation.CreateBatchCommand{Name: "2026-10 Special", CycleYear: 2026, AdjustmentType: compensation.BatchSpecial, LegalEntityID: legalEntity, DefaultEffectiveDate: "2026-10-01", SpecialReasonCode: "market_adjustment", SpecialReasonText: "market alignment", BudgetCurrency: "CNY", BudgetAmount: "1000000"}
+			apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPost, "/api/v1/compensation-adjustment-batches", structureJSON(t, create), value.NewID()), http.StatusCreated, &batch)
+			previewCommand := compensation.PreviewBatchLinesCommand{Revision: batch.Revision, Lines: []compensation.BatchLineCommand{
+				{},
+				{StaffCode: "M-001", Currency: "CNY", SalaryBefore: "11000", IncreaseAmount: "500", SalaryAfter: "11500"},
+				{},
+			}}
+			var candidate compensation.ImportCandidateView
+			apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPost, "/api/v1/compensation-adjustment-batches/"+batch.ID+"/previews", structureJSON(t, previewCommand), value.NewID()), http.StatusCreated, &candidate)
+			if candidate.State != "valid" || candidate.LineCount != 1 || len(candidate.Lines) != 1 || candidate.Lines[0].EmployeeID != employee.ID || candidate.Lines[0].EffectiveMonth != "2026-10" || candidate.Lines[0].ReasonCode != "market_adjustment" || len(candidate.Warnings) != 1 || candidate.Warnings[0].Code != "SALARY_BEFORE_MISMATCH" || candidate.Warnings[0].CurrentSalaryBefore != "10000" {
+				t.Fatalf("unexpected manual preview: %#v", candidate)
+			}
+			applyPath := "/api/v1/compensation-adjustment-batches/" + batch.ID + "/draft"
+			apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPatch, applyPath, structureJSON(t, compensation.ReplaceBatchLinesCommand{Revision: batch.Revision, CandidateID: candidate.ID}), value.NewID()), http.StatusConflict, nil)
+			if f.Count(t, "compensation_batch_line") != 0 {
+				t.Fatal("unconfirmed salary mismatch changed the draft")
+			}
+			apply := compensation.ReplaceBatchLinesCommand{Revision: batch.Revision, CandidateID: candidate.ID, ConfirmSalaryCorrections: []string{employee.ID}}
+			apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPatch, applyPath, structureJSON(t, apply), value.NewID()), http.StatusOK, &batch)
+			if len(batch.Lines) != 1 || !batch.Lines[0].CorrectSalaryBefore || batch.Lines[0].Basis.CurrentSalaryBefore != "10000" {
+				t.Fatalf("confirmed correction was not frozen: %#v", batch)
+			}
+			transition := compensation.BatchTransitionCommand{Action: "submit", Revision: batch.Revision, ManifestDigest: batch.ManifestDigest}
+			apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPost, "/api/v1/compensation-adjustment-batches/"+batch.ID+"/transitions", structureJSON(t, transition), value.NewID()), http.StatusOK, &batch)
+			if batch.State != "activated" {
+				t.Fatalf("batch not activated: %#v", batch)
+			}
+			var current compensation.CurrentView
+			apiSend(t, f, financeHTTPRequest(t, f, f.FinR, http.MethodGet, "/api/v1/employees/"+employee.ID+"/compensation?as_of=2026-09-30", "", ""), http.StatusOK, &current)
+			if current.CurrentTerm == nil || current.CurrentTerm.Terms.AmountMinor == nil || *current.CurrentTerm.Terms.AmountMinor != "11000" {
+				t.Fatalf("salary-before correction not projected historically: %#v", current)
+			}
+			apiSend(t, f, financeHTTPRequest(t, f, f.FinR, http.MethodGet, "/api/v1/employees/"+employee.ID+"/compensation?as_of=2026-10-01", "", ""), http.StatusOK, &current)
+			if current.CurrentTerm == nil || current.CurrentTerm.Terms.AmountMinor == nil || *current.CurrentTerm.Terms.AmountMinor != "11500" {
+				t.Fatalf("adjusted salary not projected: %#v", current)
+			}
+			if f.Count(t, "compensation_event") != 3 || f.Count(t, "compensation_terms_version") != 3 {
+				t.Fatal("original salary, correction replacement and adjustment history were not all retained")
+			}
+			var corrections, adjustments int
+			query := "SELECT COALESCE(SUM(CASE WHEN counts_as_adjustment=0 THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN counts_as_adjustment=1 THEN 1 ELSE 0 END),0) FROM compensation_batch_event WHERE org_id=? AND batch_id=?"
+			if f.Backend == "postgres" {
+				query = "SELECT COALESCE(SUM(CASE WHEN NOT counts_as_adjustment THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN counts_as_adjustment THEN 1 ELSE 0 END),0) FROM compensation_batch_event WHERE org_id=$1 AND batch_id=$2"
+			}
+			if err := f.Repo.DB.QueryRowContext(t.Context(), query, f.OrgID, batch.ID).Scan(&corrections, &adjustments); err != nil || corrections != 1 || adjustments != 1 {
+				t.Fatalf("batch event classification corrections=%d adjustments=%d err=%v", corrections, adjustments, err)
+			}
+		})
+	}
+}
+
+func establishMonthlySalary(t *testing.T, f *testsupport.Fixture, employee, effective, amount string) {
+	t.Helper()
+	base := "/api/v1/employees/" + employee + "/compensation"
+	var current compensation.CurrentView
+	apiSend(t, f, financeHTTPRequest(t, f, f.FinR, http.MethodGet, base+"?as_of="+effective, "", ""), http.StatusOK, &current)
+	command := compensation.ProposalCommand{Kind: "initial", EffectiveDate: effective, CompRevision: current.CompRevision, After: &compensation.Terms{Currency: "CNY", Scale: 0, AmountMinor: &amount, Unit: "month", PaymentFrequency: "monthly", TaxBasis: "gross", Components: []compensation.Component{}}, Reason: "INITIAL_SALARY", Members: []compensation.CorrectionMember{}}
+	var proposal compensation.Result
+	apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPost, base+"/proposals", structureJSON(t, command), value.NewID()), http.StatusCreated, &proposal)
+	path := "/api/v1/compensation/proposals/" + proposal.ID + "/transitions"
+	var submitted compensation.Result
+	apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPost, path, structureJSON(t, compensation.TransitionCommand{Action: "submit", Revision: proposal.Revision, CompRevision: proposal.CompRevision}), value.NewID()), http.StatusOK, &submitted)
+	apiSend(t, f, financeHTTPRequest(t, f, f.CompApprover, http.MethodPost, path, structureJSON(t, compensation.TransitionCommand{Action: "approve", Revision: submitted.Revision, CompRevision: submitted.CompRevision, DecisionReason: "INITIAL_APPROVAL"}), value.NewID()), http.StatusOK, &proposal)
 }
 
 func prepareBatchEmployee(t *testing.T, f *testsupport.Fixture, employee, staffCode, location, currency string) string {

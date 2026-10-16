@@ -113,6 +113,24 @@ func (h *handler) compensationBatchRoute(w http.ResponseWriter, r *http.Request,
 		}
 		return true
 	}
+	if len(parts) == 3 && parts[2] == "previews" && r.Method == http.MethodPost {
+		if !validCommandKey(req.Key) {
+			h.fail(w, fault.Invalid, req.RequestID)
+			return true
+		}
+		var command compensation.PreviewBatchLinesCommand
+		if err := strictBody(w, r, &command); err != nil {
+			h.fail(w, err, req.RequestID)
+			return true
+		}
+		view, err := h.compensation.PreviewAdjustmentBatch(r.Context(), req, org, id, command)
+		if err != nil {
+			h.fail(w, err, req.RequestID)
+		} else {
+			h.reply(w, http.StatusCreated, view)
+		}
+		return true
+	}
 	if !validCommandKey(req.Key) {
 		h.fail(w, fault.Invalid, req.RequestID)
 		return true

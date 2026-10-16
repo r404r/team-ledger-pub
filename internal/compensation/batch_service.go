@@ -90,10 +90,10 @@ func (s *Service) CreateAdjustmentBatch(ctx context.Context, req Request, org st
 	if err != nil {
 		return BatchView{}, err
 	}
+	command.SpecialReasons = s.Policy.SpecialReasonCatalog
 	if ValidateCreateBatch(command) != nil {
 		return BatchView{}, fault.Invalid
 	}
-	command.SpecialReasons = s.Policy.SpecialReasonCatalog
 	receipt, replay, err := s.batchCommandReceipt(ctx, org, snapshot.SubjectID, "OP-COMP-07", req.Key, req.RequestID, command)
 	if err != nil {
 		return BatchView{}, err
@@ -101,7 +101,20 @@ func (s *Service) CreateAdjustmentBatch(ctx context.Context, req Request, org st
 	if replay != nil {
 		return s.batchView(ctx, req, snapshot, *replay)
 	}
-	record, err := s.Batches.CreateAdjustmentBatch(ctx, org, snapshot.SubjectID, value.NewID(), value.NewID(), command, receipt, s.clock())
+	batchID, headerID := value.NewID(), value.NewID()
+	headerValue := BatchHeader{Name: command.Name, DefaultEffectiveDate: command.DefaultEffectiveDate, SpecialReasonCode: command.SpecialReasonCode, SpecialReasonText: command.SpecialReasonText, BudgetCurrency: command.BudgetCurrency, BudgetAmount: command.BudgetAmount}
+	raw, err := json.Marshal(headerValue)
+	if err != nil || len(raw) > 8192 {
+		clear(raw)
+		return BatchView{}, fault.Invalid
+	}
+	envelope, err := s.Cipher.Seal(ctx, batchHeaderBinding(org, batchID, headerID), raw)
+	clear(raw)
+	if err != nil {
+		return BatchView{}, fault.Unavailable
+	}
+	header := BatchHeaderPayloadRecord{OrgID: org, ID: headerID, BatchID: batchID, Envelope: envelope, CreatedAt: s.clock()}
+	record, err := s.Batches.CreateAdjustmentBatch(ctx, org, snapshot.SubjectID, batchID, value.NewID(), command, header, receipt, s.clock())
 	if err != nil {
 		return BatchView{}, err
 	}
@@ -121,6 +134,32 @@ func (s *Service) AdjustmentBatch(ctx context.Context, req Request, org, id stri
 		return BatchView{}, err
 	}
 	return s.batchView(ctx, req, snapshot, record)
+}
+
+func (s *Service) hydrateBatchHeader(ctx context.Context, batch *BatchRecord) error {
+	if batch.HeaderPayloadID == "" {
+		batch.Header = BatchHeader{Name: batch.BusinessCode, DefaultEffectiveDate: batch.DefaultEffectiveDate, LegacyUnspecified: true}
+		return nil
+	}
+	payload, err := s.Batches.AdjustmentBatchHeaderPayload(ctx, batch.OrgID, batch.HeaderPayloadID)
+	if err != nil || payload.BatchID != batch.ID {
+		return fault.Unavailable
+	}
+	raw, err := s.Cipher.Open(ctx, batchHeaderBinding(batch.OrgID, batch.ID, payload.ID), payload.Envelope)
+	if err != nil {
+		return fault.Unavailable
+	}
+	var header BatchHeader
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	err = decoder.Decode(&header)
+	clear(raw)
+	if err != nil || !safeText(header.Name, 200, true) || !value.ValidDate(header.DefaultEffectiveDate) {
+		return fault.Unavailable
+	}
+	batch.Header = header
+	batch.DefaultEffectiveDate = header.DefaultEffectiveDate
+	return nil
 }
 
 func (s *Service) AdjustmentBatches(ctx context.Context, req Request, org string, year int, typ string, limit int) ([]BatchView, error) {
@@ -173,10 +212,14 @@ func (s *Service) replaceAdjustmentBatchLines(ctx context.Context, req Request, 
 	if err != nil {
 		return BatchView{}, err
 	}
+	if err = s.hydrateBatchHeader(ctx, &batch); err != nil {
+		return BatchView{}, err
+	}
 	if batch.Revision != expected || batch.State != "draft" && batch.State != "activation_conflict" {
 		return BatchView{}, fault.Conflict
 	}
-	if command.CandidateID != "" {
+	fromCandidate := command.CandidateID != ""
+	if fromCandidate {
 		if len(command.Lines) != 0 || !value.ValidID(command.CandidateID) {
 			return BatchView{}, fault.Invalid
 		}
@@ -199,7 +242,29 @@ func (s *Service) replaceAdjustmentBatchLines(ctx context.Context, req Request, 
 		if err != nil || len(payload.Errors) != 0 {
 			return BatchView{}, fault.Unavailable
 		}
+		required := make(map[string]bool, len(payload.Warnings))
+		for _, warning := range payload.Warnings {
+			if warning.Code != "SALARY_BEFORE_MISMATCH" || warning.EmployeeID == "" || required[warning.EmployeeID] {
+				return BatchView{}, fault.Unavailable
+			}
+			required[warning.EmployeeID] = true
+		}
+		confirmed := make(map[string]bool, len(command.ConfirmSalaryCorrections))
+		for _, employee := range command.ConfirmSalaryCorrections {
+			if !value.ValidID(employee) || confirmed[employee] || !required[employee] {
+				return BatchView{}, fault.Invalid
+			}
+			confirmed[employee] = true
+		}
+		if len(confirmed) != len(required) {
+			return BatchView{}, fault.Conflict
+		}
 		command.Lines = payload.Lines
+		for i := range command.Lines {
+			command.Lines[i].CorrectSalaryBefore = required[command.Lines[i].EmployeeID]
+		}
+	} else if len(command.ConfirmSalaryCorrections) != 0 {
+		return BatchView{}, fault.Invalid
 	}
 	reasons := map[string]bool(nil)
 	if batch.AdjustmentType == BatchSpecial {
@@ -227,6 +292,15 @@ func (s *Service) replaceAdjustmentBatchLines(ctx context.Context, req Request, 
 		if err != nil {
 			return BatchView{}, err
 		}
+		if fromCandidate && basis != line.Basis {
+			return BatchView{}, fault.Conflict
+		}
+		if basis.CurrentSalaryBefore != line.SalaryBefore && !line.CorrectSalaryBefore {
+			return BatchView{}, fault.Conflict
+		}
+		if basis.CurrentSalaryBefore == line.SalaryBefore && line.CorrectSalaryBefore {
+			return BatchView{}, fault.Conflict
+		}
 		line.Basis = basis
 		id := value.NewID()
 		binding := batchLineBinding(org, line.EmployeeID, id)
@@ -251,8 +325,10 @@ func (s *Service) replaceAdjustmentBatchLines(ctx context.Context, req Request, 
 }
 
 type batchImportPayload struct {
-	Lines  []BatchLineCommand `json:"lines"`
-	Errors []string           `json:"errors"`
+	Lines                      []BatchLineCommand          `json:"lines"`
+	Warnings                   []BatchPreviewWarning       `json:"warnings"`
+	AdjustmentCountsByEmployee map[string]AdjustmentCounts `json:"adjustment_counts_by_employee"`
+	Errors                     []string                    `json:"errors"`
 }
 
 func (s *Service) ImportAdjustmentWorkbook(ctx context.Context, req Request, org, id, expectedRevision string, raw []byte) (ImportCandidateView, error) {
@@ -266,6 +342,9 @@ func (s *Service) ImportAdjustmentWorkbook(ctx context.Context, req Request, org
 	}
 	batch, err := s.Batches.AdjustmentBatch(ctx, org, id)
 	if err != nil {
+		return ImportCandidateView{}, err
+	}
+	if err = s.hydrateBatchHeader(ctx, &batch); err != nil {
 		return ImportCandidateView{}, err
 	}
 	if batch.Revision != baseRevision || batch.State != "draft" && batch.State != "activation_conflict" {
@@ -284,7 +363,99 @@ func (s *Service) ImportAdjustmentWorkbook(ctx context.Context, req Request, org
 		return ImportCandidateView{}, previousErr
 	}
 	lines, parseErr := ParseAdjustmentWorkbook(raw, batch.AdjustmentType)
-	if parseErr == nil {
+	var safetyError *WorkbookSafetyError
+	if errors.As(parseErr, &safetyError) {
+		return ImportCandidateView{}, fault.Invalid
+	}
+	return s.stageAdjustmentCandidate(ctx, req, snapshot, batch, lines, parseErr, digest)
+}
+
+func (s *Service) PreviewAdjustmentBatch(ctx context.Context, req Request, org, id string, command PreviewBatchLinesCommand) (ImportCandidateView, error) {
+	snapshot, err := s.batchSession(ctx, req, org, true)
+	if err != nil {
+		return ImportCandidateView{}, err
+	}
+	baseRevision, err := revision(command.Revision)
+	if err != nil || !value.ValidID(id) || !value.ValidID(req.Key) {
+		return ImportCandidateView{}, fault.Invalid
+	}
+	batch, err := s.Batches.AdjustmentBatch(ctx, org, id)
+	if err != nil {
+		return ImportCandidateView{}, err
+	}
+	if err = s.hydrateBatchHeader(ctx, &batch); err != nil {
+		return ImportCandidateView{}, err
+	}
+	if batch.Revision != baseRevision || batch.State != "draft" && batch.State != "activation_conflict" {
+		return ImportCandidateView{}, fault.Conflict
+	}
+	raw, err := json.Marshal(struct {
+		BatchID string                   `json:"batch_id"`
+		Command PreviewBatchLinesCommand `json:"command"`
+	}{BatchID: id, Command: command})
+	if err != nil {
+		return ImportCandidateView{}, fault.Invalid
+	}
+	digest, err := s.financialDigest("batch-preview", raw)
+	clear(raw)
+	if err != nil {
+		return ImportCandidateView{}, err
+	}
+	if previous, previousErr := s.Batches.AdjustmentImportCandidate(ctx, org, req.Key); previousErr == nil {
+		if previous.BatchID != id || previous.SubjectID != snapshot.SubjectID || previous.BaseRevision != baseRevision || !hmac.Equal(previous.Digest, digest) {
+			return ImportCandidateView{}, fault.Conflict
+		}
+		return s.importCandidateView(ctx, req, snapshot, previous)
+	} else if !errors.Is(previousErr, fault.NotFound) {
+		return ImportCandidateView{}, previousErr
+	}
+	return s.stageAdjustmentCandidate(ctx, req, snapshot, batch, command.Lines, nil, digest)
+}
+
+func (s *Service) stageAdjustmentCandidate(ctx context.Context, req Request, snapshot authz.Snapshot, batch BatchRecord, input []BatchLineCommand, inputErr error, digest []byte) (ImportCandidateView, error) {
+	lines := make([]BatchLineCommand, 0, len(input))
+	for _, line := range input {
+		if batchLineIsEmpty(line) {
+			continue
+		}
+		line.Basis = BatchLineBasis{}
+		line.CorrectSalaryBefore = false
+		if batch.AdjustmentType == BatchSpecial {
+			if line.EffectiveMonth == "" && len(batch.DefaultEffectiveDate) >= 7 {
+				line.EffectiveMonth = batch.DefaultEffectiveDate[:7]
+			}
+			if line.ReasonCode == "" && line.ReasonText == "" {
+				line.ReasonCode = batch.Header.SpecialReasonCode
+				line.ReasonText = batch.Header.SpecialReasonText
+			}
+		}
+		lines = append(lines, line)
+	}
+	payload := batchImportPayload{Lines: []BatchLineCommand{}, Warnings: []BatchPreviewWarning{}, AdjustmentCountsByEmployee: map[string]AdjustmentCounts{}, Errors: []string{}}
+	state := "valid"
+	if inputErr == nil {
+		for i := range lines {
+			effective, err := batchLineEffectiveDate(batch, lines[i])
+			if err != nil {
+				inputErr = err
+				break
+			}
+			workforce, err := s.lookupBatchWorkforce(ctx, batch.OrgID, lines[i].StaffCode, effective)
+			if err != nil {
+				inputErr = err
+				break
+			}
+			if lines[i].EmployeeID != "" && lines[i].EmployeeID != workforce.EmployeeID {
+				inputErr = fault.Conflict
+				break
+			}
+			lines[i].EmployeeID = workforce.EmployeeID
+			if err = s.require(snapshot, workforce.EmployeeID, nil, "compensation.propose"); err != nil {
+				return ImportCandidateView{}, err
+			}
+		}
+	}
+	if inputErr == nil {
 		reasons := map[string]bool(nil)
 		if batch.AdjustmentType == BatchSpecial {
 			reasons = make(map[string]bool, len(s.Policy.SpecialReasonCatalog))
@@ -292,24 +463,45 @@ func (s *Service) ImportAdjustmentWorkbook(ctx context.Context, req Request, org
 				reasons[code] = true
 			}
 		}
-		normalized, _, validationErr := ValidateBatchLines(batch.AdjustmentType, int(batch.CycleYear), batch.DefaultEffectiveDate, lines, reasons)
-		parseErr = validationErr
-		if parseErr == nil {
-			lines = make([]BatchLineCommand, 0, len(normalized))
-			for _, line := range normalized {
-				lines = append(lines, line.BatchLineCommand)
+		normalized, _, err := ValidateBatchLines(batch.AdjustmentType, int(batch.CycleYear), batch.DefaultEffectiveDate, lines, reasons)
+		inputErr = err
+		if err == nil {
+			for i := range normalized {
+				line := normalized[i].BatchLineCommand
+				basis, err := s.resolveBatchBasis(ctx, batch, line)
+				if err != nil {
+					inputErr = err
+					break
+				}
+				line.Basis = basis
+				if basis.CurrentSalaryBefore != line.SalaryBefore {
+					effective, _ := batchLineEffectiveDate(batch, line)
+					if basis.TermID == "" || basis.TermEffectiveDate == effective {
+						inputErr = fault.Conflict
+						break
+					}
+					payload.Warnings = append(payload.Warnings, BatchPreviewWarning{Code: "SALARY_BEFORE_MISMATCH", EmployeeID: line.EmployeeID, StaffCode: line.StaffCode, EffectiveDate: effective, EnteredSalaryBefore: line.SalaryBefore, CurrentSalaryBefore: basis.CurrentSalaryBefore})
+				}
+				if batch.AdjustmentType == BatchSpecial {
+					effective, _ := batchLineEffectiveDate(batch, line)
+					year, _ := strconv.Atoi(effective[:4])
+					counts, countErr := s.Batches.AdjustmentBatchCounts(ctx, batch.OrgID, line.EmployeeID, year)
+					if countErr != nil {
+						inputErr = countErr
+						break
+					}
+					counts.CountAsOfDate = effective
+					payload.AdjustmentCountsByEmployee[line.EmployeeID] = counts
+				}
+				payload.Lines = append(payload.Lines, line)
 			}
 		}
 	}
-	payload := batchImportPayload{Lines: lines, Errors: []string{}}
-	state := "valid"
-	if parseErr != nil {
-		var safetyError *WorkbookSafetyError
-		if errors.As(parseErr, &safetyError) {
-			return ImportCandidateView{}, fault.Invalid
-		}
+	if inputErr != nil {
 		payload.Lines = []BatchLineCommand{}
-		payload.Errors = []string{parseErr.Error()}
+		payload.Warnings = []BatchPreviewWarning{}
+		payload.AdjustmentCountsByEmployee = map[string]AdjustmentCounts{}
+		payload.Errors = []string{inputErr.Error()}
 		state = "invalid"
 	}
 	plain, err := json.Marshal(payload)
@@ -317,19 +509,36 @@ func (s *Service) ImportAdjustmentWorkbook(ctx context.Context, req Request, org
 		clear(plain)
 		return ImportCandidateView{}, fault.Invalid
 	}
-	envelope, err := s.Cipher.Seal(ctx, batchImportBinding(org, req.Key), plain)
+	envelope, err := s.Cipher.Seal(ctx, batchImportBinding(batch.OrgID, req.Key), plain)
 	clear(plain)
 	if err != nil {
 		return ImportCandidateView{}, fault.Unavailable
 	}
 	now := s.clock()
-	candidate := ImportCandidateRecord{OrgID: org, ID: req.Key, BatchID: id, SubjectID: snapshot.SubjectID, State: state, BaseRevision: baseRevision, LineCount: int64(len(lines)), Digest: append([]byte(nil), digest...), Envelope: envelope, CreatedAt: now, ExpiresAt: now.Add(24 * time.Hour)}
-	receipt := BatchCommandReceipt{SubjectID: snapshot.SubjectID, Operation: "OP-COMP-08", Key: req.Key, RequestID: req.RequestID, Digest: append([]byte(nil), digest...), BatchID: id, ResultRevision: baseRevision, RecordedAt: now}
+	candidate := ImportCandidateRecord{OrgID: batch.OrgID, ID: req.Key, BatchID: batch.ID, SubjectID: snapshot.SubjectID, State: state, BaseRevision: batch.Revision, LineCount: int64(len(payload.Lines)), Digest: append([]byte(nil), digest...), Envelope: envelope, CreatedAt: now, ExpiresAt: now.Add(24 * time.Hour)}
+	receipt := BatchCommandReceipt{SubjectID: snapshot.SubjectID, Operation: "OP-COMP-08", Key: req.Key, RequestID: req.RequestID, Digest: append([]byte(nil), digest...), BatchID: batch.ID, ResultRevision: batch.Revision, RecordedAt: now}
 	candidate, err = s.Batches.CreateAdjustmentImportCandidate(ctx, candidate, receipt)
 	if err != nil {
 		return ImportCandidateView{}, err
 	}
 	return s.importCandidateView(ctx, req, snapshot, candidate)
+}
+
+func batchLineIsEmpty(line BatchLineCommand) bool {
+	return line.EmployeeID == "" && line.StaffCode == "" && line.Currency == "" && line.SalaryBefore == "" && line.IncreaseAmount == "" && line.SalaryAfter == "" && line.PerformanceGrade == "" && line.AverageMeritIncrease == "" && line.DepartmentSuggestedIncrease == "" && line.EffectiveDate == "" && line.EffectiveMonth == "" && line.ReasonCode == "" && line.ReasonText == ""
+}
+
+func batchLineEffectiveDate(batch BatchRecord, line BatchLineCommand) (string, error) {
+	effective := line.EffectiveDate
+	if batch.AdjustmentType == BatchSpecial {
+		effective = line.EffectiveMonth + "-01"
+	} else if effective == "" {
+		effective = batch.DefaultEffectiveDate
+	}
+	if _, err := time.Parse("2006-01-02", effective); err != nil {
+		return "", fault.Invalid
+	}
+	return effective, nil
 }
 
 func (s *Service) TransitionAdjustmentBatch(ctx context.Context, req Request, org, id string, command BatchTransitionCommand) (BatchView, error) {
@@ -354,6 +563,9 @@ func (s *Service) TransitionAdjustmentBatch(ctx context.Context, req Request, or
 	}
 	batch, err := s.Batches.AdjustmentBatch(ctx, org, id)
 	if err != nil {
+		return BatchView{}, err
+	}
+	if err = s.hydrateBatchHeader(ctx, &batch); err != nil {
 		return BatchView{}, err
 	}
 	if batch.Revision != expected || batch.State != "draft" && !(command.Action == "submit" && batch.State == "activation_blocked") {
@@ -538,6 +750,39 @@ func (s *Service) activateAdjustmentLine(ctx context.Context, tx adjustmentActiv
 	}
 	if len(schedule) > 1 {
 		return fault.Conflict
+	}
+	if line.CorrectSalaryBefore {
+		if beforeID == nil || before.AmountMinor == nil || line.Basis.TermID != *beforeID || line.Basis.CurrentSalaryBefore != *before.AmountMinor || schedule[0].EffectiveDate != line.Basis.TermEffectiveDate || schedule[0].EffectiveDate == effective {
+			return fault.Conflict
+		}
+		event, err := tx.CompensationEvent(ctx, batch.OrgID, schedule[0].EventID)
+		if err != nil || event.AfterTermID == nil || *event.AfterTermID != *beforeID {
+			return fault.Conflict
+		}
+		var beforeRef *BeforeRef
+		if event.BeforeTermID != nil {
+			beforeRef = &BeforeRef{TermID: event.BeforeTermID}
+		}
+		corrected := before
+		correctedAmount := line.SalaryBefore
+		corrected.AmountMinor = &correctedAmount
+		member := CorrectionMember{MemberKey: "salary_before", Action: "replace", OriginalEventID: event.ID, EffectiveDate: event.EffectiveDate, BeforeRef: beforeRef, After: &corrected}
+		if err = s.activateBatchCorrectionLine(ctx, tx, snapshot, batch, BatchCorrectionLine{EmployeeID: line.EmployeeID, Members: []CorrectionMember{member}}, batch.BusinessCode+":salary_before_correction", now); err != nil {
+			return err
+		}
+		schedule, err = tx.CompensationSchedule(ctx, batch.OrgID, line.EmployeeID, CurrentQuery{AsOf: effective, FutureLimit: 100})
+		if err != nil || len(schedule) != 1 || schedule[0].EffectiveDate > effective || schedule[0].ValidTo != nil && effective >= *schedule[0].ValidTo {
+			return fault.Conflict
+		}
+		beforeID = new(schedule[0].TermID)
+		term, err := tx.CompensationTerm(ctx, batch.OrgID, schedule[0].TermID)
+		if err != nil {
+			return err
+		}
+		before = Terms{}
+		if err = s.open(ctx, tx, batch.OrgID, term.PayloadID, binding(batch.OrgID, line.EmployeeID, term.ID, term.ID, "compensation_terms", "compensation.terms.v1"), &before); err != nil {
+			return err
+		}
 	}
 	if before.AmountMinor == nil {
 		if line.SalaryBefore != "0" {
@@ -792,6 +1037,9 @@ func (s *Service) batchCorrectionMembers(ctx context.Context, batch BatchRecord,
 }
 
 func (s *Service) batchView(ctx context.Context, req Request, snapshot authz.Snapshot, batch BatchRecord) (BatchView, error) {
+	if err := s.hydrateBatchHeader(ctx, &batch); err != nil {
+		return BatchView{}, err
+	}
 	lineRevision := batch.Revision
 	if batch.State == "activated" || batch.State == "withdrawn" {
 		lineRevision--
@@ -805,7 +1053,7 @@ func (s *Service) batchView(ctx context.Context, req Request, snapshot authz.Sna
 			return BatchView{}, err
 		}
 	}
-	view := BatchView{ID: batch.ID, BusinessCode: batch.BusinessCode, CycleYear: int(batch.CycleYear), AdjustmentType: batch.AdjustmentType, LegalEntityID: batch.LegalEntityID, DefaultEffectiveDate: batch.DefaultEffectiveDate, State: batch.State, Revision: strconv.FormatInt(batch.Revision, 10), ManifestDigest: batch.ManifestDigest, Lines: make([]BatchLineView, 0, len(lines))}
+	view := BatchView{ID: batch.ID, BusinessCode: batch.BusinessCode, Name: batch.Header.Name, CycleYear: int(batch.CycleYear), AdjustmentType: batch.AdjustmentType, LegalEntityID: batch.LegalEntityID, DefaultEffectiveDate: batch.DefaultEffectiveDate, SpecialReasonCode: batch.Header.SpecialReasonCode, SpecialReasonText: batch.Header.SpecialReasonText, BudgetCurrency: batch.Header.BudgetCurrency, BudgetAmount: batch.Header.BudgetAmount, BudgetLegacyUnspecified: batch.Header.LegacyUnspecified, State: batch.State, Revision: strconv.FormatInt(batch.Revision, 10), ManifestDigest: batch.ManifestDigest, Lines: make([]BatchLineView, 0, len(lines))}
 	commands := make([]BatchLineCommand, 0, len(lines))
 	for _, record := range lines {
 		payload, err := s.Batches.AdjustmentBatchPayload(ctx, batch.OrgID, record.PayloadID)
@@ -889,8 +1137,9 @@ func (s *Service) batchManifestDigest(ctx context.Context, batch BatchRecord, li
 	canonical := struct {
 		ID, Code, Type, Entity string
 		Year, Revision         int64
+		Header                 BatchHeader
 		Lines                  []BatchLineCommand
-	}{ID: batch.ID, Code: batch.BusinessCode, Type: batch.AdjustmentType, Entity: batch.LegalEntityID, Year: batch.CycleYear, Revision: batch.Revision, Lines: make([]BatchLineCommand, 0, len(lines))}
+	}{ID: batch.ID, Code: batch.BusinessCode, Type: batch.AdjustmentType, Entity: batch.LegalEntityID, Year: batch.CycleYear, Revision: batch.Revision, Header: batch.Header, Lines: make([]BatchLineCommand, 0, len(lines))}
 	for _, line := range lines {
 		payload, err := s.Batches.AdjustmentBatchPayload(ctx, batch.OrgID, line.PayloadID)
 		if err != nil {
@@ -926,6 +1175,10 @@ func batchLineBinding(org, employee, id string) sensitive.Context {
 	return sensitive.Context{OrgID: org, EmployeeID: employee, RecordID: id, VersionID: id, ObjectKind: "compensation_batch_line", Purpose: "financial", SchemaType: "compensation.batch_line.v1", SchemaVersion: 1}
 }
 
+func batchHeaderBinding(org, batch, id string) sensitive.Context {
+	return sensitive.Context{OrgID: org, RecordID: batch, VersionID: id, ObjectKind: "compensation_batch_header", Purpose: "financial", SchemaType: "compensation.batch_header.v1", SchemaVersion: 1}
+}
+
 func reasonsFromLines(lines []BatchLineCommand) map[string]bool {
 	out := make(map[string]bool)
 	for _, line := range lines {
@@ -934,41 +1187,56 @@ func reasonsFromLines(lines []BatchLineCommand) map[string]bool {
 	return out
 }
 
-func (s *Service) resolveBatchBasis(ctx context.Context, batch BatchRecord, line BatchLineCommand) (BatchLineBasis, error) {
-	effective := line.EffectiveDate
-	if batch.AdjustmentType == BatchSpecial {
-		effective = line.EffectiveMonth + "-01"
-	}
-	if _, err := time.Parse("2006-01-02", effective); err != nil {
-		return BatchLineBasis{}, fault.Invalid
-	}
-	staffCode, ok := organization.NormalizeStaffCode(line.StaffCode)
+func (s *Service) staffCodeLookup(ctx context.Context, org, raw string) (string, string, uint32, []byte, error) {
+	staffCode, ok := organization.NormalizeStaffCode(raw)
 	if !ok {
-		return BatchLineBasis{}, fault.Invalid
+		return "", "", 0, nil, fault.Invalid
 	}
-	frame := []byte("staff-code\x00" + batch.OrgID + "\x00" + staffCode)
+	frame := []byte("staff-code\x00" + org + "\x00" + staffCode)
 	var lookup []byte
 	var lookupKeyID, lookupVersion = "legacy-process-key", uint32(1)
 	if s.StaffCodeMAC != nil {
-		value, macErr := s.StaffCodeMAC(ctx, frame)
-		if macErr != nil || value.Version == 0 || value.KeyID == "" || len(value.Digest) != sha256.Size {
+		value, err := s.StaffCodeMAC(ctx, frame)
+		if err != nil || value.Version == 0 || value.KeyID == "" || len(value.Digest) != sha256.Size {
 			clear(value.Digest)
-			return BatchLineBasis{}, fault.Unavailable
+			return "", "", 0, nil, fault.Unavailable
 		}
 		lookup, lookupKeyID, lookupVersion = value.Digest, value.KeyID, value.Version
 	} else {
 		if len(s.DigestKey) < 32 {
-			return BatchLineBasis{}, fault.Invalid
+			return "", "", 0, nil, fault.Invalid
 		}
 		mac := hmac.New(sha256.New, s.DigestKey)
 		_, _ = mac.Write(frame)
 		lookup = mac.Sum(nil)
 	}
+	return staffCode, lookupKeyID, lookupVersion, lookup, nil
+}
+
+func (s *Service) lookupBatchWorkforce(ctx context.Context, org, staffCode, effective string) (BatchWorkforceBasis, error) {
+	_, keyID, version, digest, err := s.staffCodeLookup(ctx, org, staffCode)
+	if err != nil {
+		return BatchWorkforceBasis{}, err
+	}
+	defer clear(digest)
+	return s.Batches.AdjustmentWorkforceByStaffCode(ctx, org, keyID, version, digest, effective)
+}
+
+func (s *Service) resolveBatchBasis(ctx context.Context, batch BatchRecord, line BatchLineCommand) (BatchLineBasis, error) {
+	effective, err := batchLineEffectiveDate(batch, line)
+	if err != nil {
+		return BatchLineBasis{}, err
+	}
+	_, lookupKeyID, lookupVersion, lookup, err := s.staffCodeLookup(ctx, batch.OrgID, line.StaffCode)
+	if err != nil {
+		return BatchLineBasis{}, err
+	}
+	defer clear(lookup)
 	workforce, err := s.Batches.AdjustmentWorkforceBasis(ctx, batch.OrgID, line.EmployeeID, lookupKeyID, lookupVersion, lookup, effective)
 	if err != nil {
 		return BatchLineBasis{}, err
 	}
-	if workforce.LegalEntityID != batch.LegalEntityID || workforce.JobFamilyID == "" || workforce.CareerLevelID == "" {
+	if workforce.EmployeeID != line.EmployeeID || workforce.LegalEntityID != batch.LegalEntityID || workforce.JobFamilyID == "" || workforce.CareerLevelID == "" {
 		return BatchLineBasis{}, fault.Conflict
 	}
 	rangeStore, err := s.salaryRangeStore()
@@ -987,15 +1255,16 @@ func (s *Service) resolveBatchBasis(ctx context.Context, batch BatchRecord, line
 		EmploymentID: workforce.EmploymentID, EmploymentRevision: strconv.FormatInt(workforce.EmploymentRevision, 10),
 		AssignmentID: workforce.AssignmentID, AssignmentRevision: strconv.FormatInt(workforce.AssignmentRevision, 10),
 		SalaryRangeID: ranges[0].ID, SalaryRangeRevision: strconv.FormatInt(ranges[0].Revision, 10),
+		CurrentSalaryBefore: "0",
 	}
-	schedule, err := s.Store.CompensationSchedule(ctx, batch.OrgID, line.EmployeeID, CurrentQuery{AsOf: effective, FutureLimit: 1})
+	schedule, err := s.Store.CompensationSchedule(ctx, batch.OrgID, line.EmployeeID, CurrentQuery{AsOf: effective, FutureLimit: 100})
 	if err != nil {
 		return BatchLineBasis{}, err
 	}
+	if len(schedule) > 1 {
+		return BatchLineBasis{}, fault.Conflict
+	}
 	if len(schedule) == 0 || schedule[0].EffectiveDate > effective || schedule[0].ValidTo != nil && effective >= *schedule[0].ValidTo {
-		if line.SalaryBefore != "0" {
-			return BatchLineBasis{}, fault.Conflict
-		}
 		return basis, nil
 	}
 	term, err := s.Store.CompensationTerm(ctx, batch.OrgID, schedule[0].TermID)
@@ -1003,10 +1272,10 @@ func (s *Service) resolveBatchBasis(ctx context.Context, batch BatchRecord, line
 		return BatchLineBasis{}, err
 	}
 	view, err := s.projectTerm(ctx, term)
-	if err != nil || view.Terms.Currency != line.Currency || view.Terms.Scale != 0 || view.Terms.AmountMinor == nil || *view.Terms.AmountMinor != line.SalaryBefore {
+	if err != nil || view.Terms.Currency != line.Currency || view.Terms.Scale != 0 || view.Terms.AmountMinor == nil || view.Terms.Unit != "month" || view.Terms.PaymentFrequency != "monthly" || view.Terms.TaxBasis != "gross" || len(view.Terms.Components) != 0 {
 		return BatchLineBasis{}, fault.Conflict
 	}
-	basis.TermID, basis.TermRevision = term.ID, strconv.FormatInt(term.Version, 10)
+	basis.TermID, basis.TermRevision, basis.TermEffectiveDate, basis.CurrentSalaryBefore = term.ID, strconv.FormatInt(term.Version, 10), schedule[0].EffectiveDate, *view.Terms.AmountMinor
 	return basis, nil
 }
 
@@ -1039,5 +1308,5 @@ func (s *Service) importCandidateView(ctx context.Context, req Request, initial 
 			return ImportCandidateView{}, err
 		}
 	}
-	return ImportCandidateView{ID: candidate.ID, BatchID: candidate.BatchID, BaseRevision: strconv.FormatInt(candidate.BaseRevision, 10), State: candidate.State, LineCount: int(candidate.LineCount), Lines: payload.Lines, Errors: payload.Errors, ExpiresAt: candidate.ExpiresAt.Format(time.RFC3339Nano)}, nil
+	return ImportCandidateView{ID: candidate.ID, BatchID: candidate.BatchID, BaseRevision: strconv.FormatInt(candidate.BaseRevision, 10), State: candidate.State, LineCount: int(candidate.LineCount), Lines: payload.Lines, Warnings: payload.Warnings, AdjustmentCountsByEmployee: payload.AdjustmentCountsByEmployee, Errors: payload.Errors, ExpiresAt: candidate.ExpiresAt.Format(time.RFC3339Nano)}, nil
 }

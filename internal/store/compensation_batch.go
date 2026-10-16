@@ -20,7 +20,7 @@ var _ compensation.BatchStore = (*Repository)(nil)
 func scanAdjustmentBatch(row grantScanner) (compensation.BatchRecord, error) {
 	var out compensation.BatchRecord
 	var created, activated int64
-	err := row.Scan(&out.OrgID, &out.ID, &out.BusinessCode, &out.CycleYear, &out.AdjustmentType, &out.LegalEntityID, &out.DefaultEffectiveDate, &out.State, &out.Revision, &out.ManifestDigest, &out.CreatorSubjectID, &out.ActivationSubjectID, &created, &activated)
+	err := row.Scan(&out.OrgID, &out.ID, &out.BusinessCode, &out.CycleYear, &out.AdjustmentType, &out.LegalEntityID, &out.DefaultEffectiveDate, &out.HeaderPayloadID, &out.State, &out.Revision, &out.ManifestDigest, &out.CreatorSubjectID, &out.ActivationSubjectID, &created, &activated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return out, fault.NotFound
 	}
@@ -39,10 +39,10 @@ func (r reader) adjustmentBatchSelect() string {
 	if r.backend == "postgres" {
 		date = "COALESCE(default_effective_date::text,'')"
 	}
-	return "SELECT org_id,id,business_code,cycle_year,adjustment_type,legal_entity_id," + date + ",state,revision,COALESCE(manifest_digest,''),creator_subject_id,(SELECT subject_id FROM compensation_batch_service s WHERE s.org_id=compensation_adjustment_batch.org_id AND s.batch_id=compensation_adjustment_batch.id),created_at,COALESCE(activated_at,0) FROM compensation_adjustment_batch"
+	return "SELECT org_id,id,business_code,cycle_year,adjustment_type,legal_entity_id," + date + ",COALESCE(header_payload_id,''),state,revision,COALESCE(manifest_digest,''),creator_subject_id,(SELECT subject_id FROM compensation_batch_service s WHERE s.org_id=compensation_adjustment_batch.org_id AND s.batch_id=compensation_adjustment_batch.id),created_at,COALESCE(activated_at,0) FROM compensation_adjustment_batch"
 }
 
-func (r *Repository) CreateAdjustmentBatch(ctx context.Context, org, subject, id, serviceSubject string, command compensation.CreateBatchCommand, receipt compensation.BatchCommandReceipt, now time.Time) (compensation.BatchRecord, error) {
+func (r *Repository) CreateAdjustmentBatch(ctx context.Context, org, subject, id, serviceSubject string, command compensation.CreateBatchCommand, header compensation.BatchHeaderPayloadRecord, receipt compensation.BatchCommandReceipt, now time.Time) (compensation.BatchRecord, error) {
 	tx, err := r.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return compensation.BatchRecord{}, safeError(err)
@@ -72,10 +72,18 @@ func (r *Repository) CreateAdjustmentBatch(ctx context.Context, org, subject, id
 		return compensation.BatchRecord{}, safeError(err)
 	}
 	var effective any
-	if command.DefaultEffectiveDate != "" {
+	if command.AdjustmentType == compensation.BatchNormal {
 		effective = command.DefaultEffectiveDate
 	}
-	_, err = tx.ExecContext(ctx, q.sql("INSERT INTO compensation_adjustment_batch(org_id,id,business_code,cycle_year,adjustment_type,legal_entity_id,default_effective_date,state,revision,creator_subject_id,created_at) VALUES(?,?,?,?,?,?,?,'draft',1,?,?)", "INSERT INTO compensation_adjustment_batch(org_id,id,business_code,cycle_year,adjustment_type,legal_entity_id,default_effective_date,state,revision,creator_subject_id,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,'draft',1,$8,$9)"), org, id, code, command.CycleYear, command.AdjustmentType, command.LegalEntityID, effective, subject, now.UnixMicro())
+	e := header.Envelope
+	if header.OrgID != org || header.BatchID != id || header.ID == "" {
+		return compensation.BatchRecord{}, fault.Invalid
+	}
+	_, err = tx.ExecContext(ctx, q.sql("INSERT INTO compensation_batch_header_payload(org_id,id,batch_id,record_id,version_id,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes,created_at) VALUES(?,?,?,?,?,'financial','compensation.batch_header.v1',1,?,?,?,?,?,?,?,?)", "INSERT INTO compensation_batch_header_payload(org_id,id,batch_id,record_id,version_id,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes,created_at) VALUES($1,$2,$3,$4,$5,'financial','compensation.batch_header.v1',1,$6,$7,$8,$9,$10,$11,$12,$13)"), org, header.ID, id, id, header.ID, e.FormatVersion, e.Algorithm, e.DEKID, e.Key.KEKID, e.Key.Version, e.Key.Data, e.SealedBytes, now.UnixMicro())
+	if err != nil {
+		return compensation.BatchRecord{}, safeError(err)
+	}
+	_, err = tx.ExecContext(ctx, q.sql("INSERT INTO compensation_adjustment_batch(org_id,id,business_code,cycle_year,adjustment_type,legal_entity_id,default_effective_date,header_payload_id,state,revision,creator_subject_id,created_at) VALUES(?,?,?,?,?,?,?,?,'draft',1,?,?)", "INSERT INTO compensation_adjustment_batch(org_id,id,business_code,cycle_year,adjustment_type,legal_entity_id,default_effective_date,header_payload_id,state,revision,creator_subject_id,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'draft',1,$9,$10)"), org, id, code, command.CycleYear, command.AdjustmentType, command.LegalEntityID, effective, header.ID, subject, now.UnixMicro())
 	if err != nil {
 		return compensation.BatchRecord{}, safeError(err)
 	}
@@ -109,6 +117,25 @@ func (r *Repository) AdjustmentBatch(ctx context.Context, org, id string) (compe
 	q := r.read()
 	return scanAdjustmentBatch(q.db.QueryRowContext(ctx, q.structureSQL(q.adjustmentBatchSelect()+" WHERE org_id=? AND id=?"), org, id))
 }
+func (r *Repository) AdjustmentBatchHeaderPayload(ctx context.Context, org, id string) (compensation.BatchHeaderPayloadRecord, error) {
+	q := r.read()
+	var out compensation.BatchHeaderPayloadRecord
+	var format, keyVersion int64
+	var created int64
+	err := q.db.QueryRowContext(ctx, q.structureSQL("SELECT org_id,id,batch_id,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes,created_at FROM compensation_batch_header_payload WHERE org_id=? AND id=?"), org, id).Scan(&out.OrgID, &out.ID, &out.BatchID, &format, &out.Envelope.Algorithm, &out.Envelope.DEKID, &out.Envelope.Key.KEKID, &keyVersion, &out.Envelope.Key.Data, &out.Envelope.SealedBytes, &created)
+	if errors.Is(err, sql.ErrNoRows) {
+		return out, fault.NotFound
+	}
+	if err != nil {
+		return out, safeError(err)
+	}
+	out.Envelope.FormatVersion = uint16(format)
+	out.Envelope.Key.Version = uint32(keyVersion)
+	out.Envelope.Context = batchHeaderEnvelopeContext(out.OrgID, out.BatchID, out.ID)
+	out.CreatedAt = time.UnixMicro(created).UTC()
+	return out, nil
+}
+
 func (r *Repository) AdjustmentBatchReceipt(ctx context.Context, org, subject, operation, key string) (compensation.BatchCommandReceipt, bool, error) {
 	q := r.read()
 	var out compensation.BatchCommandReceipt
@@ -269,9 +296,24 @@ func (r *Repository) ReplaceAdjustmentBatchLines(ctx context.Context, batch comp
 }
 
 func (r *Repository) AdjustmentWorkforceBasis(ctx context.Context, org, employee, lookupKeyID string, lookupVersion uint32, digest []byte, asOf string) (compensation.BatchWorkforceBasis, error) {
+	out, err := r.adjustmentWorkforceBasis(ctx, org, employee, lookupKeyID, lookupVersion, digest, asOf)
+	return out, err
+}
+
+func (r *Repository) AdjustmentWorkforceByStaffCode(ctx context.Context, org, lookupKeyID string, lookupVersion uint32, digest []byte, asOf string) (compensation.BatchWorkforceBasis, error) {
+	return r.adjustmentWorkforceBasis(ctx, org, "", lookupKeyID, lookupVersion, digest, asOf)
+}
+
+func (r *Repository) adjustmentWorkforceBasis(ctx context.Context, org, employee, lookupKeyID string, lookupVersion uint32, digest []byte, asOf string) (compensation.BatchWorkforceBasis, error) {
 	q := r.read()
-	query := "SELECT i.id,i.revision,e.id,e.revision,e.legal_entity_id,e.location_code,a.id,a.revision,a.job_family_id,a.career_level_id FROM employee_business_identifier i JOIN employment_spell e ON e.org_id=i.org_id AND e.employee_id=i.employee_id JOIN job_assignment a ON a.org_id=i.org_id AND a.employee_id=i.employee_id WHERE i.org_id=? AND i.employee_id=? AND i.kind='staff_code' AND i.lookup_key_id=? AND i.lookup_key_version=? AND i.lookup_digest=? AND i.valid_from<=? AND (i.valid_to IS NULL OR i.valid_to>?) AND e.valid_from<=? AND (e.valid_to IS NULL OR e.valid_to>?) AND a.valid_from<=? AND (a.valid_to IS NULL OR a.valid_to>?) ORDER BY i.valid_from DESC,e.valid_from DESC,a.valid_from DESC,i.id,e.id,a.id"
-	rows, err := q.db.QueryContext(ctx, q.structureSQL(query), org, employee, lookupKeyID, lookupVersion, digest, asOf, asOf, asOf, asOf, asOf, asOf)
+	query := "SELECT i.employee_id,i.id,i.revision,e.id,e.revision,e.legal_entity_id,e.location_code,a.id,a.revision,a.job_family_id,a.career_level_id FROM employee_business_identifier i JOIN employment_spell e ON e.org_id=i.org_id AND e.employee_id=i.employee_id JOIN job_assignment a ON a.org_id=i.org_id AND a.employee_id=i.employee_id WHERE i.org_id=? AND i.kind='staff_code' AND i.lookup_key_id=? AND i.lookup_key_version=? AND i.lookup_digest=? AND i.valid_from<=? AND (i.valid_to IS NULL OR i.valid_to>?) AND e.valid_from<=? AND (e.valid_to IS NULL OR e.valid_to>?) AND a.valid_from<=? AND (a.valid_to IS NULL OR a.valid_to>?)"
+	args := []any{org, lookupKeyID, lookupVersion, digest, asOf, asOf, asOf, asOf, asOf, asOf}
+	if employee != "" {
+		query += " AND i.employee_id=?"
+		args = append(args, employee)
+	}
+	query += " ORDER BY i.valid_from DESC,e.valid_from DESC,a.valid_from DESC,i.id,e.id,a.id"
+	rows, err := q.db.QueryContext(ctx, q.structureSQL(query), args...)
 	if err != nil {
 		return compensation.BatchWorkforceBasis{}, safeError(err)
 	}
@@ -279,7 +321,7 @@ func (r *Repository) AdjustmentWorkforceBasis(ctx context.Context, org, employee
 	var out compensation.BatchWorkforceBasis
 	count := 0
 	for rows.Next() {
-		if err = rows.Scan(&out.IdentifierID, &out.IdentifierRevision, &out.EmploymentID, &out.EmploymentRevision, &out.LegalEntityID, &out.Location, &out.AssignmentID, &out.AssignmentRevision, &out.JobFamilyID, &out.CareerLevelID); err != nil {
+		if err = rows.Scan(&out.EmployeeID, &out.IdentifierID, &out.IdentifierRevision, &out.EmploymentID, &out.EmploymentRevision, &out.LegalEntityID, &out.Location, &out.AssignmentID, &out.AssignmentRevision, &out.JobFamilyID, &out.CareerLevelID); err != nil {
 			return compensation.BatchWorkforceBasis{}, safeError(err)
 		}
 		count++
@@ -386,4 +428,8 @@ func nullableMicro(set bool, t time.Time) any {
 
 func batchEnvelopeContext(org, employee, id string) sensitive.Context {
 	return sensitive.Context{OrgID: org, EmployeeID: employee, RecordID: id, VersionID: id, ObjectKind: "compensation_batch_line", Purpose: "financial", SchemaType: "compensation.batch_line.v1", SchemaVersion: 1}
+}
+
+func batchHeaderEnvelopeContext(org, batch, id string) sensitive.Context {
+	return sensitive.Context{OrgID: org, RecordID: batch, VersionID: id, ObjectKind: "compensation_batch_header", Purpose: "financial", SchemaType: "compensation.batch_header.v1", SchemaVersion: 1}
 }

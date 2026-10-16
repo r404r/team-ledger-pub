@@ -57,11 +57,11 @@ func ParseAdjustmentWorkbook(raw []byte, typ string) ([]BatchLineCommand, error)
 
 func workbookLines(rows []map[int]string, typ string) ([]BatchLineCommand, error) {
 	aliases := map[string]string{
-		"employeeid": "employee_id", "staffcode": "staff_code", "currency": "currency",
-		"salarybeforeadjustment": "salary_before", "monthlybasesalarybefore": "salary_before", "monthlybasesalarybeforeadjustment": "salary_before",
-		"increaseamount": "increase_amount", "salaryafteradjustment": "salary_after", "monthlybasesalaryafteradjustment": "salary_after",
-		"performancegrade": "performance_grade", "averagemeritincrease": "average_merit_increase", "increaserangesuggestedbydepartment": "department_suggested_increase",
-		"effectivedate": "effective_date", "specialsalaryadjustmentstartingmonth": "effective_month", "adjustmentreasoncode": "reason_code", "adjustmentreason": "reason_text",
+		"employeeid": "employee_id", "工号staffcode": "staff_code", "staffcode": "staff_code", "currency": "currency", "币种currency": "currency",
+		"salarybeforeadjustment": "salary_before", "monthlybasesalarybefore": "salary_before", "monthlybasesalarybeforeadjustment": "salary_before", "调整前薪资salarybeforespecialadjustment": "salary_before",
+		"increaseamount": "increase_amount", "调薪额度increaseamount": "increase_amount", "salaryafteradjustment": "salary_after", "monthlybasesalaryafteradjustment": "salary_after", "调整后薪资salaryafterspecialadjustment": "salary_after",
+		"performancegrade": "performance_grade", "绩效等级performancegrade": "performance_grade", "averagemeritincrease": "average_merit_increase", "increaserangesuggestedbydepartment": "department_suggested_increase",
+		"effectivedate": "effective_date", "specialsalaryadjustmentstartingmonth": "effective_month", "调整月份specialsalaryadjustmentstartingmonth": "effective_month", "adjustmentreasoncode": "reason_code", "adjustmentreason": "reason_text", "调整原因adjustmentreason": "reason_text",
 	}
 	headerRow := -1
 	columns := map[string]int{}
@@ -74,16 +74,14 @@ func workbookLines(rows []map[int]string, typ string) ([]BatchLineCommand, error
 				columns[field] = column
 			}
 		}
-		if columns["employee_id"] != 0 && columns["staff_code"] != 0 && columns["currency"] != 0 && columns["increase_amount"] != 0 {
+		if columns["staff_code"] != 0 && columns["currency"] != 0 && columns["increase_amount"] != 0 {
 			headerRow = rowIndex
 			break
 		}
 	}
-	required := []string{"employee_id", "staff_code", "currency", "salary_before", "increase_amount", "salary_after"}
+	required := []string{"staff_code", "currency", "salary_before", "increase_amount", "salary_after"}
 	if typ == BatchNormal {
 		required = append(required, "performance_grade")
-	} else {
-		required = append(required, "effective_month", "reason_code", "reason_text")
 	}
 	if headerRow < 0 {
 		return nil, errors.New("required headers are missing")
@@ -96,7 +94,7 @@ func workbookLines(rows []map[int]string, typ string) ([]BatchLineCommand, error
 	out := make([]BatchLineCommand, 0)
 	for rowIndex := headerRow + 1; rowIndex < len(rows); rowIndex++ {
 		row := rows[rowIndex]
-		if strings.TrimSpace(row[columns["employee_id"]]) == "" {
+		if strings.TrimSpace(row[columns["staff_code"]]) == "" {
 			continue
 		}
 		text := func(field string) string {
@@ -106,7 +104,7 @@ func workbookLines(rows []map[int]string, typ string) ([]BatchLineCommand, error
 			}
 			return value
 		}
-		line := BatchLineCommand{EmployeeID: text("employee_id"), StaffCode: text("staff_code"), Currency: text("currency"), SalaryBefore: text("salary_before"), IncreaseAmount: text("increase_amount"), SalaryAfter: text("salary_after"), PerformanceGrade: text("performance_grade"), AverageMeritIncrease: text("average_merit_increase"), DepartmentSuggestedIncrease: text("department_suggested_increase"), EffectiveDate: text("effective_date"), EffectiveMonth: text("effective_month"), ReasonCode: text("reason_code"), ReasonText: text("reason_text")}
+		line := BatchLineCommand{StaffCode: text("staff_code"), Currency: text("currency"), SalaryBefore: text("salary_before"), IncreaseAmount: text("increase_amount"), SalaryAfter: text("salary_after"), PerformanceGrade: text("performance_grade"), AverageMeritIncrease: text("average_merit_increase"), DepartmentSuggestedIncrease: text("department_suggested_increase"), EffectiveDate: text("effective_date"), EffectiveMonth: text("effective_month"), ReasonCode: text("reason_code"), ReasonText: text("reason_text")}
 		for _, field := range required {
 			if text(field) == "" {
 				return nil, fmt.Errorf("row %d field %s must be text and non-empty", rowIndex+1, field)

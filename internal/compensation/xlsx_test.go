@@ -8,13 +8,13 @@ import (
 )
 
 func TestParseAdjustmentWorkbookRequiresTextMoneyAndBoundsRows(t *testing.T) {
-	headers := []string{"Employee ID", "Staff Code", "Currency", "Salary Before Adjustment", "Increase amount", "Salary After Adjustment", "Performance Grade", "Effective Date"}
-	row := []string{"employee-1", "S001", "CNY", "10000", "500", "10500", "A", "2026-01-01"}
+	headers := []string{"Staff Code", "Currency", "Salary Before Adjustment", "Increase amount", "Salary After Adjustment", "Performance Grade", "Effective Date"}
+	row := []string{"S001", "CNY", "10000", "500", "10500", "A", "2026-01-01"}
 	lines, err := ParseAdjustmentWorkbook(testWorkbook(t, headers, row, -1), BatchNormal)
 	if err != nil {
 		t.Fatalf("parse valid workbook: %v", err)
 	}
-	if len(lines) != 1 || lines[0].IncreaseAmount != "500" || lines[0].EmployeeID != "employee-1" {
+	if len(lines) != 1 || lines[0].IncreaseAmount != "500" || lines[0].StaffCode != "S001" || lines[0].EmployeeID != "" {
 		t.Fatalf("unexpected normalized lines: %#v", lines)
 	}
 	if _, err = ParseAdjustmentWorkbook(testWorkbook(t, headers, row, 4), BatchNormal); err == nil {

@@ -34,11 +34,33 @@ type BatchLineBasis struct {
 	SalaryRangeRevision string `json:"salary_range_revision"`
 	TermID              string `json:"term_id,omitempty"`
 	TermRevision        string `json:"term_revision,omitempty"`
+	TermEffectiveDate   string `json:"term_effective_date,omitempty"`
+	CurrentSalaryBefore string `json:"current_salary_before"`
+}
+
+type BatchHeader struct {
+	Name                 string `json:"name"`
+	DefaultEffectiveDate string `json:"default_effective_date"`
+	SpecialReasonCode    string `json:"special_reason_code,omitempty"`
+	SpecialReasonText    string `json:"special_reason_text,omitempty"`
+	BudgetCurrency       string `json:"budget_currency,omitempty"`
+	BudgetAmount         string `json:"budget_amount,omitempty"`
+	LegacyUnspecified    bool   `json:"legacy_unspecified,omitempty"`
 }
 
 type BatchWorkforceBasis struct {
+	EmployeeID                                                                                    string
 	IdentifierID, EmploymentID, AssignmentID, LegalEntityID, Location, JobFamilyID, CareerLevelID string
 	IdentifierRevision, EmploymentRevision, AssignmentRevision                                    int64
+}
+
+type BatchPreviewWarning struct {
+	Code                string `json:"code"`
+	EmployeeID          string `json:"employee_id"`
+	StaffCode           string `json:"staff_code"`
+	EffectiveDate       string `json:"effective_date"`
+	EnteredSalaryBefore string `json:"entered_salary_before"`
+	CurrentSalaryBefore string `json:"current_salary_before"`
 }
 
 type BatchLineCommand struct {
@@ -55,6 +77,7 @@ type BatchLineCommand struct {
 	EffectiveMonth              string         `json:"effective_month,omitempty"`
 	ReasonCode                  string         `json:"reason_code,omitempty"`
 	ReasonText                  string         `json:"reason_text,omitempty"`
+	CorrectSalaryBefore         bool           `json:"correct_salary_before,omitempty"`
 	Basis                       BatchLineBasis `json:"basis"`
 }
 
@@ -80,10 +103,16 @@ type CurrencyTotal struct {
 type BatchView struct {
 	ID                       string          `json:"id"`
 	BusinessCode             string          `json:"business_code"`
+	Name                     string          `json:"name"`
 	CycleYear                int             `json:"cycle_year"`
 	AdjustmentType           string          `json:"adjustment_type"`
 	LegalEntityID            string          `json:"legal_entity_id"`
-	DefaultEffectiveDate     string          `json:"default_effective_date,omitempty"`
+	DefaultEffectiveDate     string          `json:"default_effective_date"`
+	SpecialReasonCode        string          `json:"special_reason_code,omitempty"`
+	SpecialReasonText        string          `json:"special_reason_text,omitempty"`
+	BudgetCurrency           string          `json:"budget_currency,omitempty"`
+	BudgetAmount             string          `json:"budget_amount,omitempty"`
+	BudgetLegacyUnspecified  bool            `json:"budget_legacy_unspecified,omitempty"`
 	State                    string          `json:"state"`
 	Revision                 string          `json:"revision"`
 	ManifestDigest           string          `json:"manifest_digest,omitempty"`
@@ -92,23 +121,41 @@ type BatchView struct {
 }
 
 type CreateBatchCommand struct {
+	Name                 string            `json:"name"`
 	CycleYear            int               `json:"cycle_year"`
 	AdjustmentType       string            `json:"adjustment_type"`
 	LegalEntityID        string            `json:"legal_entity_id"`
-	DefaultEffectiveDate string            `json:"default_effective_date,omitempty"`
+	DefaultEffectiveDate string            `json:"default_effective_date"`
+	SpecialReasonCode    string            `json:"special_reason_code,omitempty"`
+	SpecialReasonText    string            `json:"special_reason_text,omitempty"`
+	BudgetCurrency       string            `json:"budget_currency"`
+	BudgetAmount         string            `json:"budget_amount"`
 	SpecialReasons       map[string]string `json:"-"`
 }
 
 type ReplaceBatchLinesCommand struct {
-	Revision    string             `json:"revision"`
-	CandidateID string             `json:"candidate_id,omitempty"`
-	Lines       []BatchLineCommand `json:"lines,omitempty"`
+	Revision                 string             `json:"revision"`
+	CandidateID              string             `json:"candidate_id,omitempty"`
+	ConfirmSalaryCorrections []string           `json:"confirm_salary_corrections,omitempty"`
+	Lines                    []BatchLineCommand `json:"lines,omitempty"`
+}
+
+type PreviewBatchLinesCommand struct {
+	Revision string             `json:"revision"`
+	Lines    []BatchLineCommand `json:"lines"`
 }
 
 type BatchRecord struct {
-	OrgID, ID, BusinessCode, AdjustmentType, LegalEntityID, DefaultEffectiveDate, State, ManifestDigest, CreatorSubjectID, ActivationSubjectID string
-	CycleYear, Revision                                                                                                                        int64
-	CreatedAt, ActivatedAt                                                                                                                     time.Time
+	OrgID, ID, BusinessCode, AdjustmentType, LegalEntityID, DefaultEffectiveDate, HeaderPayloadID, State, ManifestDigest, CreatorSubjectID, ActivationSubjectID string
+	CycleYear, Revision                                                                                                                                         int64
+	CreatedAt, ActivatedAt                                                                                                                                      time.Time
+	Header                                                                                                                                                      BatchHeader
+}
+
+type BatchHeaderPayloadRecord struct {
+	OrgID, ID, BatchID string
+	Envelope           sensitive.Envelope
+	CreatedAt          time.Time
 }
 
 type BatchPayloadRecord struct {
@@ -129,14 +176,16 @@ type BatchCommandReceipt struct {
 	RecordedAt                                    time.Time
 }
 type ImportCandidateView struct {
-	ID           string             `json:"id"`
-	BatchID      string             `json:"batch_id"`
-	BaseRevision string             `json:"base_revision"`
-	State        string             `json:"state"`
-	LineCount    int                `json:"line_count"`
-	Lines        []BatchLineCommand `json:"lines"`
-	Errors       []string           `json:"errors"`
-	ExpiresAt    string             `json:"expires_at"`
+	ID                         string                      `json:"id"`
+	BatchID                    string                      `json:"batch_id"`
+	BaseRevision               string                      `json:"base_revision"`
+	State                      string                      `json:"state"`
+	LineCount                  int                         `json:"line_count"`
+	Lines                      []BatchLineCommand          `json:"lines"`
+	Warnings                   []BatchPreviewWarning       `json:"warnings"`
+	AdjustmentCountsByEmployee map[string]AdjustmentCounts `json:"adjustment_counts_by_employee"`
+	Errors                     []string                    `json:"errors"`
+	ExpiresAt                  string                      `json:"expires_at"`
 }
 
 type ImportCandidateRecord struct {
@@ -177,13 +226,15 @@ type BatchCorrectionReader interface {
 }
 
 type BatchStore interface {
-	CreateAdjustmentBatch(context.Context, string, string, string, string, CreateBatchCommand, BatchCommandReceipt, time.Time) (BatchRecord, error)
+	CreateAdjustmentBatch(context.Context, string, string, string, string, CreateBatchCommand, BatchHeaderPayloadRecord, BatchCommandReceipt, time.Time) (BatchRecord, error)
 	AdjustmentBatchReceipt(context.Context, string, string, string, string) (BatchCommandReceipt, bool, error)
 	AdjustmentBatch(context.Context, string, string) (BatchRecord, error)
 	AdjustmentBatches(context.Context, string, int, string, int) ([]BatchRecord, error)
+	AdjustmentBatchHeaderPayload(context.Context, string, string) (BatchHeaderPayloadRecord, error)
 	AdjustmentBatchLines(context.Context, string, string, int64) ([]BatchLineRecord, error)
 	AdjustmentBatchPayload(context.Context, string, string) (BatchPayloadRecord, error)
 	AdjustmentWorkforceBasis(context.Context, string, string, string, uint32, []byte, string) (BatchWorkforceBasis, error)
+	AdjustmentWorkforceByStaffCode(context.Context, string, string, uint32, []byte, string) (BatchWorkforceBasis, error)
 	AdjustmentBatchCounts(context.Context, string, string, int) (AdjustmentCounts, error)
 	AdjustmentBatchOriginalEvent(context.Context, string, string, string) (string, error)
 	CreateAdjustmentImportCandidate(context.Context, ImportCandidateRecord, BatchCommandReceipt) (ImportCandidateRecord, error)
@@ -201,20 +252,37 @@ type BatchTransitionCommand struct {
 }
 
 func ValidateCreateBatch(c CreateBatchCommand) error {
-	if c.CycleYear < 2000 || c.CycleYear > 9999 || c.LegalEntityID == "" {
+	if c.CycleYear < 2000 || c.CycleYear > 9999 || c.LegalEntityID == "" || !safeText(c.Name, 200, true) {
 		return errors.New("invalid batch header")
 	}
 	if c.AdjustmentType != BatchNormal && c.AdjustmentType != BatchSpecial {
 		return errors.New("invalid adjustment type")
 	}
+	if _, err := time.Parse("2006-01-02", c.DefaultEffectiveDate); err != nil {
+		return errors.New("default effective date is required")
+	}
+	if (c.BudgetCurrency != "CNY" && c.BudgetCurrency != "JPY") || c.BudgetAmount == "" {
+		return errors.New("budget currency and amount are required")
+	}
+	if _, err := ParseMoney(c.BudgetAmount); err != nil {
+		return errors.New("invalid budget amount")
+	}
 	if c.AdjustmentType == BatchNormal {
-		if _, err := time.Parse("2006-01-02", c.DefaultEffectiveDate); err != nil {
-			return errors.New("normal default effective date is required")
+		if c.SpecialReasonCode != "" || c.SpecialReasonText != "" {
+			return errors.New("normal batch cannot have a special reason")
 		}
-	} else if c.DefaultEffectiveDate != "" {
-		return errors.New("special batch cannot have a default effective date")
+	} else if !safeText(c.SpecialReasonCode, 64, true) || !safeText(c.SpecialReasonText, 1000, true) || c.SpecialReasons != nil && !containsReason(c.SpecialReasons, c.SpecialReasonCode) {
+		return errors.New("special batch reason is required")
 	}
 	return nil
+}
+
+func containsReason(catalog map[string]string, code string) bool {
+	if catalog == nil {
+		return true
+	}
+	_, ok := catalog[code]
+	return ok
 }
 
 func ValidateBusinessCode(code, typ string, year int) error {

@@ -429,7 +429,7 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 		root = "export_command"
 	case *compensation.BonusTargetCommand, *compensation.BonusTargetTransition, *compensation.BonusAwardCommand, *compensation.BonusAwardEditCommand, *compensation.BonusAwardTransition, *compensation.BonusPaymentCommand, *compensation.BonusExtensionCommand:
 		root = "bonus_command"
-	case *compensation.CreateBatchCommand, *compensation.ReplaceBatchLinesCommand, *compensation.BatchTransitionCommand, *compensation.BatchCorrectionCommand:
+	case *compensation.CreateBatchCommand, *compensation.PreviewBatchLinesCommand, *compensation.ReplaceBatchLinesCommand, *compensation.BatchTransitionCommand, *compensation.BatchCorrectionCommand:
 		root = "batch_command"
 	case *compensation.SalaryRangeChangeCommand:
 		root = "batch_command"

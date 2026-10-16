@@ -112,7 +112,7 @@ func (r *Repository) VerifyCryptoState(ctx context.Context, state sensitive.Read
 	return nil
 }
 
-// VerifyOrInitializeCryptoState binds a clean v12 database to one stable keyring.
+// VerifyOrInitializeCryptoState binds a persisted database to one stable keyring.
 // A restored database already carries this row and cannot silently bind to other key material.
 func (r *Repository) VerifyOrInitializeCryptoState(ctx context.Context, state sensitive.ReadyState, now time.Time) error {
 	active, err := canonicalActive(state)

@@ -432,6 +432,8 @@ func payloadRegistry(binding Context) (object, purpose, schemaVersion uint16, em
 		object, purpose, schemaVersion, employeeOwned, expected = 10, 5, 1, true, "compensation.batch_line.v1"
 	case "compensation_batch_import":
 		object, purpose, schemaVersion, expected = 10, 5, 1, "compensation.batch_import.v1"
+	case "compensation_batch_header":
+		object, purpose, schemaVersion, expected = 10, 5, 1, "compensation.batch_header.v1"
 	case "compensation_decision":
 		object, purpose, schemaVersion, employeeOwned, expected = 10, 5, 1, true, "compensation.decision.v1"
 	case "bonus_target":
