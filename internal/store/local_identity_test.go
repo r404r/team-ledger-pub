@@ -95,7 +95,7 @@ func TestLocalBootstrapLoginThrottleAndSession(t *testing.T) {
 	if err = repo.DB.QueryRowContext(ctx, "SELECT count(*) FROM access_grant WHERE org_id=? AND subject_id=? AND capability IN('access_grant.manage','audit.read','identity.manage') AND category='audit' AND purpose='security_administration' AND mfa_required=1", orgID, subjectID).Scan(&securityCapabilities); err != nil || securityCapabilities != 3 {
 		t.Fatal("bootstrap admin security capabilities missing", securityCapabilities, err)
 	}
-	service, err := identity.NewLocal(ctx, repo, repo, keys, sensitive.Cipher{Wrapper: localWrapper{}})
+	service, err := identity.NewLocal(ctx, repo, repo, keys, sensitive.Cipher{Wrapper: localWrapper{}}, sensitive.Cipher{Wrapper: localWrapper{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestLocalBootstrapLoginThrottleAndSession(t *testing.T) {
 	if err = repo.IssueLocalSession(ctx, issue); !errors.Is(err, fault.Unauthenticated) {
 		t.Fatal("old-mode local session issued after mode switch", err)
 	}
-	if _, err = identity.NewLocal(ctx, repo, repo, keys, sensitive.Cipher{Wrapper: localWrapper{}}); err == nil {
+	if _, err = identity.NewLocal(ctx, repo, repo, keys, sensitive.Cipher{Wrapper: localWrapper{}}, sensitive.Cipher{Wrapper: localWrapper{}}); err == nil {
 		t.Fatal("local identity started after oidc mode switch")
 	}
 }

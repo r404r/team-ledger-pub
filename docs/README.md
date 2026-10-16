@@ -20,5 +20,7 @@
 - [DEV-032验证摘要](validation/DEV-032.md) · [审查记录](reviews/DEV-032.md)
 - [DEV-033员工信息统一重构](plans/DEV-033.md)：完整员工主数据、18列模板、目录与详情统一字段。
 - [DEV-033验证摘要](validation/DEV-033.md) · [审查记录](reviews/DEV-033.md)
+- [DEV-038本地用户管理与首次改密](plans/DEV-038.md)：管理员固定安全权限、用户管理、首次改密及v14→v15迁移。
+- [DEV-038验证摘要](validation/DEV-038.md)
 
 历史私有计划、review会话、本机路径和旧文档commit台账不复制到public仓库；它们不是当前产品契约。当前行为以本仓库源码、迁移、永久测试和上述文档为准。

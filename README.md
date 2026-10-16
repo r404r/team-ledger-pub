@@ -196,13 +196,14 @@ curl --fail --cacert docker/secrets/tls-cert.pem \
 https://localhost:8443
 ```
 
-使用`admin.user`及刚才保存的密码登录。首次密码验证只会进入“设置 TOTP 验证器”受限页面，不会开放员工或薪资数据：
+使用`admin.user`及刚才保存的初始密码登录。fresh安装必须依次完成“首次改密 → 重新登录 → TOTP登记”，在此之前不会开放员工、授权、审计或用户管理：
 
-1. 在手机或其他独立设备安装任一支持标准TOTP的离线Authenticator；TeamLedger不要求连接外部MFA服务。
-2. 扫描页面二维码；不能扫描时，手工输入页面显示的Base32密钥。
-3. 输入验证器当前显示的6位验证码并启用。
-4. 页面随后只显示一次账号恢复码。把它抄写到受控离线介质，勾选“已保存”后才能进入工作区；不要放入聊天、截图或共享文档。
-5. 后续登录使用密码＋TOTP。敏感操作要求近期MFA时，在“会话与安全”中重新输入当前密码＋TOTP；系统不会自动重放刚才的业务操作。
+1. 在“修改初始密码”输入刚才的初始密码和一个不同的新密码。成功后当前受限会话立即失效；旧初始密码不再可用。
+2. 使用`admin.user`和新密码重新登录。此时只会进入“设置 TOTP 验证器”受限页面。
+3. 在手机或其他独立设备安装任一支持标准TOTP的离线Authenticator；TeamLedger不要求连接外部MFA服务。
+4. 扫描页面二维码；不能扫描时，手工输入页面显示的Base32密钥，再输入当前6位验证码并启用。
+5. 页面随后只显示一次账号恢复码。把它抄写到受控离线介质，勾选“已保存”后才能进入工作区；不要放入聊天、截图或共享文档。
+6. 进入工作区后，fresh `admin.user`固定同时拥有`identity.manage`、`access_grant.manage`和`audit.read`，原始批准者记录为该管理员自身。敏感操作要求近期MFA时，在“会话与安全”中重新输入当前密码＋TOTP；系统不会自动重放刚才的业务操作。
 
 浏览器使用本机自签名证书时会提示证书不受公开CA信任；核对地址确实是`https://localhost:8443`后，仅在该本机安装中继续访问。不要把这个做法用于公网生产环境。
 #### 1.6 从schema v13升级到v14（仅既有安装执行一次）
@@ -256,7 +257,41 @@ curl --fail --cacert docker/secrets/tls-cert.pem \
 2. 再按§3.1制作并验证包含18-domain新generation的双介质离线副本；旧副本继续按保留政策保存，不能冒充新副本。
 3. 确认所有账号完成登记前，不要删除原数据库备份。
 
-#### 1.7 日常停止、重启和更新
+#### 1.7 从schema v14升级到v15（既有v14安装执行一次）
+
+v15追加本地用户管理、fresh管理员固定安全权限和首次改密。该版本**不增加key domain**，使用既有18-domain keyring；不得重跑key、audit或identity bootstrap。升级保留业务、账号、MFA、审计和outbox数据；既有账号不会被追溯要求修改密码。bootstrap管理员的旧会话会被撤销，并补齐`identity.manage`、`access_grant.manage`、`audit.read`。
+
+先按§5完成并验证数据库备份，按§3.1确认当前18-domain keyring双介质离线副本可用。保持全部`TEAMLEDGER_*_VOLUME`名称和`TEAMLEDGER_DEPLOYMENT_ID`不变，再执行：
+
+```bash
+set -eu
+cd ~/team-ledger
+docker compose --env-file .env.docker down
+git pull --ff-only
+docker compose --env-file .env.docker build
+docker compose --env-file .env.docker up \
+  --abort-on-container-exit --exit-code-from migrate migrate
+docker compose --env-file .env.docker up -d --wait
+docker compose --env-file .env.docker ps
+curl --fail --cacert docker/secrets/tls-cert.pem \
+  https://localhost:8443/health/ready
+```
+
+成功标准：migration以0退出，服务均为`Up`/`healthy`，ready返回`{"status":"ready"}`。用原账号密码登录：原有账号按原MFA状态继续，不出现首次改密；bootstrap管理员需重新登录，其会话应显示用户管理、授权和审计入口。失败时保持原volume，不执行`down -v`、不重跑bootstrap；保存错误并从已验证的v14备份恢复后再处理。
+
+#### 1.8 用户管理和一次性初始密码
+
+完成fresh安装或v15升级后，以具有近期MFA的`admin.user`打开顶部 **用户管理**：
+
+1. 输入符合页面规则的唯一登录账号、一次性初始密码和确认密码。
+2. 点击“创建用户”。成功后初始密码字段立即清空，系统不会再次显示或发送该密码；由管理员通过受控渠道交给用户。
+3. 新用户默认没有员工绑定或任何业务权限。需要访问人员、薪资或其他模块时，必须另行按批准职责在 **授权** 中配置；创建账号本身不授业务数据。
+4. 新用户第一次以初始密码登录时只能修改密码；改密后必须用新密码重新登录并登记TOTP，保存恢复码后才得到business session。
+5. `identity.manage`只允许账号列表/创建，`access_grant.manage`只允许在既有delegation authority内管理授权，`audit.read`只允许读脱敏审计。三项可由同一主体同时持有，但互不替代。
+
+列表只显示账号、登录状态、首次改密/MFA状态、创建时间和主体ID，不显示密码、TOTP secret、恢复码、员工PII或业务权限。账号停用、重置和权限委派仍按各自受控流程处理。
+
+#### 1.9 日常停止、重启和更新
 普通停止不会删除数据：
 
 ```bash
@@ -282,7 +317,7 @@ docker compose --env-file .env.docker up -d --wait
 
 不要重跑key、audit或identity bootstrap。普通启动会运行必要的database migration并复用既有named volumes。
 
-#### 1.8 数据不会放在哪里、哪些命令不能用
+#### 1.10 数据不会放在哪里、哪些命令不能用
 
 业务数据库、keyd材料和audit材料不在容器临时层，而在三个Docker named volumes。`down`、重建image和电脑重启不会删除它们。查看实际名称：
 
@@ -302,7 +337,7 @@ docker system prune --volumes
 
 Named volume不是备份。正式使用前必须按§5建立业务数据库加密备份，并按§3.1把root/keyring保存到两个不同离线介质；数据库备份、key材料和audit材料必须分开保管。
 
-#### 1.9 常见问题
+#### 1.11 常见问题
 
 长期服务或migration失败时运行：
 
@@ -327,7 +362,7 @@ docker compose --env-file .env.docker logs --tail=200 \
 | curl报告证书错误 | 必须保留`--cacert docker/secrets/tls-cert.pem`，URL必须是证书覆盖的`localhost`或`127.0.0.1`。 |
 | TOTP设备遗失，但恢复码仍在 | 在登录页选择“使用恢复码”，输入username、当前密码和一次性恢复码，只进入受限恢复页；设置新验证器并保存新的恢复码。恢复码不能直接进入业务页面。 |
 | TOTP设备和恢复码都遗失 | 不能从网页关闭MFA或绕过第二因素；由有权维护者按下述“离线MFA重置”操作。 |
-| 审计页提示缺少`audit.read` | 审计API和独立receiver已经运行，但当前账号没有独立审计授权；TOTP只满足近期认证，不会创造权限。fresh bootstrap按最小权限原则不授`audit.read`或`access_grant.manage`。须按已批准的安全职责、批准者和期限配置`audit.read / audit / security_administration`，不要直接改库或把组织管理员自动升级为审计员。 |
+| 审计页或用户管理提示缺少权限 | fresh/bootstrap `admin.user`从v15起固定拥有`audit.read`、`access_grant.manage`和`identity.manage`；先确认已升级到v15、已重新登录且近期MFA有效。其他账号默认零业务/安全权限，须按批准职责显式配置对应capability＋org scope＋`audit/security_administration` grant，不能靠TOTP、账号名称或直接改库获得。 |
 
 只有在**确认是全新测试安装且所有数据都可以永久删除**时，才能彻底重置：
 

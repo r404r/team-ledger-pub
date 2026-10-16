@@ -33,7 +33,7 @@ func TestLocalUserAdministrationRequiresPermissionAndInitialPasswordChange(t *te
 	exec("INSERT INTO capability_assignment(org_id,subject_id,capability,scope_kind,scope_id) VALUES(?,?,'identity.manage','org',?)", f.OrgID, f.Owner.SubjectID, f.OrgID)
 	exec("INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required) VALUES(?,?,?,'identity.manage','audit','org',?,'security_administration',?,?,0,0,1)", value.NewID(), f.OrgID, f.Owner.SubjectID, f.OrgID, f.Repo.BindTime(f.Now.Add(-time.Hour)), f.Repo.BindTime(f.Now.Add(time.Hour)))
 	keys := testsupport.MACKeys{Key: f.CSRFKey}
-	identities, err := identity.NewLocal(ctx, f.Repo, f.Repo, keys, sensitive.Cipher{Wrapper: httpLocalWrapper{}})
+	identities, err := identity.NewLocal(ctx, f.Repo, f.Repo, keys, sensitive.Cipher{Wrapper: unavailableUserTestWrapper{}}, sensitive.Cipher{Wrapper: httpLocalWrapper{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,4 +164,14 @@ func TestLocalUserAdministrationRequiresPermissionAndInitialPasswordChange(t *te
 	if err = f.Repo.DB.QueryRowContext(ctx, "SELECT count(*) FROM audit_event WHERE operation='OP-SEC-08' AND subject_id=?", f.Owner.SubjectID).Scan(&listAudits); err != nil || listAudits != 2 {
 		t.Fatal("user list audit missing", listAudits, err)
 	}
+}
+
+type unavailableUserTestWrapper struct{}
+
+func (unavailableUserTestWrapper) Wrap(context.Context, []byte) (sensitive.WrappedKey, error) {
+	return sensitive.WrappedKey{}, sensitive.ErrUnavailable
+}
+
+func (unavailableUserTestWrapper) Unwrap(context.Context, sensitive.WrappedKey) ([]byte, error) {
+	return nil, sensitive.ErrUnavailable
 }

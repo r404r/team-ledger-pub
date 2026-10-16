@@ -82,11 +82,12 @@ type LocalPasswordChangeRequest struct {
 }
 
 type localAuthenticator struct {
-	store   LocalStore
-	keys    LocalKeyService
-	cipher  sensitive.Cipher
-	fake    string
-	fakeKey sensitive.KeyReference
+	store          LocalStore
+	keys           LocalKeyService
+	mfaCipher      sensitive.Cipher
+	usernameCipher sensitive.Cipher
+	fake           string
+	fakeKey        sensitive.KeyReference
 }
 
 func CanonicalLocalUsername(raw string) (string, error) {
@@ -204,26 +205,26 @@ func verifyPHC(ctx context.Context, keys LocalKeyService, phc, password string, 
 	return err == nil && ok
 }
 
-func newLocalAuthenticator(ctx context.Context, store LocalStore, keys LocalKeyService, cipher sensitive.Cipher) (*localAuthenticator, error) {
-	if store == nil || keys == nil || cipher.Wrapper == nil {
+func newLocalAuthenticator(ctx context.Context, store LocalStore, keys LocalKeyService, mfaCipher, usernameCipher sensitive.Cipher) (*localAuthenticator, error) {
+	if store == nil || keys == nil || mfaCipher.Wrapper == nil || usernameCipher.Wrapper == nil {
 		return nil, fault.Unavailable
 	}
 	fake, reference, err := passwordPHC(ctx, keys, "teamledger-fake-password", []byte("local-fake-salt!"))
 	if err != nil {
 		return nil, err
 	}
-	return &localAuthenticator{store: store, keys: keys, cipher: cipher, fake: fake, fakeKey: reference}, nil
+	return &localAuthenticator{store: store, keys: keys, mfaCipher: mfaCipher, usernameCipher: usernameCipher, fake: fake, fakeKey: reference}, nil
 }
 
-func NewLocal(ctx context.Context, store Store, local LocalStore, keys LocalKeyService, cipher sensitive.Cipher) (*Service, error) {
-	if store == nil || local == nil || keys == nil || cipher.Wrapper == nil {
+func NewLocal(ctx context.Context, store Store, local LocalStore, keys LocalKeyService, mfaCipher, usernameCipher sensitive.Cipher) (*Service, error) {
+	if store == nil || local == nil || keys == nil || mfaCipher.Wrapper == nil || usernameCipher.Wrapper == nil {
 		return nil, fault.Unavailable
 	}
 	mode, err := local.IdentityMode(ctx)
 	if err != nil || mode != "local" {
 		return nil, fault.Unavailable
 	}
-	authenticator, err := newLocalAuthenticator(ctx, local, keys, cipher)
+	authenticator, err := newLocalAuthenticator(ctx, local, keys, mfaCipher, usernameCipher)
 	if err != nil {
 		return nil, err
 	}
@@ -313,7 +314,7 @@ func (s *Service) LocalLogin(ctx context.Context, request LocalLoginRequest) (Lo
 		if request.TOTPCode == "" {
 			return LoginResult{}, MFARequired
 		}
-		plain, openErr := s.local.cipher.Open(ctx, credential.Factor.Envelope.Context, credential.Factor.Envelope)
+		plain, openErr := s.local.mfaCipher.Open(ctx, credential.Factor.Envelope.Context, credential.Factor.Envelope)
 		if openErr != nil || len(plain) != totpSecretBytes {
 			clear(plain)
 			return LoginResult{}, fault.Unavailable

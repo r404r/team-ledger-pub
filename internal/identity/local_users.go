@@ -212,7 +212,7 @@ func (s *Service) ListLocalUsers(ctx context.Context, request LocalUserQuery) (L
 		records = records[:request.Limit]
 	}
 	for _, record := range records {
-		plain, openErr := s.local.cipher.Open(ctx, record.Username.Context, record.Username)
+		plain, openErr := s.local.usernameCipher.Open(ctx, record.Username.Context, record.Username)
 		if openErr != nil {
 			clear(plain)
 			return LocalUserPage{}, fault.Unavailable
@@ -261,7 +261,7 @@ func (s *Service) CreateLocalUser(ctx context.Context, request LocalUserRequest)
 	}
 	accountID, subjectID := value.NewID(), value.NewID()
 	binding := sensitive.Context{OrgID: current.OrgID, RecordID: accountID, VersionID: accountID, ObjectKind: "local_username", Purpose: "identity", SchemaType: "identity.local_username.v1", SchemaVersion: 1}
-	envelope, err := s.local.cipher.Seal(ctx, binding, []byte(username))
+	envelope, err := s.local.usernameCipher.Seal(ctx, binding, []byte(username))
 	if err != nil {
 		return LocalUserResult{}, fault.Unavailable
 	}

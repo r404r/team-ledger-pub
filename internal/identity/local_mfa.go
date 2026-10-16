@@ -164,7 +164,7 @@ func (s *Service) sealEnrollment(ctx context.Context, owner LocalSessionCredenti
 	}
 	generation++
 	binding := mfaContext(owner.Credential.OrgID, owner.Credential.AccountID, id, "local_mfa_enrollment")
-	envelope, err := s.local.cipher.Seal(ctx, binding, secret)
+	envelope, err := s.local.mfaCipher.Seal(ctx, binding, secret)
 	if err != nil {
 		return LocalMFAEnrollment{}, "", fault.Unavailable
 	}
@@ -205,7 +205,7 @@ func (s *Service) LocalMFAPending(ctx context.Context, sessionHash []byte) (Loca
 	if err != nil {
 		return LocalMFAPendingResult{}, err
 	}
-	plain, err := s.local.cipher.Open(ctx, enrollment.Envelope.Context, enrollment.Envelope)
+	plain, err := s.local.mfaCipher.Open(ctx, enrollment.Envelope.Context, enrollment.Envelope)
 	if err != nil || len(plain) != totpSecretBytes {
 		clear(plain)
 		return LocalMFAPendingResult{}, fault.Unavailable
@@ -223,7 +223,7 @@ func (s *Service) LocalMFAConfirm(ctx context.Context, sessionHash []byte, code,
 	if err != nil {
 		return LocalMFAConfirmResult{}, err
 	}
-	plain, err := s.local.cipher.Open(ctx, enrollment.Envelope.Context, enrollment.Envelope)
+	plain, err := s.local.mfaCipher.Open(ctx, enrollment.Envelope.Context, enrollment.Envelope)
 	if err != nil || len(plain) != totpSecretBytes {
 		clear(plain)
 		return LocalMFAConfirmResult{}, fault.Unavailable
@@ -236,7 +236,7 @@ func (s *Service) LocalMFAConfirm(ctx context.Context, sessionHash []byte, code,
 	}
 	factorID := value.NewID()
 	factorBinding := mfaContext(enrollment.OrgID, enrollment.AccountID, factorID, "local_mfa_factor")
-	factorEnvelope, err := s.local.cipher.Seal(ctx, factorBinding, plain)
+	factorEnvelope, err := s.local.mfaCipher.Seal(ctx, factorBinding, plain)
 	clear(plain)
 	if err != nil {
 		return LocalMFAConfirmResult{}, fault.Unavailable
@@ -266,7 +266,7 @@ func (s *Service) verifySessionFactors(ctx context.Context, owner LocalSessionCr
 	if owner.Session.AccessKind != "business" || credential.MFAStatus != "active" || credential.Factor == nil || !verifyPHC(ctx, s.local.keys, credential.PHC, password, sensitive.KeyReference{KeyID: credential.PepperKeyID, Version: credential.PepperVersion}) {
 		return 0, fault.Unauthenticated
 	}
-	plain, err := s.local.cipher.Open(ctx, credential.Factor.Envelope.Context, credential.Factor.Envelope)
+	plain, err := s.local.mfaCipher.Open(ctx, credential.Factor.Envelope.Context, credential.Factor.Envelope)
 	if err != nil || len(plain) != totpSecretBytes {
 		clear(plain)
 		return 0, fault.Unavailable

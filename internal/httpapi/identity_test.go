@@ -278,7 +278,7 @@ func TestLocalMFAHTTPEnrollmentCreatesBusinessSession(t *testing.T) {
 	if err = f.Repo.CreateLocalAccount(ctx, store.LocalAccountProvision{RequestID: value.NewID(), OrgID: f.OrgID, SubjectID: f.Owner.SubjectID, AccountID: accountID, UsernameDigest: username.Digest, UsernameKey: sensitive.KeyReference{KeyID: username.KeyID, Version: username.Version}, UsernameEnvelope: envelope, PepperKey: pepper, PasswordPHC: phc, Now: f.Now}); err != nil {
 		t.Fatal(err)
 	}
-	identities, err := identity.NewLocal(ctx, f.Repo, f.Repo, keys, sensitive.Cipher{Wrapper: httpLocalWrapper{}})
+	identities, err := identity.NewLocal(ctx, f.Repo, f.Repo, keys, sensitive.Cipher{Wrapper: httpLocalWrapper{}}, sensitive.Cipher{Wrapper: httpLocalWrapper{}})
 	if err != nil {
 		t.Fatal(err)
 	}

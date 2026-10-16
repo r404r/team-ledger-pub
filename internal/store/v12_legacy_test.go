@@ -194,6 +194,67 @@ func TestV15RefusesV11WithoutWriting(t *testing.T) {
 	}
 }
 
+func TestV15MigratesPersistedV14AuditOutboxWithoutClearingData(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(ctx, "sqlite", filepath.Join(t.TempDir(), "persisted-v14.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	tx, err := repo.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for version := 1; version <= 14; version++ {
+		ddl, checksum, loadErr := repo.migration(version)
+		if loadErr != nil {
+			t.Fatal(loadErr)
+		}
+		for _, statement := range migrationStatements(ddl) {
+			if _, err = tx.ExecContext(ctx, statement); err != nil {
+				t.Fatalf("build v14 statement: %v", err)
+			}
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO schema_version(version,backend,checksum) VALUES(?,?,?)", version, "sqlite", checksum); err != nil {
+			t.Fatal(err)
+		}
+	}
+	org := "10000000-0000-4000-8000-000000000021"
+	subject := "10000000-0000-4000-8000-000000000022"
+	event := "10000000-0000-4000-8000-000000000023"
+	request := "10000000-0000-4000-8000-000000000024"
+	for _, statement := range []struct {
+		sql  string
+		args []any
+	}{
+		{"INSERT INTO organization(id,timezone,graph_revision) VALUES(?,'UTC',1)", []any{org}},
+		{"INSERT INTO authorization_guard(org_id,auth_epoch) VALUES(?,1)", []any{org}},
+		{"INSERT INTO subject(org_id,id,active,auth_epoch) VALUES(?,?,1,1)", []any{org, subject}},
+		{"INSERT INTO audit_event(id,org_id,subject_id,operation,purpose,request_id,outcome,recorded_at) VALUES(?,?,?,'OP-ORG-04','organization_management',?,'allowed',1)", []any{event, org, subject, request}},
+		{"INSERT INTO audit_outbox(event_id,org_id,available_at) VALUES(?,?,1)", []any{event, org}},
+	} {
+		if _, err = tx.ExecContext(ctx, statement.sql, statement.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var events, outbox, versions int
+	if err = repo.DB.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM audit_event WHERE id=?),(SELECT count(*) FROM audit_outbox WHERE event_id=?),(SELECT max(version) FROM schema_version)", event, event).Scan(&events, &outbox, &versions); err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 || outbox != 1 || versions != 15 {
+		t.Fatalf("migrated audit event=%d outbox=%d schema=%d", events, outbox, versions)
+	}
+	if err = repo.CheckSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func legacySchemaSnapshot(t *testing.T, repo *Repository) string {
 	t.Helper()
 	var schema, ledger string
