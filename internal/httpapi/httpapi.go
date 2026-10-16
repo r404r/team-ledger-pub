@@ -154,7 +154,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodGet {
-		workbookUpload := r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/v1/compensation-adjustment-batches/") && strings.HasSuffix(r.URL.Path, "/imports")
+		workbookUpload := personnelWorkbookUpload(r) || r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/v1/compensation-adjustment-batches/") && strings.HasSuffix(r.URL.Path, "/imports")
 		if r.URL.RawQuery != "" && !workbookUpload || r.Header.Get("Origin") != h.origin || r.Header.Get("Sec-Fetch-Site") != "same-origin" || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(token)) != 1 {
 			h.fail(w, fault.Forbidden, requestID)
 			return
@@ -293,6 +293,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.interviewRoute(w, r, interview.Request{TokenHash: req.TokenHash, RequestID: req.RequestID, Purpose: req.Purpose, Key: req.Key}) {
+		return
+	}
+	if h.personnelImportRoute(w, r, req) {
 		return
 	}
 	if h.structureRoute(w, r, req) {

@@ -1,15 +1,12 @@
 package compensation
 
 import (
-	"archive/zip"
-	"bytes"
-	"encoding/xml"
 	"errors"
 	"fmt"
-	"io"
-	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/r404r/team-ledger/internal/xlsx"
 )
 
 const (
@@ -28,100 +25,31 @@ func workbookSafetyError(message string) error {
 	return &WorkbookSafetyError{message: message}
 }
 
-type xlsxSharedStrings struct {
-	Items []struct {
-		Text string `xml:"t"`
-		Runs []struct {
-			Text string `xml:"t"`
-		} `xml:"r"`
-	} `xml:"si"`
-}
-
-type xlsxWorksheet struct {
-	Rows []struct {
-		Cells []struct {
-			Reference string  `xml:"r,attr"`
-			Type      string  `xml:"t,attr"`
-			Formula   *string `xml:"f"`
-			Value     string  `xml:"v"`
-			Inline    struct {
-				Text string `xml:"t"`
-			} `xml:"is"`
-		} `xml:"c"`
-	} `xml:"sheetData>row"`
-}
-
 func ParseAdjustmentWorkbook(raw []byte, typ string) ([]BatchLineCommand, error) {
-	if len(raw) == 0 || len(raw) > maxWorkbookCompressed || typ != BatchNormal && typ != BatchSpecial {
+	if typ != BatchNormal && typ != BatchSpecial {
 		return nil, workbookSafetyError("invalid workbook")
 	}
-	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
-	if err != nil || len(zr.File) > maxWorkbookEntries {
-		return nil, workbookSafetyError("invalid workbook")
+	rows, err := xlsx.ReadFirstSheet(raw, xlsx.Limits{
+		CompressedBytes: maxWorkbookCompressed,
+		ExpandedBytes:   maxWorkbookExpanded,
+		Entries:         maxWorkbookEntries,
+	})
+	if err != nil {
+		return nil, workbookSafetyError(err.Error())
 	}
-	var expanded uint64
-	for _, file := range zr.File {
-		expanded += file.UncompressedSize64
-		if expanded > maxWorkbookExpanded {
-			return nil, workbookSafetyError("expanded workbook is too large")
-		}
-	}
-	shared := []string{}
-	if file := zipEntry(zr.File, "xl/sharedStrings.xml"); file != nil {
-		var values xlsxSharedStrings
-		if err = decodeZipXML(file, &values); err != nil {
-			return nil, workbookSafetyError("invalid shared strings")
-		}
-		for _, item := range values.Items {
-			text := item.Text
-			for _, run := range item.Runs {
-				text += run.Text
+	legacyRows := make([]map[int]string, 0, len(rows))
+	for _, source := range rows {
+		row := make(map[int]string, len(source.Cells))
+		for column, cell := range source.Cells {
+			value := cell.Text
+			if !cell.IsText && value != "" {
+				value = "#NUMERIC#" + value
 			}
-			shared = append(shared, text)
+			row[column] = value
 		}
+		legacyRows = append(legacyRows, row)
 	}
-	sheetFile := zipEntry(zr.File, "xl/worksheets/sheet1.xml")
-	if sheetFile == nil {
-		return nil, errors.New("sheet1 is required")
-	}
-	var sheet xlsxWorksheet
-	if err = decodeZipXML(sheetFile, &sheet); err != nil {
-		return nil, workbookSafetyError("invalid worksheet")
-	}
-	rows := make([]map[int]string, 0, len(sheet.Rows))
-	for _, source := range sheet.Rows {
-		row := make(map[int]string)
-		for _, cell := range source.Cells {
-			if cell.Formula != nil {
-				return nil, errors.New("formulas are not accepted")
-			}
-			column, ok := xlsxColumn(cell.Reference)
-			if !ok {
-				return nil, errors.New("invalid cell reference")
-			}
-			value := cell.Value
-			switch cell.Type {
-			case "s":
-				index, parseErr := strconv.Atoi(value)
-				if parseErr != nil || index < 0 || index >= len(shared) {
-					return nil, errors.New("invalid shared string")
-				}
-				value = shared[index]
-			case "inlineStr":
-				value = cell.Inline.Text
-			case "str":
-			case "":
-				if value != "" {
-					value = "#NUMERIC#" + value
-				}
-			default:
-				return nil, errors.New("unsupported cell type")
-			}
-			row[column] = strings.TrimSpace(value)
-		}
-		rows = append(rows, row)
-	}
-	return workbookLines(rows, typ)
+	return workbookLines(legacyRows, typ)
 }
 
 func workbookLines(rows []map[int]string, typ string) ([]BatchLineCommand, error) {
@@ -190,40 +118,6 @@ func workbookLines(rows []map[int]string, typ string) ([]BatchLineCommand, error
 		return nil, errors.New("workbook has no employee rows")
 	}
 	return out, nil
-}
-
-func zipEntry(files []*zip.File, name string) *zip.File {
-	for _, file := range files {
-		if file.Name == name {
-			return file
-		}
-	}
-	return nil
-}
-
-func decodeZipXML(file *zip.File, out any) error {
-	reader, err := file.Open()
-	if err != nil {
-		return err
-	}
-	defer reader.Close()
-	decoder := xml.NewDecoder(io.LimitReader(reader, maxWorkbookExpanded+1))
-	return decoder.Decode(out)
-}
-
-func xlsxColumn(reference string) (int, bool) {
-	column := 0
-	for _, char := range reference {
-		if char >= 'A' && char <= 'Z' {
-			column = column*26 + int(char-'A'+1)
-			continue
-		}
-		if char >= '0' && char <= '9' && column > 0 {
-			return column, true
-		}
-		return 0, false
-	}
-	return 0, false
 }
 
 func normalizeHeader(value string) string {
