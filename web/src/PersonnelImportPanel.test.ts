@@ -8,6 +8,17 @@ const MANAGER = '10000000-0000-4000-8000-000000000010'
 const EMPLOYEE = '10000000-0000-4000-8000-000000000011'
 const AS_OF = '2026-10-16'
 const SESSION = { subject_id: SUBJECT, org_id: ORG, auth_epoch: '1', capabilities: ['organization.read', 'organization.write', 'pii.read', 'pii.write'], csrf_token: 'csrf' }
+const BRANCH = '10000000-0000-4000-8000-000000000020'
+const BUSINESS_GROUP = '10000000-0000-4000-8000-000000000021'
+const DIVISION = '10000000-0000-4000-8000-000000000022'
+const DEPARTMENT = '10000000-0000-4000-8000-000000000023'
+const JOB_FAMILY = '10000000-0000-4000-8000-000000000024'
+const CAREER_LEVEL = '10000000-0000-4000-8000-000000000025'
+const workforce = {
+  location: 'Shanghai', branch_code: 'BRANCH-A', business_group_code: 'BG-A', division_code: 'DIV-A', department_code: 'DEP-A',
+  education_level: 'Master', position: '合成顾问', job_family_code: 'JF-A', career_level_code: 'P1',
+  branch_id: BRANCH, business_group_id: BUSINESS_GROUP, division_id: DIVISION, department_id: DEPARTMENT, job_family_id: JOB_FAMILY, career_level_id: CAREER_LEVEL,
+}
 
 function json(status: number, body: unknown) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -39,9 +50,9 @@ describe('personnel batch import panel', () => {
       const method = init.method ?? 'GET'
       const body = typeof init.body === 'string' ? JSON.parse(init.body) : init.body
       requests.push({ path, method, headers: new Headers(init.headers), body })
-      if (path.endsWith('/import-preview')) return json(200, { row_count: 2, errors: [], rows: [
-        { row_number: 2, staff_code: 'MGR-001', local_name: '合成主管', hire_date: AS_OF, departure_date: null },
-        { row_number: 3, staff_code: 'EMP-001', local_name: '合成员工', english_name: 'Synthetic Employee', email: 'employee@example.test', phone: '+86 21 5555 0100', profile_summary: '跨团队交付', manager_staff_code: 'MGR-001', hire_date: AS_OF, departure_date: null },
+      if (path.endsWith('/import-preview')) return json(200, { row_count: 2, catalog_revision: '4', graph_revision: '9', errors: [], rows: [
+        { ...workforce, row_number: 2, staff_code: 'MGR-001', local_name: '合成主管', hire_date: AS_OF, departure_date: null },
+        { ...workforce, row_number: 3, staff_code: 'EMP-001', local_name: '合成员工', english_name: 'Synthetic Employee', email: 'employee@example.test', phone: '+86 21 5555 0100', profile_summary: '跨团队交付', manager_staff_code: 'MGR-001', hire_date: AS_OF, departure_date: null },
       ] })
       if (path === '/api/v1/session') return json(200, { ...SESSION, auth_epoch: requests.some(request => request.path.endsWith('/workforce-changes')) ? '2' : '1' })
       if (path.endsWith('/workforce-catalogs')) return json(200, { catalog_revision: '4', graph_revision: '9' })
@@ -69,8 +80,8 @@ describe('personnel batch import panel', () => {
     const creates = requests.filter(request => request.path === `/api/v1/orgs/${ORG}/employees`)
     expect(creates).toHaveLength(2)
     expect(creates.map(request => request.body)).toEqual([
-      { profile: { local_name: '合成主管' }, lifecycle: { valid_from: AS_OF, valid_to: null }, staff_code: 'MGR-001', expected_catalog_revision: '4', expected_graph_revision: '9' },
-      { profile: { local_name: '合成员工', english_name: 'Synthetic Employee', work_contact: { email: 'employee@example.test', phone: '+86 21 5555 0100' }, profile_summary: '跨团队交付' }, lifecycle: { valid_from: AS_OF, valid_to: null }, staff_code: 'EMP-001', expected_catalog_revision: '4', expected_graph_revision: '9' },
+      { profile: { local_name: '合成主管' }, lifecycle: { valid_from: AS_OF, valid_to: null }, staff_code: 'MGR-001', employment: { legal_entity_id: BRANCH, location_code: 'Shanghai' }, education: { level: 'Master' }, job_assignment: { department_id: DEPARTMENT, job_family_id: JOB_FAMILY, career_level_id: CAREER_LEVEL, position: { title: '合成顾问' } }, expected_catalog_revision: '4', expected_graph_revision: '9' },
+      { profile: { local_name: '合成员工', english_name: 'Synthetic Employee', work_contact: { email: 'employee@example.test', phone: '+86 21 5555 0100' }, profile_summary: '跨团队交付' }, lifecycle: { valid_from: AS_OF, valid_to: null }, staff_code: 'EMP-001', employment: { legal_entity_id: BRANCH, location_code: 'Shanghai' }, education: { level: 'Master' }, job_assignment: { department_id: DEPARTMENT, job_family_id: JOB_FAMILY, career_level_id: CAREER_LEVEL, position: { title: '合成顾问' } }, expected_catalog_revision: '4', expected_graph_revision: '9' },
     ])
     const reporting = requests.find(request => request.path.endsWith('/workforce-changes'))!
     expect(reporting.body).toEqual({
@@ -92,29 +103,24 @@ describe('personnel batch import panel', () => {
     page.unmount()
   })
 
-  it('replays a 502 employee result with its original revision despite an unrelated failed row and newer graph', async () => {
+  it('replays a 502 employee result with its frozen preview revision despite an unrelated failed row', async () => {
     const creates: { key: string | null; body: string }[] = []
     let uncertainAttempt = 0
-    let catalogRead = 0
     vi.stubGlobal('fetch', async (input: RequestInfo | URL, init: RequestInit = {}) => {
       const path = new URL(String(input), location.href).pathname
-      if (path.endsWith('/import-preview')) return json(200, { row_count: 2, errors: [], rows: [
-        { row_number: 2, staff_code: 'DUP-001', local_name: '合成冲突员工', hire_date: AS_OF, departure_date: null },
-        { row_number: 3, staff_code: 'EMP-002', local_name: '合成重试员工', manager_staff_code: 'OLD-MGR', hire_date: AS_OF, departure_date: null },
+      if (path.endsWith('/import-preview')) return json(200, { row_count: 2, catalog_revision: '4', graph_revision: '9', errors: [], rows: [
+        { ...workforce, row_number: 2, staff_code: 'DUP-001', local_name: '合成冲突员工', hire_date: AS_OF, departure_date: null },
+        { ...workforce, row_number: 3, staff_code: 'EMP-002', local_name: '合成重试员工', manager_staff_code: 'OLD-MGR', hire_date: AS_OF, departure_date: null },
       ] })
       if (path === '/api/v1/session') return json(200, SESSION)
-      if (path.endsWith('/workforce-catalogs')) {
-        catalogRead++
-        return json(200, { catalog_revision: '4', graph_revision: catalogRead === 1 ? '9' : '10' })
-      }
       if (path.endsWith('/employees/query')) {
         const query = JSON.parse(String(init.body))
-        if (catalogRead === 1 && !query.cursor) return json(200, { graph_revision: '9', items: [], next_cursor: 'synthetic-page-2', search_incomplete: true })
-        if (catalogRead === 1 && query.cursor === 'synthetic-page-2') return json(200, {
+        if (!query.cursor) return json(200, { graph_revision: '9', items: [], next_cursor: 'synthetic-page-2', search_incomplete: true })
+        if (query.cursor === 'synthetic-page-2') return json(200, {
           graph_revision: '9', next_cursor: null, search_incomplete: false,
           items: [{ id: MANAGER, lifecycle: { valid_from: AS_OF, valid_to: null }, identifiers: [{ kind: 'staff_code', staff_code: 'OLD-MGR' }] }],
         })
-        return json(200, { graph_revision: '10', items: [], next_cursor: null, search_incomplete: false })
+        throw new Error('unexpected directory cursor')
       }
       if (path === `/api/v1/orgs/${ORG}/employees`) {
         creates.push({ key: new Headers(init.headers).get('Idempotency-Key'), body: String(init.body) })
@@ -123,6 +129,7 @@ describe('personnel batch import panel', () => {
         uncertainAttempt++
         return uncertainAttempt === 1 ? json(502, {}) : json(201, { id: EMPLOYEE, profile_revision: '1', workforce_revision: '2', graph_revision: '9' })
       }
+      if (path.endsWith('/workforce-changes')) return json(409, {})
       throw new Error(`unexpected request ${path}`)
     })
     const page = mount(PersonnelImportPanel, { props: { session: SESSION, asOf: AS_OF } })

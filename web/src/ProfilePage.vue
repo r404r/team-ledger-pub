@@ -43,7 +43,18 @@ type Employee = {
   direct_manager?: Reporting
   hod?: Reporting
 }
-type CatalogState = { catalog_revision: string; graph_revision: string }
+type CatalogEntry = { id: string; code: string; kind?: string; label?: string; display_name?: string; active?: boolean }
+type CatalogState = {
+  catalog_revision: string
+  graph_revision: string
+  legal_entities: CatalogEntry[]
+  locations: string[]
+  org_units: CatalogEntry[]
+  org_unit_parents: { child_unit_id: string; parent_unit_id: string; active?: boolean }[]
+  education_levels: { code: string; rank: number }[]
+  job_families: CatalogEntry[]
+  career_levels: CatalogEntry[]
+}
 type ManagerDirectory = { items: Employee[]; graph_revision: string }
 
 type Operation = { generation: number; controller: AbortController }
@@ -86,12 +97,20 @@ const form = reactive({
   summary: '',
   staffCode: '',
   managerEmployeeId: '',
+  legalEntityId: '',
+  locationCode: '',
+  departmentId: '',
+  educationLevel: '',
+  positionTitle: '',
+  jobFamilyId: '',
+  careerLevelId: '',
   managerSearch: '',
   validFrom: '',
   validTo: '',
   editReason: '',
 })
 const managerOptions = shallowRef<Employee[]>([])
+const catalogs = shallowRef<CatalogState | null>(null)
 const catalogRevision = ref('')
 const graphRevision = ref('')
 const commandUncertain = ref(false)
@@ -136,11 +155,19 @@ function clearSensitive() {
   form.email = ''
   form.phone = ''
   form.summary = ''
+  form.legalEntityId = ''
+  form.locationCode = ''
+  form.departmentId = ''
+  form.educationLevel = ''
+  form.positionTitle = ''
+  form.jobFamilyId = ''
+  form.careerLevelId = ''
   form.validFrom = ''
   form.staffCode = ''
   form.managerEmployeeId = ''
   form.managerSearch = ''
   managerOptions.value = []
+  catalogs.value = null
   catalogRevision.value = ''
   graphRevision.value = ''
   form.validTo = ''
@@ -229,21 +256,39 @@ async function readSession(operation: Operation, allowEpochAdvance = false) {
   return next
 }
 
+function validCatalogState(value: CatalogState | null) {
+  return Boolean(value && revisionPattern.test(value.catalog_revision) && revisionPattern.test(value.graph_revision) &&
+    Array.isArray(value.legal_entities) && Array.isArray(value.locations) && Array.isArray(value.org_units) &&
+    Array.isArray(value.org_unit_parents) && Array.isArray(value.education_levels) &&
+    Array.isArray(value.job_families) && Array.isArray(value.career_levels))
+}
+
+async function readCatalogState(operation: Operation, effectiveDate: string) {
+  const next = await request<CatalogState>(`/orgs/${session.value!.org_id}/workforce-catalogs?${new URLSearchParams({ as_of: effectiveDate, limit: '100' })}`, operation)
+  if (!validCatalogState(next)) throw new ApiFailure(503)
+  catalogs.value = next
+  catalogRevision.value = next.catalog_revision
+  graphRevision.value = next.graph_revision
+  return next
+}
+
 async function readCreationContext(operation: Operation, search = '') {
   const org = session.value!.org_id
-  const queryBody: Record<string, unknown> = { as_of: asOf.value, lifecycle: 'active', limit: 100, include_profile: true }
+  const effectiveDate = validDate(form.validFrom) ? form.validFrom : asOf.value
+  const queryBody: Record<string, unknown> = { as_of: effectiveDate, lifecycle: 'active', limit: 100, include_profile: true }
   if (search) queryBody.q = search
-  const [catalogs, directory] = await Promise.all([
-    request<CatalogState>(`/orgs/${org}/workforce-catalogs?${new URLSearchParams({ as_of: asOf.value, limit: '100' })}`, operation),
+  const [nextCatalogs, directory] = await Promise.all([
+    request<CatalogState>(`/orgs/${org}/workforce-catalogs?${new URLSearchParams({ as_of: effectiveDate, limit: '100' })}`, operation),
     postQuery<ManagerDirectory>(`/orgs/${org}/employees/query`, operation, queryBody),
   ])
-  if (!catalogs || !revisionPattern.test(catalogs.catalog_revision) || !revisionPattern.test(catalogs.graph_revision) ||
-      !directory || !revisionPattern.test(directory.graph_revision) || catalogs.graph_revision !== directory.graph_revision ||
+  if (!validCatalogState(nextCatalogs) ||
+      !directory || !revisionPattern.test(directory.graph_revision) || nextCatalogs.graph_revision !== directory.graph_revision ||
       !Array.isArray(directory.items) || directory.items.some(item => !uuidPattern.test(item.id) || !item.profile)) {
     throw new ApiFailure(503)
   }
-  catalogRevision.value = catalogs.catalog_revision
-  graphRevision.value = catalogs.graph_revision
+  catalogs.value = nextCatalogs
+  catalogRevision.value = nextCatalogs.catalog_revision
+  graphRevision.value = nextCatalogs.graph_revision
   if (form.managerEmployeeId && !directory.items.some(item => item.id === form.managerEmployeeId)) form.managerEmployeeId = ''
   managerOptions.value = directory.items
 }
@@ -253,6 +298,34 @@ function managerLabel(manager: Employee) {
   const code = manager.identifiers?.find(identifier => identifier.kind === 'staff_code')?.staff_code
   return code ? `${name} · ${code}` : name
 }
+const legalEntityOptions = computed(() => catalogs.value?.legal_entities.filter(item => item.active !== false) ?? [])
+const departmentOptions = computed(() => catalogs.value?.org_units.filter(item => item.kind === 'department' && item.active !== false) ?? [])
+const jobFamilyOptions = computed(() => catalogs.value?.job_families.filter(item => item.active !== false) ?? [])
+const careerLevelOptions = computed(() => catalogs.value?.career_levels.filter(item => item.active !== false) ?? [])
+function catalogText(item?: CatalogEntry) {
+  if (!item) return '未维护'
+  const name = item.display_name || item.label
+  return name ? `${name} · ${item.code}` : item.code
+}
+function entityText(id?: string) { return catalogText(catalogs.value?.legal_entities.find(item => item.id === id)) }
+function orgUnit(id?: string) { return catalogs.value?.org_units.find(item => item.id === id) }
+function orgParent(id?: string) {
+  const parentID = catalogs.value?.org_unit_parents.find(item => item.active !== false && item.child_unit_id === id)?.parent_unit_id
+  return orgUnit(parentID)
+}
+function departmentHierarchy(id?: string) {
+  const department = orgUnit(id)
+  const division = orgParent(department?.id)
+  const group = orgParent(division?.id)
+  return { group, division, department }
+}
+function departmentText(id?: string) {
+  const hierarchy = departmentHierarchy(id)
+  return [hierarchy.group, hierarchy.division, hierarchy.department].map(catalogText).join(' → ')
+}
+function jobFamilyText(id?: string) { return catalogText(catalogs.value?.job_families.find(item => item.id === id)) }
+function careerLevelText(id?: string) { return catalogText(catalogs.value?.career_levels.find(item => item.id === id)) }
+
 
 async function readEmployee(id: string, operation: Operation) {
   const query = new URLSearchParams({ as_of: asOf.value, include_profile: 'true' })
@@ -278,7 +351,6 @@ async function readEmployee(id: string, operation: Operation) {
       throw new ApiFailure(503)
     }
   } else {
-    clearSensitive()
     delete next.profile_revision
   }
   const factValid = (fact: Fact) => uuidPattern.test(fact.id) && validDate(fact.valid_from) && (fact.valid_to === null || validDate(fact.valid_to) && fact.valid_to > fact.valid_from)
@@ -324,6 +396,33 @@ async function searchManagers() {
     }
   }
 }
+async function changeHireDate() {
+  if (busy.value || commandUncertain.value || routeKind.value !== 'create' || !session.value || !validDate(form.validFrom)) return
+  form.legalEntityId = ''
+  form.locationCode = ''
+  form.departmentId = ''
+  form.educationLevel = ''
+  form.positionTitle = ''
+  form.jobFamilyId = ''
+  form.careerLevelId = ''
+  form.managerEmployeeId = ''
+  const original = session.value
+  const operation = beginOperation('loading')
+  try {
+    const current = await readSession(operation)
+    if (!sameSession(original, current) || !canCreate.value) throw new ApiFailure(403)
+    await readCreationContext(operation)
+    notice.value = `已按入职日 ${form.validFrom} 刷新可选目录。`
+  } catch (cause) {
+    showFailure(cause, operation)
+  } finally {
+    if (isCurrent(operation)) {
+      phase.value = 'idle'
+      controller = null
+    }
+  }
+}
+
 
 function updateImportSession(payload: { session: Session; catalogRevision: string; graphRevision: string }) {
   if (!session.value || !sameIdentity(session.value, payload.session)) {
@@ -356,9 +455,10 @@ async function refresh(updateUrl = true) {
     }
     if (updateUrl) updateAddress()
     if (routeKind.value === 'employee' && employeeId.value) {
-      await readEmployee(employeeId.value, operation)
+      await Promise.all([readEmployee(employeeId.value, operation), readCatalogState(operation, asOf.value)])
     } else {
       if (!canCreate.value) throw new ApiFailure(403)
+      form.validFrom = asOf.value
       await readCreationContext(operation)
     }
   } catch (cause) {
@@ -400,6 +500,10 @@ async function save() {
   if (!validDate(asOf.value) || (!form.localName.trim() && !form.englishName.trim()) ||
       (creating && (!form.staffCode || form.staffCode.trim() !== form.staffCode ||
         !catalogRevision.value || !graphRevision.value ||
+        !uuidPattern.test(form.legalEntityId) || !catalogs.value?.locations.includes(form.locationCode) ||
+        !uuidPattern.test(form.departmentId) || !uuidPattern.test(form.jobFamilyId) || !uuidPattern.test(form.careerLevelId) ||
+        !['Master', 'Bachelor', 'Diploma'].includes(form.educationLevel) ||
+        !form.positionTitle.trim() || form.positionTitle.trim() !== form.positionTitle ||
         form.managerEmployeeId !== '' && !uuidPattern.test(form.managerEmployeeId) ||
         !validDate(form.validFrom) ||
         (form.validTo !== '' && (!validDate(form.validTo) || form.validTo <= form.validFrom)))) ||
@@ -434,6 +538,14 @@ async function save() {
           profile,
           lifecycle: { valid_from: form.validFrom, valid_to: form.validTo || null },
           staff_code: form.staffCode,
+          employment: { legal_entity_id: form.legalEntityId, location_code: form.locationCode },
+          education: { level: form.educationLevel },
+          job_assignment: {
+            department_id: form.departmentId,
+            job_family_id: form.jobFamilyId,
+            career_level_id: form.careerLevelId,
+            position: { title: form.positionTitle },
+          },
           ...(form.managerEmployeeId ? { manager_employee_id: form.managerEmployeeId } : {}),
           expected_catalog_revision: catalogRevision.value,
           expected_graph_revision: graphRevision.value,
@@ -573,7 +685,7 @@ onBeforeUnmount(() => {
       <header class="profile-page-heading">
         <p class="eyebrow">人员主数据</p>
         <h1>人员资料</h1>
-        <p>建立并维护员工身份资料；创建时同时登记Staff Code与初始直属主管，后续任职、组织关系和学历在组织模块维护。</p>
+        <p>建立并维护完整员工主数据；创建时一次登记 Staff Code、雇佣关系、组织任职、学历与直属主管。</p>
       </header>
 
       <form v-if="!validDate(props.queryDate ?? '')" class="profile-query" aria-label="人员资料查询条件" @submit.prevent="refresh()">
@@ -593,22 +705,17 @@ onBeforeUnmount(() => {
       <p v-if="notice" role="status">{{ notice }}</p>
 
       <section v-if="details && !queuedViewDate" aria-label="当前获准的人员资料">
-        <dl>
-          <dt>员工 ID</dt>
-          <dd>{{ details.id }}</dd>
-          <template v-if="details.profile_revision !== undefined">
-            <dt>资料版本（profile_revision）</dt>
-            <dd>{{ details.profile_revision }}</dd>
-          </template>
-          <dt>业务查询日（as_of）</dt>
-          <dd>{{ details.as_of }}</dd>
-          <dt>当前授权判断日</dt>
-          <dd>{{ details.authorization_date }}</dd>
-          <dt>入职日</dt>
-          <dd>{{ details.lifecycle.valid_from }}</dd>
-          <dt>退职日</dt>
-          <dd>{{ details.lifecycle.valid_to ?? '未退职' }}</dd>
-        </dl>
+        <details class="system-records">
+          <summary>系统记录</summary>
+          <dl>
+            <dt>员工 ID</dt><dd>{{ details.id }}</dd>
+            <template v-if="details.profile_revision !== undefined"><dt>资料版本</dt><dd>{{ details.profile_revision }}</dd></template>
+            <dt>查看日期</dt><dd>{{ details.as_of }}</dd>
+            <dt>当前授权判断日</dt><dd>{{ details.authorization_date }}</dd>
+            <dt>入职日</dt><dd>{{ details.lifecycle.valid_from }}</dd>
+            <dt>退职日</dt><dd>{{ details.lifecycle.valid_to ?? '未退职' }}</dd>
+          </dl>
+        </details>
         <dl v-if="details.profile">
           <dt>本地姓名</dt>
           <dd>{{ details.profile.local_name || '未填写' }}</dd>
@@ -637,15 +744,26 @@ onBeforeUnmount(() => {
           <a :href="`/orgs/${details.org_id}/tree?as_of=${details.as_of}`" @click="navigate($event, `/orgs/${details.org_id}/tree?as_of=${details.as_of}`)">组织树</a>
           <a :href="`/orgs/${details.org_id}/employees?as_of=${details.as_of}`" @click="navigate($event, `/orgs/${details.org_id}/employees?as_of=${details.as_of}`)">员工目录</a>
         </nav>
-        <section aria-label="查询日员工主数据">
-          <h2>{{ details.as_of }} 员工主数据</h2>
-          <p v-if="details.graph_revision">图版本 {{ details.graph_revision }}（独立于个人资料版本）</p>
-          <h3>工号</h3><p v-if="!details.identifiers.length">无获准工号资料。</p><ul><li v-for="fact in details.identifiers" :key="fact.id">{{ fact.kind }} · {{ fact.staff_code || '正文未授权' }} · [{{ fact.valid_from }}, {{ fact.valid_to ?? '∞' }})</li></ul>
-          <h3>雇佣</h3><p v-if="!details.employment.length">查询日无雇佣事实。</p><ul><li v-for="fact in details.employment" :key="fact.id">事实 {{ fact.id }} · {{ fact.kind }} · {{ fact.location_code }} · 法分公司 {{ fact.legal_entity_id }} · [{{ fact.valid_from }}, {{ fact.valid_to ?? '∞' }})</li></ul>
-          <h3>学历</h3><p v-if="!details.education.length">无获准学历资料。</p><ul><li v-for="fact in details.education" :key="fact.id">{{ fact.level }}<span v-if="fact.institution"> · {{ fact.institution }}</span><span v-if="fact.field"> · {{ fact.field }}</span><span v-if="fact.award_date"> · {{ fact.award_date }}</span></li></ul>
-          <h3>单一任职</h3><p v-if="!details.job_assignments.length">查询日无任职事实。</p><ul><li v-for="fact in details.job_assignments" :key="fact.id">Department {{ fact.department_id }}<span v-if="fact.job_family_id"> · Job Family {{ fact.job_family_id }}</span><span v-if="fact.career_level_id"> · Career Level {{ fact.career_level_id }}</span><span v-if="fact.position"> · {{ fact.position.title }}</span></li></ul>
-          <h3>直属主管 / HOD</h3><p v-if="details.direct_manager">同一administrative事实 {{ details.direct_manager.id }} · {{ details.direct_manager.manager_employee_id }}</p><p v-else>查询日无直属主管。</p>
-          <h3>Dotted reporting</h3><ul><li v-for="fact in details.reporting_lines.filter((fact) => fact.kind === 'dotted')" :key="fact.id">{{ fact.manager_employee_id }}</li></ul>
+        <section class="employee-master-card" aria-label="查询日员工主数据">
+          <header><div><p class="eyebrow">员工信息 · Employee Information</p><h2>{{ details.as_of }} 有效资料</h2></div><span class="status-pill">{{ details.lifecycle.valid_to ? '已退职' : '在职' }}</span></header>
+          <dl class="employee-master-grid">
+            <div><dt>工号 <small>Staff Code</small></dt><dd>{{ details.identifiers.find(item => item.kind === 'staff_code')?.staff_code || '未维护或正文未授权' }}</dd></div>
+            <div><dt>姓名 <small>Staff Name</small></dt><dd>{{ details.profile?.local_name || '未维护' }}</dd></div>
+            <div><dt>姓名 <small>English Name</small></dt><dd>{{ details.profile?.english_name || '未维护' }}</dd></div>
+            <div><dt>地点 <small>Location</small></dt><dd>{{ details.employment[0]?.location_code || '未维护' }}</dd></div>
+            <div><dt>所在公司 <small>Branch English</small></dt><dd>{{ entityText(details.employment[0]?.legal_entity_id) }}</dd></div>
+            <div><dt>业务单元 <small>Business Group</small></dt><dd>{{ catalogText(departmentHierarchy(details.job_assignments[0]?.department_id).group) }}</dd></div>
+            <div><dt>目前事业部 <small>Division</small></dt><dd>{{ catalogText(departmentHierarchy(details.job_assignments[0]?.department_id).division) }}</dd></div>
+            <div><dt>目前部门 <small>Department</small></dt><dd>{{ catalogText(departmentHierarchy(details.job_assignments[0]?.department_id).department) }}</dd></div>
+            <div><dt>学历 <small>Latest Education</small></dt><dd>{{ details.education[0]?.level || '未维护' }}</dd></div>
+            <div><dt>入职日 <small>Date of Employment</small></dt><dd>{{ details.employment[0]?.valid_from || details.lifecycle.valid_from }}</dd></div>
+            <div><dt>职位 <small>Position</small></dt><dd>{{ details.job_assignments[0]?.position?.title || '未维护或正文未授权' }}</dd></div>
+            <div><dt>职系 <small>Job Family</small></dt><dd>{{ jobFamilyText(details.job_assignments[0]?.job_family_id) }}</dd></div>
+            <div><dt>职级 <small>Career Level</small></dt><dd>{{ careerLevelText(details.job_assignments[0]?.career_level_id) }}</dd></div>
+            <div><dt>直属主管 <small>HOD</small></dt><dd>{{ details.direct_manager ? details.direct_manager.manager_employee_id : '未维护' }}</dd></div>
+          </dl>
+          <p class="financial-boundary">月基本工资属于独立财务授权范围，请在“员工薪酬”中查看；人员资料不会复制或暴露薪资。</p>
+          <details class="master-data-state"><summary>数据状态与其他关系</summary><p v-if="details.graph_revision">组织图版本 {{ details.graph_revision }}</p><p v-for="fact in details.employment" :key="fact.id">雇佣记录 {{ fact.id }}</p><p v-for="fact in details.job_assignments" :key="fact.id">任职记录 {{ fact.id }}</p><p v-if="!details.direct_manager">查询日无直属主管</p><ul><li v-for="fact in details.reporting_lines.filter((fact) => fact.kind === 'dotted')" :key="fact.id">Dotted reporting · {{ fact.manager_employee_id }}</li></ul></details>
         </section>
         <button v-if="canEdit && !editing" type="button" :disabled="busy" @click="beginEdit">更正资料</button>
       </section>
@@ -661,7 +779,7 @@ onBeforeUnmount(() => {
       <form v-if="session && ((routeKind === 'create' && canCreate) || editing)" class="profile-editor" @submit.prevent="save">
         <fieldset :disabled="busy">
           <legend>{{ routeKind === 'create' ? '创建人员' : '完整更正个人资料' }}</legend>
-          <p class="profile-form-lead">{{ routeKind === 'create' ? '一次提交基本资料、全集团 Staff Code 与直属主管；任一项失败都不会留下半成品员工。' : '本次保存将完整替换个人资料；未填写的可选字段不会继续保留。' }}</p>
+          <p class="profile-form-lead">{{ routeKind === 'create' ? '一次提交基本资料、Staff Code、雇佣、学历、单一任职与直属主管；任一项失败都不会留下半成品员工。' : '本次保存将完整替换个人资料；未填写的可选字段不会继续保留。' }}</p>
 
           <div class="profile-form-section">
             <div class="profile-section-heading">
@@ -676,6 +794,51 @@ onBeforeUnmount(() => {
               <label class="profile-field" for="profile-english-name">
                 <span>英文姓名 <small>english_name</small></span>
                 <input id="profile-english-name" v-model="form.englishName" name="english_name" :readonly="commandUncertain" autocomplete="off" />
+              </label>
+            </div>
+          </div>
+
+          <div v-if="routeKind === 'create'" class="profile-form-section">
+            <div class="profile-section-heading">
+              <h2>雇佣与组织任职</h2>
+              <p>目录按入职日读取；Business Group 与 Division 由所选 Department 的固定父链派生。</p>
+            </div>
+            <div class="profile-form-grid">
+              <label class="profile-field" for="profile-valid-from">
+                <span>入职日 <small>Date of Employment · 必填</small></span>
+                <input id="profile-valid-from" v-model="form.validFrom" name="valid_from" type="date" required :readonly="commandUncertain" @change="changeHireDate" />
+              </label>
+              <label class="profile-field" for="profile-valid-to">
+                <span>退职日 <small>Departure Date · 可留空</small></span>
+                <input id="profile-valid-to" v-model="form.validTo" name="valid_to" type="date" :readonly="commandUncertain" />
+              </label>
+              <label class="profile-field" for="profile-branch">
+                <span>所在公司 <small>Branch English · 必填</small></span>
+                <select id="profile-branch" v-model="form.legalEntityId" required :disabled="commandUncertain"><option value="">请选择</option><option v-for="item in legalEntityOptions" :key="item.id" :value="item.id">{{ catalogText(item) }}</option></select>
+              </label>
+              <label class="profile-field" for="profile-location">
+                <span>地点 <small>Location · 必填</small></span>
+                <select id="profile-location" v-model="form.locationCode" required :disabled="commandUncertain"><option value="">请选择</option><option v-for="item in catalogs?.locations ?? []" :key="item" :value="item">{{ item }}</option></select>
+              </label>
+              <label class="profile-field profile-field-wide" for="profile-department">
+                <span>组织层级 <small>Business Group → Division → Department · 必填</small></span>
+                <select id="profile-department" v-model="form.departmentId" required :disabled="commandUncertain"><option value="">请选择Department</option><option v-for="item in departmentOptions" :key="item.id" :value="item.id">{{ departmentText(item.id) }}</option></select>
+              </label>
+              <label class="profile-field" for="profile-education">
+                <span>学历 <small>Latest Education · 必填</small></span>
+                <select id="profile-education" v-model="form.educationLevel" required :disabled="commandUncertain"><option value="">请选择</option><option v-for="item in catalogs?.education_levels ?? []" :key="item.code" :value="item.code">{{ item.code }}</option></select>
+              </label>
+              <label class="profile-field" for="profile-position">
+                <span>职位 <small>Position · 必填</small></span>
+                <input id="profile-position" v-model="form.positionTitle" maxlength="256" required :readonly="commandUncertain" autocomplete="off" />
+              </label>
+              <label class="profile-field" for="profile-job-family">
+                <span>职系 <small>Job Family · 必填</small></span>
+                <select id="profile-job-family" v-model="form.jobFamilyId" required :disabled="commandUncertain"><option value="">请选择</option><option v-for="item in jobFamilyOptions" :key="item.id" :value="item.id">{{ catalogText(item) }}</option></select>
+              </label>
+              <label class="profile-field" for="profile-career-level">
+                <span>职级 <small>Career Level · 必填</small></span>
+                <select id="profile-career-level" v-model="form.careerLevelId" required :disabled="commandUncertain"><option value="">请选择</option><option v-for="item in careerLevelOptions" :key="item.id" :value="item.id">{{ catalogText(item) }}</option></select>
               </label>
             </div>
           </div>
@@ -728,23 +891,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <div v-if="routeKind === 'create'" class="profile-form-section">
-            <div class="profile-section-heading">
-              <h2>入职与退职</h2>
-              <p>明确人员记录的入职日与退职日；退职日可在创建后再维护。</p>
-            </div>
-            <div class="profile-form-grid">
-              <label class="profile-field" for="profile-valid-from">
-                <span>入职日 <small>valid_from</small></span>
-                <input id="profile-valid-from" v-model="form.validFrom" name="valid_from" type="date" required :readonly="commandUncertain" />
-              </label>
-              <label class="profile-field" for="profile-valid-to">
-                <span>退职日 <small>valid_to · 可留空</small></span>
-                <input id="profile-valid-to" v-model="form.validTo" name="valid_to" type="date" :readonly="commandUncertain" />
-              </label>
-            </div>
-          </div>
-          <div v-else class="profile-form-section">
+          <div v-if="routeKind !== 'create'" class="profile-form-section">
             <div class="profile-section-heading">
               <h2>更正依据</h2>
               <p>说明本次完整更正的业务原因；不会修改任职或组织结构。</p>
@@ -918,6 +1065,18 @@ onBeforeUnmount(() => {
   white-space: pre-wrap;
 }
 
+#app .employee-master-card { margin: 1.25rem 0; padding: 1.35rem; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-sm); }
+#app .employee-master-card > header { display: flex; align-items: start; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
+#app .employee-master-card h2 { margin: .2rem 0 0; font-size: 1.25rem; }
+#app .status-pill { padding: .3rem .65rem; border-radius: 999px; background: var(--success-50); color: var(--success-700); font-size: .76rem; font-weight: 750; }
+#app .employee-master-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; border-top: 1px solid var(--line-soft); border-left: 1px solid var(--line-soft); }
+#app .employee-master-grid > div { min-width: 0; padding: .9rem; border-right: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); }
+#app .employee-master-grid dt { margin: 0 0 .35rem; color: var(--ink-600); font-size: .75rem; }
+#app .employee-master-grid dt small { display: block; color: var(--ink-500); font-family: var(--font-mono); font-weight: 560; }
+#app .employee-master-grid dd { color: var(--ink-900); font-weight: 680; }
+#app .financial-boundary { margin: 1rem 0 0; padding: .75rem; border-radius: var(--radius-md); background: var(--surface-muted); color: var(--ink-600); font-size: .78rem; }
+#app .system-records, #app .master-data-state { margin: .75rem 0; color: var(--ink-600); }
+
 @media (max-width: 760px) {
   #app .profile-query {
     grid-template-columns: 1fr;
@@ -957,6 +1116,9 @@ onBeforeUnmount(() => {
 
   #app .profile-form-actions button {
     width: 100%;
+  }
+  #app .employee-master-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>

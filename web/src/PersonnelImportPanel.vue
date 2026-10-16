@@ -13,15 +13,30 @@ type ImportRow = {
   staff_code: string
   local_name?: string
   english_name?: string
+  location: string
+  branch_code: string
+  business_group_code: string
+  division_code: string
+  department_code: string
+  education_level: string
+  hire_date: string
+  position: string
+  job_family_code: string
+  career_level_code: string
+  manager_staff_code?: string
+  departure_date: string | null
   email?: string
   phone?: string
   profile_summary?: string
-  manager_staff_code?: string
-  hire_date: string
-  departure_date: string | null
+  branch_id: string
+  business_group_id: string
+  division_id: string
+  department_id: string
+  job_family_id: string
+  career_level_id: string
 }
 type ImportIssue = { row_number: number; field: string; code: string }
-type Preview = { rows: ImportRow[]; errors: ImportIssue[]; row_count: number }
+type Preview = { rows: ImportRow[]; errors: ImportIssue[]; row_count: number; catalog_revision: string; graph_revision: string }
 type Employee = {
   id: string
   lifecycle: { valid_from: string; valid_to: string | null }
@@ -75,6 +90,12 @@ const issueMessages: Record<string, string> = {
   field_too_large: '字段超过允许长度，预览未回传其内容',
   manager_cycle: '同一文件内的直属主管关系形成自引用或闭环',
   unexpected_column: '存在模板以外的非空列',
+  invalid_location: 'Location必须为Shanghai、Wuxi或Tokyo',
+  invalid_education_level: '学历必须为Master、Bachelor或Diploma',
+  invalid_position: '职位不能为空或超过允许长度',
+  invalid_catalog_code: '目录Code不能为空或格式不正确',
+  unknown_catalog_code: '该入职日没有唯一有效的目录Code',
+  organization_hierarchy_mismatch: 'Business Group、Division与Department层级不一致',
 }
 const statusLabels: Record<RowStatus, string> = {
   pending: '未处理',
@@ -167,7 +188,7 @@ async function previewWorkbook() {
     })
     if (!response.ok) throw new Error(String(response.status))
     const parsed = await response.json() as Preview
-    if (!parsed || !Array.isArray(parsed.rows) || !Array.isArray(parsed.errors) || parsed.row_count !== parsed.rows.length || parsed.row_count < 1 || parsed.row_count > 100) throw new Error('503')
+    if (!parsed || !Array.isArray(parsed.rows) || !Array.isArray(parsed.errors) || parsed.row_count !== parsed.rows.length || parsed.row_count < 1 || parsed.row_count > 100 || !/^[1-9]\d*$/.test(parsed.catalog_revision) || !/^[1-9]\d*$/.test(parsed.graph_revision)) throw new Error('503')
     preview.value = parsed
     executions.value = parsed.rows.map(row => ({ ...row, status: 'pending', message: '' }))
     notice.value = parsed.errors.length ? '预览发现错误；修正工作簿后重新上传。' : `已校验 ${parsed.row_count} 行，尚未创建人员。`
@@ -185,11 +206,11 @@ async function readJSON<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!response.ok) throw Object.assign(new Error(String(response.status)), { status: response.status })
   return await response.json() as T
 }
-async function resolveExistingManager(current: Session, catalog: Catalog, code: string) {
+async function resolveExistingManager(current: Session, catalog: Catalog, code: string, effectiveDate: string) {
   const seen = new Set<string>()
   let cursor = ''
   for (let page = 0; page < 100; page++) {
-    const body: Record<string, unknown> = { as_of: props.asOf, lifecycle: 'active', q: code, include_profile: true, limit: 100 }
+    const body: Record<string, unknown> = { as_of: effectiveDate, lifecycle: 'active', q: code, include_profile: true, limit: 100 }
     if (cursor) body.cursor = cursor
     const directory = await readJSON<Directory>(`/orgs/${current.org_id}/employees/query`, {
       method: 'POST',
@@ -220,27 +241,31 @@ async function verifyCurrentSession() {
 }
 async function preflight() {
   const current = await verifyCurrentSession()
-  const catalog = await readJSON<Catalog>(`/orgs/${current.org_id}/workforce-catalogs?${new URLSearchParams({ as_of: props.asOf, limit: '100' })}`, { headers: headers() })
+  if (!preview.value) throw Object.assign(new Error('preview'), { status: 422 })
+  const catalog = { catalog_revision: preview.value.catalog_revision, graph_revision: preview.value.graph_revision }
   const batchCodes = new Set(executions.value.map(row => row.staff_code))
-  const externalCodes = [...new Set(executions.value.filter(row => row.status !== 'failed' && row.status !== 'manager_pending').map(row => row.manager_staff_code).filter((code): code is string => Boolean(code) && !batchCodes.has(code!)))]
+  const externalPairs = new Map<string, { code: string; effectiveDate: string }>()
+  for (const row of executions.value.filter(item => item.status !== 'failed' && item.status !== 'manager_pending' && item.manager_staff_code && !batchCodes.has(item.manager_staff_code))) {
+    externalPairs.set(`${row.manager_staff_code}\u0000${row.hire_date}`, { code: row.manager_staff_code!, effectiveDate: row.hire_date })
+  }
   const managers = new Map<string, string>()
   let managerError = false
-  for (const code of externalCodes) {
-    const resolved = await resolveExistingManager(current, catalog, code)
+  for (const [key, pair] of externalPairs) {
+    const resolved = await resolveExistingManager(current, catalog, pair.code, pair.effectiveDate)
     const matches = resolved.matches
     if (resolved.ambiguous || matches.length !== 1) {
-      for (const row of executions.value.filter(item => item.status !== 'failed' && item.status !== 'manager_pending' && item.manager_staff_code === code)) {
+      for (const row of executions.value.filter(item => item.status !== 'failed' && item.status !== 'manager_pending' && item.manager_staff_code === pair.code && item.hire_date === pair.effectiveDate)) {
         if (row.employeeId) {
           row.status = 'manager_pending'
-          row.message = '人员已创建；直属主管已退职、不可读或不再唯一，主管待维护'
+          row.message = '人员已创建；直属主管在该入职日已退职、不可读或不再唯一，主管待维护'
         } else {
           row.status = 'failed'
-          row.message = resolved.ambiguous ? '直属主管 Staff Code 匹配不唯一' : '直属主管不存在、已退职或当前不可读'
+          row.message = resolved.ambiguous ? '直属主管 Staff Code 匹配不唯一' : '直属主管在该入职日不存在、已退职或当前不可读'
           managerError = true
         }
       }
     } else {
-      managers.set(code, matches[0]!.id)
+      managers.set(key, matches[0]!.id)
     }
   }
   if (managerError) throw Object.assign(new Error('manager'), { status: 422 })
@@ -256,6 +281,14 @@ function createBody(row: RowExecution, catalog: Catalog) {
     profile,
     lifecycle: { valid_from: row.hire_date, valid_to: row.departure_date },
     staff_code: row.staff_code,
+    employment: { legal_entity_id: row.branch_id, location_code: row.location },
+    education: { level: row.education_level },
+    job_assignment: {
+      department_id: row.department_id,
+      job_family_id: row.job_family_id,
+      career_level_id: row.career_level_id,
+      position: { title: row.position },
+    },
     expected_catalog_revision: catalog.catalog_revision,
     expected_graph_revision: catalog.graph_revision,
   })
@@ -295,7 +328,7 @@ function freezeReportingCommand(catalog: Catalog, managers: Map<string, string>)
   const changes: Record<string, unknown>[] = []
   for (const row of executions.value) {
     if (row.status !== 'created' || !row.manager_staff_code || !row.employeeId || !row.workforceRevision) continue
-    const manager = byCode.get(row.manager_staff_code) ?? managers.get(row.manager_staff_code)
+    const manager = byCode.get(row.manager_staff_code) ?? managers.get(`${row.manager_staff_code}\u0000${row.hire_date}`)
     if (!manager) {
       row.status = 'manager_pending'
       row.message = '人员已创建；同批主管未成功创建，主管待维护'
@@ -416,7 +449,7 @@ onBeforeUnmount(() => stopOperation())
       <div class="import-intro">
         <div>
           <h2>批量创建人员</h2>
-          <p>最多 100 人。只创建基本资料、Staff Code、入职/退职日期及直属主管；不会导入任职、部门、学历或薪资。</p>
+          <p>最多 100 人。一次校验并创建完整员工主数据：身份、雇佣关系、组织任职、学历及直属主管；薪资不在此功能导入。</p>
         </div>
         <button type="button" class="secondary" :disabled="busy" @click="downloadTemplate">下载 XLSX 模板</button>
       </div>
@@ -449,13 +482,15 @@ onBeforeUnmount(() => stopOperation())
         </ul>
         <div class="import-table-wrap">
           <table>
-            <thead><tr><th>行</th><th>Staff Code</th><th>姓名</th><th>联系方式</th><th>资料摘要</th><th>直属主管 Staff Code</th><th>入职日</th><th>退职日</th><th>结果</th></tr></thead>
+            <thead><tr><th>行</th><th>Staff Code</th><th>姓名</th><th>Location</th><th>Branch</th><th>Business Group</th><th>Division</th><th>Department</th><th>学历</th><th>入职日</th><th>职位</th><th>职系</th><th>职级</th><th>HOD Staff Code</th><th>退职日</th><th>联系与摘要</th><th>结果</th></tr></thead>
             <tbody>
               <tr v-for="row in executions" :key="row.row_number">
                 <td>{{ row.row_number }}</td><td>{{ row.staff_code }}</td>
                 <td><span>{{ row.local_name || '—' }}</span><small>英文：{{ row.english_name || '—' }}</small></td>
-                <td><span>{{ row.email || '—' }}</span><small>电话：{{ row.phone || '—' }}</small></td>
-                <td class="profile-summary">{{ row.profile_summary || '—' }}</td><td>{{ row.manager_staff_code || '—' }}</td><td>{{ row.hire_date }}</td><td>{{ row.departure_date || '未退职' }}</td>
+                <td>{{ row.location }}</td><td>{{ row.branch_code }}</td><td>{{ row.business_group_code }}</td><td>{{ row.division_code }}</td><td>{{ row.department_code }}</td>
+                <td>{{ row.education_level }}</td><td>{{ row.hire_date }}</td><td>{{ row.position }}</td><td>{{ row.job_family_code }}</td><td>{{ row.career_level_code }}</td>
+                <td>{{ row.manager_staff_code || '—' }}</td><td>{{ row.departure_date || '未退职' }}</td>
+                <td class="profile-summary"><span>{{ row.email || '—' }}</span><small>电话：{{ row.phone || '—' }}</small><small>摘要：{{ row.profile_summary || '—' }}</small></td>
                 <td><span :class="['row-status', `is-${row.status}`]">{{ statusLabels[row.status] }}</span><small v-if="row.message">{{ row.message }}</small></td>
               </tr>
             </tbody>
@@ -489,7 +524,7 @@ details[open] .summary-action::after { content: '收起'; font-size: .78rem; }
 .import-summary { display: flex; flex-wrap: wrap; gap: .55rem 1rem; margin: 1rem 0 .65rem; color: var(--ink-600); font-size: .78rem; }
 .import-errors { margin: .5rem 0 1rem; padding: .75rem 1rem .75rem 2rem; border: 1px solid var(--danger-100); border-radius: var(--radius-md); background: var(--danger-50); color: var(--danger-700); font-size: .78rem; }
 .import-table-wrap { overflow-x: auto; border: 1px solid var(--line-soft); border-radius: var(--radius-md); }
-table { width: 100%; min-width: 82rem; border-collapse: collapse; }
+table { width: 100%; min-width: 110rem; border-collapse: collapse; }
 th, td { padding: .7rem .8rem; border-bottom: 1px solid var(--line-soft); text-align: left; vertical-align: top; font-size: .75rem; }
 th { background: var(--surface-muted); color: var(--ink-700); }
 td small { display: block; max-width: 16rem; margin-top: .25rem; color: var(--ink-600); }

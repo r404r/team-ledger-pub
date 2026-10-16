@@ -18,6 +18,31 @@ const CORRECTION_PATH = `${EMPLOYEE_PATH}/profile`
 const CATALOG_PATH = `/api/v1/orgs/${ORG_ID}/workforce-catalogs`
 const DIRECTORY_PATH = `/api/v1/orgs/${ORG_ID}/employees/query`
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const LEGAL_ENTITY_ID = '10000000-0000-4000-8000-000000000040'
+const BUSINESS_GROUP_ID = '10000000-0000-4000-8000-000000000041'
+const DIVISION_ID = '10000000-0000-4000-8000-000000000042'
+const DEPARTMENT_ID = '10000000-0000-4000-8000-000000000043'
+const JOB_FAMILY_ID = '10000000-0000-4000-8000-000000000044'
+const CAREER_LEVEL_ID = '10000000-0000-4000-8000-000000000045'
+const CATALOGS = {
+  as_of: AS_OF,
+  catalog_revision: '4',
+  graph_revision: '9',
+  legal_entities: [{ id: LEGAL_ENTITY_ID, code: 'BRANCH-A', display_name: '合成法分公司', valid_from: '2020-01-01', valid_to: null, active: true }],
+  locations: ['Shanghai', 'Wuxi', 'Tokyo'],
+  org_units: [
+    { id: BUSINESS_GROUP_ID, code: 'BG-A', label: '合成业务单元', kind: 'business_group', valid_from: '2020-01-01', valid_to: null, active: true },
+    { id: DIVISION_ID, code: 'DIV-A', label: '合成事业部', kind: 'division', valid_from: '2020-01-01', valid_to: null, active: true },
+    { id: DEPARTMENT_ID, code: 'DEP-A', label: '合成部门', kind: 'department', valid_from: '2020-01-01', valid_to: null, active: true },
+  ],
+  org_unit_parents: [
+    { child_unit_id: DIVISION_ID, parent_unit_id: BUSINESS_GROUP_ID, active: true },
+    { child_unit_id: DEPARTMENT_ID, parent_unit_id: DIVISION_ID, active: true },
+  ],
+  education_levels: [{ code: 'Master', rank: 3 }],
+  job_families: [{ id: JOB_FAMILY_ID, code: 'JF-A', label: '合成职系', valid_from: '2020-01-01', valid_to: null, active: true }],
+  career_levels: [{ id: CAREER_LEVEL_ID, code: 'P1', label: '合成职级', valid_from: '2020-01-01', valid_to: null, active: true }],
+}
 
 const SESSION = {
   subject_id: SUBJECT_ID,
@@ -167,6 +192,17 @@ function field(page: VueWrapper, label: RegExp): DOMWrapper<FormControl> {
   expect(controls, `Users must be able to enter the field labelled ${label}`).toHaveLength(1)
   return controls[0]!
 }
+async function fillRequiredWorkforce(page: VueWrapper) {
+  await field(page, /入职日|Date of Employment/i).setValue(VALID_FROM)
+  await settled()
+  await field(page, /所在公司|Branch English/i).setValue(LEGAL_ENTITY_ID)
+  await field(page, /地点|Location/i).setValue('Shanghai')
+  await field(page, /组织层级|Business Group/i).setValue(DEPARTMENT_ID)
+  await field(page, /学历|Latest Education/i).setValue('Master')
+  await field(page, /职位|Position/i).setValue('合成顾问')
+  await field(page, /职系|Job Family/i).setValue(JOB_FAMILY_ID)
+  await field(page, /职级|Career Level/i).setValue(CAREER_LEVEL_ID)
+}
 
 function action(page: VueWrapper, label: RegExp) {
   const buttons = page.findAll('button,[role="button"],input[type="submit"]')
@@ -233,6 +269,10 @@ async function startCorrection(page: VueWrapper) {
 beforeEach(() => {
   api = new NetworkFixture()
   mounted = []
+  api.respondRepeatedly('GET', CATALOG_PATH, 200, CATALOGS)
+  api.respondRepeatedly('POST', DIRECTORY_PATH, 200, {
+    items: [{ ...employee({ ...ORIGINAL_PROFILE, local_name: '合成直属主管' }, '3', OTHER_EMPLOYEE_ID), identifiers: [{ id: REQUEST_ID, kind: 'staff_code', staff_code: 'MGR-001', valid_from: VALID_FROM, valid_to: null }] }], next_cursor: null, as_of: AS_OF, consistency: 'current', authorization_date: AS_OF, graph_revision: '9', auth_epoch: '1', search_incomplete: false,
+  })
   vi.stubGlobal('fetch', api.fetch)
 })
 
@@ -281,10 +321,7 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
   })
 
   it('atomically creates a profile, Staff Code, and selected direct manager before reloading the saved employee', async () => {
-    api.respond('GET', CATALOG_PATH, 200, {
-      as_of: AS_OF, catalog_revision: '4', graph_revision: '9',
-      legal_entities: [], locations: [], education_levels: [], job_families: [], career_levels: [], org_units: [], org_unit_parents: [],
-    })
+    api.respond('GET', CATALOG_PATH, 200, CATALOGS)
     api.respond('POST', DIRECTORY_PATH, 200, {
       items: [{ ...employee({ ...ORIGINAL_PROFILE, local_name: '合成直属主管' }, '3', OTHER_EMPLOYEE_ID), identifiers: [{ id: REQUEST_ID, kind: 'staff_code', staff_code: 'MGR-001', valid_from: VALID_FROM, valid_to: null }] }],
       next_cursor: null, as_of: AS_OF, consistency: 'current', authorization_date: AS_OF, graph_revision: '9', auth_epoch: '1', search_incomplete: false,
@@ -297,9 +334,9 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     await field(page, /电话|phone/i).setValue('+00-000-0002')
     await field(page, /摘要|简介|profile_summary/i).setValue('合成创建摘要')
     await field(page, /工号 · 必填/i).setValue('EMP-0007')
+    await fillRequiredWorkforce(page)
     await field(page, /直属主管|HOD/i).setValue(OTHER_EMPLOYEE_ID)
-    await field(page, /生效日|开始日期|valid_from/i).setValue(VALID_FROM)
-    await field(page, /结束日|结束日期|valid_to/i).setValue('')
+    await field(page, /退职日|Departure Date/i).setValue('')
     await submitProfile(page)
 
     const commands = api.matching('POST', CREATE_PATH)
@@ -313,6 +350,14 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
       },
       lifecycle: { valid_from: VALID_FROM, valid_to: null },
       staff_code: 'EMP-0007',
+      employment: { legal_entity_id: LEGAL_ENTITY_ID, location_code: 'Shanghai' },
+      education: { level: 'Master' },
+      job_assignment: {
+        department_id: DEPARTMENT_ID,
+        job_family_id: JOB_FAMILY_ID,
+        career_level_id: CAREER_LEVEL_ID,
+        position: { title: '合成顾问' },
+      },
       manager_employee_id: OTHER_EMPLOYEE_ID,
       expected_catalog_revision: '4',
       expected_graph_revision: '9',
@@ -345,10 +390,7 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     [409, 'Staff Code 已被占用', false],
     [404, '所选直属主管不存在', true],
   ])('keeps the unsaved create form after an atomic create failure (%s)', async (status, expectedMessage, selectManager) => {
-    api.respond('GET', CATALOG_PATH, 200, {
-      as_of: AS_OF, catalog_revision: '4', graph_revision: '9',
-      legal_entities: [], locations: [], education_levels: [], job_families: [], career_levels: [], org_units: [], org_unit_parents: [],
-    })
+    api.respond('GET', CATALOG_PATH, 200, CATALOGS)
     api.respond('POST', DIRECTORY_PATH, 200, {
       items: [{ ...employee({ ...ORIGINAL_PROFILE, local_name: '合成直属主管' }, '3', OTHER_EMPLOYEE_ID), identifiers: [{ id: REQUEST_ID, kind: 'staff_code', staff_code: 'MGR-001', valid_from: VALID_FROM, valid_to: null }] }],
       next_cursor: null, as_of: AS_OF, consistency: 'current', authorization_date: AS_OF, graph_revision: '9', auth_epoch: '1', search_incomplete: false,
@@ -357,8 +399,8 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     const page = await openPage(`/?as_of=${AS_OF}`)
     await field(page, /本地姓名|local_name/i).setValue(DRAFT_NAME)
     await field(page, /工号 · 必填/i).setValue('EMP-0007')
+    await fillRequiredWorkforce(page)
     if (selectManager) await field(page, /直属主管|HOD/i).setValue(OTHER_EMPLOYEE_ID)
-    await field(page, /生效日|开始日期|valid_from/i).setValue(VALID_FROM)
     await submitProfile(page)
     expect(page.text()).toContain(expectedMessage)
     expect(field(page, /本地姓名|local_name/i).element.value).toBe(DRAFT_NAME)
@@ -368,10 +410,7 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
 
 
   it('replays the exact create command after a lost response and same-identity epoch advance', async () => {
-    api.respond('GET', CATALOG_PATH, 200, {
-      as_of: AS_OF, catalog_revision: '4', graph_revision: '9',
-      legal_entities: [], locations: [], education_levels: [], job_families: [], career_levels: [], org_units: [], org_unit_parents: [],
-    })
+    api.respond('GET', CATALOG_PATH, 200, CATALOGS)
     api.respond('POST', DIRECTORY_PATH, 200, {
       items: [], next_cursor: null, as_of: AS_OF, consistency: 'current', authorization_date: AS_OF, graph_revision: '9', auth_epoch: '1', search_incomplete: false,
     })
@@ -379,7 +418,7 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     const page = await openPage(`/?as_of=${AS_OF}`)
     await field(page, /本地姓名|local_name/i).setValue(DRAFT_NAME)
     await field(page, /工号 · 必填/i).setValue('EMP-0008')
-    await field(page, /生效日|开始日期|valid_from/i).setValue(VALID_FROM)
+    await fillRequiredWorkforce(page)
     await submitProfile(page)
     const first = api.matching('POST', CREATE_PATH)[0]!
 
@@ -417,10 +456,7 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
   })
 
   it('clears a selected manager when a new search no longer returns that candidate', async () => {
-    api.respond('GET', CATALOG_PATH, 200, {
-      as_of: AS_OF, catalog_revision: '4', graph_revision: '9',
-      legal_entities: [], locations: [], education_levels: [], job_families: [], career_levels: [], org_units: [], org_unit_parents: [],
-    })
+    api.respond('GET', CATALOG_PATH, 200, CATALOGS)
     api.respond('POST', DIRECTORY_PATH, 200, {
       items: [{ ...employee({ ...ORIGINAL_PROFILE, local_name: '合成直属主管' }, '3', OTHER_EMPLOYEE_ID), identifiers: [{ id: REQUEST_ID, kind: 'staff_code', staff_code: 'MGR-001', valid_from: VALID_FROM, valid_to: null }] }],
       next_cursor: null, as_of: AS_OF, consistency: 'current', authorization_date: AS_OF, graph_revision: '9', auth_epoch: '1', search_incomplete: false,
@@ -428,10 +464,7 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     const page = await openPage(`/?as_of=${AS_OF}`)
     const manager = field(page, /直属主管|HOD/i)
     await manager.setValue(OTHER_EMPLOYEE_ID)
-    api.respond('GET', CATALOG_PATH, 200, {
-      as_of: AS_OF, catalog_revision: '4', graph_revision: '9',
-      legal_entities: [], locations: [], education_levels: [], job_families: [], career_levels: [], org_units: [], org_unit_parents: [],
-    })
+    api.respond('GET', CATALOG_PATH, 200, CATALOGS)
     api.respond('POST', DIRECTORY_PATH, 200, {
       items: [], next_cursor: null, as_of: AS_OF, consistency: 'current', authorization_date: AS_OF, graph_revision: '9', auth_epoch: '1', search_incomplete: false,
     })

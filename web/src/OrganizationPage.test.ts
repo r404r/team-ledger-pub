@@ -89,7 +89,7 @@ describe('DEV-015 workforce organization consumers', () => {
     expect(request.url.search).toBe('')
     expect(request.body).toMatchObject({ as_of: AS_OF, department_id: DEP, q: '0007', include_profile: true })
     expect(wrapper.get('[aria-label="员工查询结果"]').text()).toContain('0007')
-    expect(wrapper.text()).toContain('直属主管/HOD')
+    expect(wrapper.text()).toContain('直属主管HOD')
     await button(wrapper, /显示全部员工/).trigger('click'); await settle()
     expect(seen.filter(entry => entry.url.pathname.endsWith('/employees/query')).at(-1)!.body).toMatchObject({ lifecycle: 'all', include_profile: true })
     expect(seen.filter(entry => entry.url.pathname.endsWith('/employees/query')).at(-1)!.body).not.toHaveProperty('q')
@@ -123,7 +123,7 @@ describe('DEV-015 workforce organization consumers', () => {
     await settle()
     expect(window.location.pathname).toBe(`/employees/${EMPLOYEE}`)
     expect(window.location.search).toBe(`?as_of=${AS_OF}`)
-    expect(page.text()).toContain(`${AS_OF} 员工主数据`)
+    expect(page.text()).toContain(`${AS_OF} 有效资料`)
     expect(page.text()).toContain('合成员工')
   })
 

@@ -16,7 +16,7 @@ type Tree = { org_id: string; as_of: string; authorization_date: string; graph_r
 type Directory = { items: Employee[]; next_cursor: string | null; as_of: string; consistency: 'current'; authorization_date: string; graph_revision: string; auth_epoch: string; search_incomplete: boolean }
 type History = { items: { id: string; actor_subject_id: string; recorded_at: string; graph_before: string; graph_after: string; reason?: string; items: { action: string; kind: string; id?: string; employee_id?: string; valid_from?: string; valid_to?: string | null; effective_to?: string | null; supersedes_id?: string }[] }[]; next_cursor: string | null; consistency: 'current'; authorization_date: string; graph_revision: string; auth_epoch: string }
 type CatalogEntry = Lifecycle & { id: string; code: string; label?: string; kind?: string }
-type Catalogs = { as_of: string; catalog_revision: string; graph_revision: string; legal_entities: CatalogEntry[]; locations: string[]; org_units: CatalogEntry[]; org_unit_parents: unknown[]; education_levels: CatalogEntry[]; job_families: CatalogEntry[]; career_levels: CatalogEntry[] }
+type Catalogs = { as_of: string; catalog_revision: string; graph_revision: string; legal_entities: CatalogEntry[]; locations: string[]; org_units: CatalogEntry[]; org_unit_parents: (Lifecycle & { id: string; child_unit_id: string; parent_unit_id: string; active?: boolean })[]; education_levels: CatalogEntry[]; job_families: CatalogEntry[]; career_levels: CatalogEntry[] }
 type Operation = { generation: number; controller: AbortController }
 type Preview = { endpoint: string; body: Record<string, unknown>; summary: string }
 
@@ -51,7 +51,12 @@ const canReadPII = computed(() => Boolean(session.value?.capabilities.includes('
 const departmentOptions = computed(() => catalogs.value?.org_units.filter(item => item.kind === 'department') ?? [])
 const catalogLabels = computed(() => {
   const labels = new Map<string, string>()
-  for (const item of [...(catalogs.value?.org_units ?? []), ...(catalogs.value?.legal_entities ?? [])]) {
+  for (const item of [
+    ...(catalogs.value?.org_units ?? []),
+    ...(catalogs.value?.legal_entities ?? []),
+    ...(catalogs.value?.job_families ?? []),
+    ...(catalogs.value?.career_levels ?? []),
+  ]) {
     labels.set(item.id, item.label || item.code)
   }
   return labels
@@ -188,11 +193,33 @@ function previousDirectoryPage() {
 function employeeName(employee: Employee) { return employee.profile?.local_name || employee.profile?.english_name || employee.id }
 function staffCode(employee: Employee) { return employee.identifiers.find(identifier => identifier.kind === 'staff_code')?.staff_code || '—' }
 function activeEmployment(employee: Employee) { return employee.employment[0] }
+function activeEducation(employee: Employee) { return employee.education[0] }
 function activeAssignment(employee: Employee) { return employee.job_assignments[0] }
 function catalogLabel(id?: string) { return id ? catalogLabels.value.get(id) || id : '—' }
-function managerName(employee: Employee) {
-  return employee.direct_manager ? directoryNames.value.get(employee.direct_manager.manager_employee_id) || employee.direct_manager.manager_employee_id : '—'
+function orgUnit(id?: string) { return catalogs.value?.org_units.find(item => item.id === id) }
+function orgParent(id?: string) {
+  const parentID = catalogs.value?.org_unit_parents.find(item => item.active !== false && item.child_unit_id === id)?.parent_unit_id
+  return orgUnit(parentID)
 }
+function assignmentHierarchy(employee: Employee) {
+  const department = orgUnit(activeAssignment(employee)?.department_id)
+  const division = department?.kind === 'division' ? department : orgParent(department?.id)
+  const businessGroup = division?.kind === 'business_group' ? division : orgParent(division?.id)
+  return { department, division, businessGroup }
+}
+function managerName(employee: Employee) {
+  const relation = employee.hod ?? employee.direct_manager
+  return relation ? directoryNames.value.get(relation.manager_employee_id) || relation.manager_employee_id : '—'
+}
+function rowNumber(index: number) { return (directoryPage.value - 1) * Number(appliedDirectory.limit) + index + 1 }
+const directoryRows = computed(() => (directory.value?.items ?? []).map((employee, index) => ({
+  employee,
+  index,
+  employment: activeEmployment(employee),
+  education: activeEducation(employee),
+  assignment: activeAssignment(employee),
+  hierarchy: assignmentHierarchy(employee),
+})))
 function parseArray(text: string) { const value: unknown = JSON.parse(text); if (!Array.isArray(value) || value.length < 1 || value.length > 100) throw new ApiFailure(422); return value }
 function prepare(kind: 'catalog' | 'workforce') {
   try {
@@ -268,14 +295,24 @@ onBeforeUnmount(() => { alive = false; window.removeEventListener('popstate', ro
     <section v-if="directory" class="employee-directory-results" aria-label="员工查询结果">
       <header class="directory-results-header"><div><h2>查询结果</h2><p>第 {{ directoryPage }} 页 · 本页 {{ directory.items.length }} 人</p></div><p v-if="directory.search_incomplete" role="status">搜索范围较大；请继续翻页，或增加筛选条件。</p></header>
       <div v-if="directory.items.length" class="employee-table-wrap">
-        <table class="employee-table"><thead><tr><th>Staff Code</th><th>姓名</th><th>法分公司 / 地点</th><th>Department / 职位</th><th>直属主管/HOD</th><th><span class="sr-only">操作</span></th></tr></thead><tbody>
-          <tr v-for="employee in directory.items" :key="employee.id">
-            <td><strong>{{ staffCode(employee) }}</strong></td>
-            <td><span class="employee-name">{{ employeeName(employee) }}</span><small v-if="employee.profile?.local_name && employee.profile?.english_name">{{ employee.profile.english_name }}</small><small v-if="!employee.profile">员工ID {{ employee.id }}</small></td>
-            <td>{{ catalogLabel(activeEmployment(employee)?.legal_entity_id) }}<small>{{ activeEmployment(employee)?.location_code || '—' }}</small></td>
-            <td>{{ catalogLabel(activeAssignment(employee)?.department_id) }}<small>{{ activeAssignment(employee)?.position?.title || '—' }}</small></td>
-            <td>{{ employee.direct_manager ? `员工ID · ${managerName(employee)}` : '—' }}</td>
-            <td><a class="employee-detail-link" :aria-label="`查看${employeeName(employee)}的完整资料`" :href="`/employees/${employee.id}?as_of=${directory.as_of}`" @click="navigate($event, `/employees/${employee.id}?as_of=${directory.as_of}`)">查看员工资料</a></td>
+        <table class="employee-table"><thead><tr><th>序号<br><small>No.</small></th><th>工号<br><small>Staff Code</small></th><th>姓名<br><small>Staff Name</small></th><th>姓名<br><small>English Name</small></th><th>地点<br><small>Location</small></th><th>所在公司<br><small>Branch</small></th><th>业务单元<br><small>Business Group</small></th><th>目前事业部<br><small>Division</small></th><th>目前部门<br><small>Department</small></th><th>学历<br><small>Latest Education</small></th><th>雇佣起始日<br><small>Date of Employment</small></th><th>职位<br><small>Position</small></th><th>职系<br><small>Job Family</small></th><th>职级<br><small>Career Level</small></th><th>直属主管<br><small>HOD</small></th><th><span class="sr-only">操作</span></th></tr></thead><tbody>
+          <tr v-for="row in directoryRows" :key="row.employee.id">
+            <td>{{ rowNumber(row.index) }}</td>
+            <td><strong>{{ staffCode(row.employee) }}</strong></td>
+            <td><span class="employee-name">{{ row.employee.profile?.local_name || '—' }}</span><small v-if="!row.employee.profile">员工ID {{ row.employee.id }}</small></td>
+            <td>{{ row.employee.profile?.english_name || '—' }}</td>
+            <td>{{ row.employment?.location_code || '—' }}</td>
+            <td>{{ catalogLabel(row.employment?.legal_entity_id) }}</td>
+            <td>{{ row.hierarchy.businessGroup?.label || row.hierarchy.businessGroup?.code || '—' }}</td>
+            <td>{{ row.hierarchy.division?.label || row.hierarchy.division?.code || '—' }}</td>
+            <td>{{ row.hierarchy.department?.label || row.hierarchy.department?.code || '—' }}</td>
+            <td>{{ row.education?.level || '—' }}</td>
+            <td>{{ row.employee.lifecycle.valid_from }}</td>
+            <td>{{ row.assignment?.position?.title || '—' }}</td>
+            <td>{{ catalogLabel(row.assignment?.job_family_id) }}</td>
+            <td>{{ catalogLabel(row.assignment?.career_level_id) }}</td>
+            <td>{{ managerName(row.employee) }}</td>
+            <td><a class="employee-detail-link" :aria-label="`查看${employeeName(row.employee)}的完整资料`" :href="`/employees/${row.employee.id}?as_of=${directory.as_of}`" @click="navigate($event, `/employees/${row.employee.id}?as_of=${directory.as_of}`)">查看员工资料</a></td>
           </tr>
         </tbody></table>
       </div>

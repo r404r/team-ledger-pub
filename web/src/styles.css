@@ -554,8 +554,9 @@
   #app .directory-results-header h2 { font-size: 1.05rem; }
   #app .directory-results-header p { margin-top: .2rem; color: var(--ink-600); font-size: .78rem; }
   #app .employee-table-wrap { width: 100%; overflow-x: auto; }
-  #app .employee-table { min-width: 65rem; margin: 0; border: 0; border-radius: 0; }
+  #app .employee-table { min-width: 120rem; margin: 0; border: 0; border-radius: 0; }
   #app .employee-table td { vertical-align: middle; }
+  #app .employee-table th small,
   #app .employee-table td small { display: block; margin-top: .2rem; color: var(--ink-600); font-size: .72rem; }
   #app .employee-name { color: var(--ink-900); font-weight: 760; }
   #app .employee-detail-link { font-weight: 760; white-space: nowrap; }
