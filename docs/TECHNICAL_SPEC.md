@@ -1,8 +1,8 @@
 # TeamLedger · 整体最新技术文档
 
-- 当前修订日期：**2026-10-16**。本文件与源码同属 `team-ledger`，是当前架构、HTTP语义、安全边界和运行设计的唯一公开技术说明。
-- 当前实现基线：Go模块化单体、Vue、SQLite/PostgreSQL schema v18、本地keyd、local密码＋首次改密＋TOTP/OIDC互斥身份模式、standalone/Staff关联账号、org级受控学历目录、`identity.manage`用户管理、bootstrap管理员38项当前可委派authority、同库独立audit receiver及Docker Compose独立部署。
-- 历史Task ID用于说明实现阶段；历史私有计划、审查会话、本机路径及旧文档commit台账不属于public文档。实现事实以本仓库源码、v18迁移、永久测试和当前文档为准。
+- 当前修订日期：**2026-10-17**。本文件与源码同属 `team-ledger`，是当前架构、HTTP语义、安全边界和运行设计的唯一公开技术说明。
+- 当前实现基线：Go模块化单体、Vue、SQLite/PostgreSQL schema v19、本地keyd、local密码＋首次改密＋TOTP/OIDC互斥身份模式、standalone/Staff关联账号、org级受控学历目录、Normal/Special及指定日期工资基线批次、`identity.manage`用户管理、bootstrap管理员38项当前可委派authority、同库独立audit receiver及Docker Compose独立部署。
+- 历史Task ID用于说明实现阶段；历史私有计划、审查会话、本机路径及旧文档commit台账不属于public文档。实现事实以本仓库源码、v19迁移、永久测试和当前文档为准。
 - 功能/page/OP/AC登记见[功能规范](FUNCTIONAL_SPEC.md)，开发与验证门禁见[开发规则](DEVELOPMENT_RULES.md)，Docker操作见[README](../README.md)。
 
 ## 1. 架构、部署与信任边界
@@ -38,7 +38,7 @@ flowchart LR
         keyring --> keyd
     end
     subgraph storage["边界 D：每次部署只选一个后端"]
-        db["SQLite持久盘 或 PostgreSQL服务<br/>当前schema v18；v12–v17可前向升级<br/>员工、org级学历目录、调薪、canonical授权、账号与MFA状态"]
+        db["SQLite持久盘 或 PostgreSQL服务<br/>当前schema v19；v12–v18可前向升级<br/>员工、org级学历目录、工资基线/调薪、canonical授权、账号与MFA状态"]
         outbox["同库 audit_outbox / receipt / job / result<br/>业务事实与投递意图原子提交"]
         archive["每archive随机DEK的认证分块备份包<br/>DEK经keyd backup_archive包装<br/>SQLite VACUUM或PG exported snapshot/custom dump"]
         db --> outbox
@@ -124,11 +124,11 @@ flowchart TB
 
 R2固定C实际路径：[organization契约](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_contracts.go)、[service](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_service.go)、[逐owner权限](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_authority.go)、[queries](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_queries.go)、[graph](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/graph.go)、[cursor](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/cursor.go)；[HTTP handler](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/httpapi/structure.go)与[store](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/store/structure.go)承接现有事务。上述固定代码已实际push，不再用漂移main定位代替版本。查询尽量使用窄`GraphState`/employee关系/SQL候选，不为目录和history读取全org图；写与tree的窗口图仍由组织模块负责。
 
-R3当前源契约：`internal/interview/{contracts,commands,reads,export,service,state}.go`、`internal/store/interview.go`/`interview_tx.go`、`internal/httpapi/interviews.go`、`web/src/InterviewPage.vue`/`interviewDTO.ts`及`internal/authz/object*.go`。当前空库顺序安装至`internal/store/migrations/*_v18.sql`；`*_v6.sql`仅保留历史迁移校验，不是当前安装终点。
+R3当前源契约：`internal/interview/{contracts,commands,reads,export,service,state}.go`、`internal/store/interview.go`/`interview_tx.go`、`internal/httpapi/interviews.go`、`web/src/InterviewPage.vue`/`interviewDTO.ts`及`internal/authz/object*.go`。当前空库顺序安装至`internal/store/migrations/*_v19.sql`；`*_v6.sql`仅保留历史迁移校验，不是当前安装终点。
 
-R4及员工调薪批次当前源：`internal/compensation/`、`internal/store/compensation*.go`、`internal/httpapi/compensation*.go`、`internal/value/financial.go`、`web/src/CompensationPage.vue`/`CompensationBatchPage.vue`及`cmd/api/finance.go`。当前schema v18；`*_v7.sql`/`*_v13.sql`只保留历史迁移校验。
-R5当前代码源：`internal/compensation/bonus*.go`、`internal/store/bonus*.go`、`internal/httpapi/bonus.go`、`web/src/BonusPage.vue`/`bonusDTO.ts`、`cmd/bonus-hmac`及`cmd/api/finance.go`。当前schema v18；`*_v8.sql`只保留历史迁移校验。
-R6a/R6b当前代码源：`internal/assessment/`、`internal/store/assessment*.go`、`internal/httpapi/assessment*.go`、`web/src/FollowupPage.vue`/`assessmentDTO.ts`、`internal/authz`、`internal/providerapproval`及`cmd/assessment-worker`。当前schema v18；`*_v9.sql`/`*_v10.sql`只保留历史迁移校验。
+R4及员工薪资批次当前源：`internal/compensation/`、`internal/store/compensation*.go`、`internal/httpapi/compensation*.go`、`internal/value/financial.go`、`web/src/CompensationPage.vue`/`CompensationBatchPage.vue`及`cmd/api/finance.go`。当前schema v19；`*_v7.sql`/`*_v13.sql`保留历史迁移校验，`*_v19.sql`只追加工资基线批次关系子类型。
+R5当前代码源：`internal/compensation/bonus*.go`、`internal/store/bonus*.go`、`internal/httpapi/bonus.go`、`web/src/BonusPage.vue`/`bonusDTO.ts`、`cmd/bonus-hmac`及`cmd/api/finance.go`。当前schema v19；`*_v8.sql`只保留历史迁移校验。
+R6a/R6b当前代码源：`internal/assessment/`、`internal/store/assessment*.go`、`internal/httpapi/assessment*.go`、`web/src/FollowupPage.vue`/`assessmentDTO.ts`、`internal/authz`、`internal/providerapproval`及`cmd/assessment-worker`。当前schema v19；`*_v9.sql`/`*_v10.sql`只保留历史迁移校验。
 
 DEV-025前端视觉基础集中在`web/src/styles.css`并由`main.ts`静态导入；Vite production build生成内容hash CSS/JS，由Go静态服务同源返回。`App.vue`负责品牌栏、sticky主导航和当前路由状态，`IdentityGate.vue`负责认证态会话条及未认证/首次改密/MFA gate；10个业务页面继续使用原生语义/ARIA和既有scoped专属布局。无远程字体、CSS框架、图标CDN、分析SDK或运行时主题服务；全局层只改变呈现，不缓存或扩大敏感DTO。
 
@@ -151,6 +151,7 @@ DEV-046后的`PersonnelImportPanel.vue`只在P-ORG-03创建态且当前session�
 XLSX preview和`POST /orgs/:org/employees/import-review`都返回`rows/errors/warnings/education_levels`。页面18字段均可编辑；任何input使preview dirty并禁用创建，review JSON不接受resolved ID，由服务端重新执行字段、重复工号、主管环、日期、目录、父链及revision解析。仅errors为0、revision齐全且最后一次编辑已重验时才放行既有逐行OP-ORG-05/最终OP-ORG-10流程。unknown education不自动写库；操作者须明确名称与1..10000唯一rank，通过OP-ORG-09追加当前org目录，再重验。
 
 DEV-034的`CompensationBatchPage.vue`以批次header和默认3行工作表取代技术字段表单。法分公司来自当天catalog；Staff Code失焦时只用组织目录及个人薪资读取即时填充姓名、组织和当前工资，最终employee/basis解析仍由财务preview完成。手工JSON与XLSX均进入同一`compensation.batch_import.v1` candidate：服务忽略全空行，按全集团唯一Staff Code解析employee、冻结current term/range/任职，返回Special次数及`SALARY_BEFORE_MISMATCH`警告。OP-COMP-09要求逐employee确认全部工资差异后才生成draft/manifest；OP-COMP-10最终重验，并在一个事务先写必要`correction_replacement`、再写adjustment及batch/audit/outbox。页面将Salary Range和已激活批次纠错保留在折叠高级区，宽表仅在自身容器滚动。
+DEV-047在同一批次聚合根中加入领域类型`baseline`。页面只提交Staff Code、CNY/JPY及指定日工资；服务端按header统一日期解析employee/任职/current term，不复用客户端回填作为依据。`GET /compensation-adjustment-batches/import-template?adjustment_type=baseline`返回受权限/MFA保护、`no-store`的三列XLSX；手工/XLSX仍进入同一加密candidate。preview在同日不同term或目标日后已有term时拒绝；freeze/submit重验basis。激活按首条`initial`、不同值`adjustment`、相同值`no_change`写不可变历史，batch event固定`counts_as_adjustment=false`，因此不进入Normal/Special近两年次数。
 
 
 | 拟定 Go package | 职责 / 依赖 |
@@ -182,7 +183,7 @@ DEV-034的`CompensationBatchPage.vue`以批次header和默认3行工作表取代
 | P-ORG-01 / P-ORG-02 | `/orgs/:org_id/tree` / `/orgs/:org_id/employees` | tree/as_of、目录 cursor；PII labels 独立许可，不带金额/笔记 |
 | P-ORG-03 | `/`、`/employees/:employee_id/:tab?` | 单人完整初建/详情及profile history；创建态另有18列人员XLSX模板、typed preview、18字段编辑、服务端review、显式学历目录追加及复用OP-ORG-05/10的逐行结果；人员DTO不含薪资 |
 | P-INT-01 | `/interviews`、`/employees/:employee_id/interviews`、`/interviews/:id` | 当前选择/列表/安排与详情；独立metadata、可见版本/heads、行动、有限操作hint及NDJSON内存输出 |
-| P-COMP-01 | `/employees/:employee_id/compensation`、`/orgs/:org_id/compensation-adjustments` | employee as_of/schedule/change chain；批次业务header、默认3行Staff Code录入、手工/XLSX同构preview candidate、工资差异逐人确认、参考预算、冻结draft、显式submit及activated correction；special显示当前业务日所属年与上一年次数；Salary Range/纠错为高级区；Money/decimal一直为字符串 |
+| P-COMP-01 | `/employees/:employee_id/compensation`、`/orgs/:org_id/compensation-adjustments` | employee as_of/schedule/change chain；同一工作台创建Baseline/Normal/Special，默认3行Staff Code录入，Baseline可下载三列模板，手工/XLSX同构preview candidate、冻结draft及显式submit；Baseline显示指定日前权威工资且不计调薪次数，Normal/Special保留工资差异确认、参考预算和近两年次数；Salary Range/调薪纠错为高级区；Money一直为字符串 |
 | P-BONUS-01 | `/employees/:employee_id/bonuses` | targets/awards/payment/anomaly 分列、有限 extension |
 | P-AI-01 | `/employees/:employee_id/followup` | R6a policy/facts与R6b job/result/source review、人审发布已接通；生产provider未批准时外传disabled |
 | P-SEC-01 / P-SEC-02 | `/security/grants` / `/security/audit` | 可委派 authority 和安全 grant DTO / sanitized cursor audit |
@@ -332,11 +333,11 @@ DES-005扩展同一OP-COMP-02的`record_kind=batch_adjustments`：只允许`effe
 
 `TEAMLEDGER_COMPENSATION_POLICY_FILE`是protected/versioned严格JSON。v12薪资固定CNY/JPY scale0、monthly/gross、ROUND_HALF_UP且无Branch默认币种；值不一致拒启动。Bonus口径独立未决。缺policy则服务disabled；启用另要求本地keyd financial domain、目标KEK版本及DB期望generation一致ready。
 
-`TEAMLEDGER_COMPENSATION_BATCH_POLICY_FILE`保持独立/默认disabled并绑定salary policy revision；只含固定service authority、技术上限/TTL、template、special受控原因目录。XLSX仅接收Money Text，压缩包/XML安全错误整次拒绝；业务行错误形成加密`invalid`候选及有限错误，不改draft；`valid`候选须返回受控解析行供应用前预览，再显式apply并以base revision替换全草稿。adjustment manifest冻结每行Staff Code owner及identifier/employment/assignment/terms/range revision、before currency/scale0、目标生效日和全批`increase_totals_by_currency`。submit以固定manifest进入`submitted_preparing`并在单事务锁员工、range和薪资聚合后重验；依赖不可用持久化`activation_blocked`供相同manifest人工重试，事实冲突持久化`activation_conflict`并要求重新导入。activated correction必须包含该batch每员工的原countable event；服务沿active链生成首项真实term before ref、后续member-key引用及完整after terms模板，append反转/替换和后继闭包，不改原批次且不重复计入近两年次数。无Branch currency/FX/grand-total/budget/approval。
+`TEAMLEDGER_COMPENSATION_BATCH_POLICY_FILE`保持独立/默认disabled并绑定salary policy revision；只含固定service authority、技术上限/TTL、template、special受控原因目录。XLSX仅接收Money Text，压缩包/XML安全错误整次拒绝；业务行错误形成加密`invalid`候选及有限错误，不改draft；`valid`候选须返回受控解析行供应用前预览，再显式apply并以base revision替换全草稿。Normal/Special manifest冻结每行Staff Code owner及identifier/employment/assignment/terms/range revision、before currency/scale0、目标生效日和全批`increase_totals_by_currency`。Baseline manifest冻结相同员工/任职/current term依据但不要求Salary Range，`salary_before`只由服务端填充，`increase_amount`为空；同日不同term或目标日后已有term阻断。submit以固定manifest进入`submitted_preparing`并在单事务锁员工和薪资聚合后重验；Normal/Special另锁range。依赖不可用持久化`activation_blocked`供相同manifest人工重试，事实冲突持久化`activation_conflict`并要求重新导入。activated adjustment correction继续只适用于Normal/Special；Baseline历史纠错走个人完整correction流程。
 
 金融`category=financial`、许可purpose=`compensation_management`、密文AAD purpose=`financial`；compensation.read/propose/approve与sensitive.export独立，全部近期MFA，关系绑定禁止。个人exact对象只允许compensation_proposal/event/term；exact proposal提供其历史修订与对象hint，不授aggregate/new proposal。exact event省略共享group reason/decision/members且不反向授权batch/line/sibling；before/after term正文逐项独立当前read/export。
 
-批次读取/导出要求org-scope FinR覆盖全部employee，否则整体404并省略count/摘要/manifest；导出另须Export，不须CompW。adjustment摘要唯一为稳定排序`increase_totals_by_currency:[{currency:"CNY",scale:0,amount_minor:"..."},…]`，累计全批`increase_amount`并保留出现但合计0的币种；correction省略该字段。禁止grand total、FX和跨币种金额排序。
+批次读取/导出要求org-scope FinR覆盖全部employee，否则整体404并省略count/摘要/manifest；导出另须Export，不须CompW。Normal/Special摘要唯一为稳定排序`increase_totals_by_currency:[{currency:"CNY",scale:0,amount_minor:"..."},…]`；Baseline摘要为空且禁止伪造增量、grand total或预算。全部类型均禁止FX和跨币种金额排序。
 
 OP-SEC-05批次请求只接受单个完整frozen batch，不能选择行或跳过无权员工；8MiB最终编码预算必须在首个正文byte前验证。prepare和逐chunk/final重验；撤权/断连/revision变化后不再释放chunk，记录partial/aborted且不称complete，已释放bytes不可追回。其余金融对象仍遵循有限object规则。
 
@@ -379,8 +380,9 @@ DEV-035分配schema v14并提供SQLite/PostgreSQL v13→v14 migration。`session
 DEV-038分配schema v15并提供SQLite/PostgreSQL v14→v15 migration。`session.access_kind`扩展`password_change`，`local_account`新增`password_change_required`且既有行固定false；新增immutable `bootstrap_admin_policy`和`local_user_create_receipt`，授权约束加入`identity.manage`及OP-SEC-07/08。仅存在`local_bootstrap_receipt`的local部署补齐`identity.manage`、`access_grant.manage`、`audit.read`的org assignment/direct grant，以及`identity.manage`/`audit.read`的`bootstrap_admin.v1` authority；批准者固定为bootstrap主体自身并撤销其旧session。SQLite迁移重建受约束父表时先暂存并恢复`session_auth`、`oidc_transaction`、grant receipt/approval和audit outbox等子事实，恢复必要parent unique index后再插回，整Tx失败回滚。v1–v14 migration bytes/checksum保持冻结。
 
 DEV-041分配schema v16并提供SQLite/PostgreSQL v15→v16 migration。`BootstrapLocal`对fresh local安装创建38项org级、`mfa_required=true`、100年期限的`bootstrap_admin.v1` authority；migration只对存在`local_bootstrap_receipt`的主体以完整tuple `NOT EXISTS`补齐v15缺少的36项，保留已有两项及所有非bootstrap authority。v16不新增业务grant/assignment、不撤session、不改OIDC组织，也不把`access_grant.manage`变成可委派能力。v1–v15 migration bytes/checksum不变；升级前仍须备份恢复验证，未知版本、漂移或备份缺失保持fail closed。
-DEV-043分配当前schema v17并提供SQLite/PostgreSQL v16→v17 migration。新增immutable `staff_account_access(org_id,subject_id,employee_id,policy_version,created_by,created_at)`，同时外键约束既有local account及同一`subject_employee`映射，并保持一名employee最多一个Staff关联账号。migration只建表并登记checksum，不从既有账号或`subject_employee`推断政策。OP-SEC-07显式区分`standalone|staff`；staff用规范Staff Code MAC精确解析当前有效employee，账号、绑定、政策、凭证、receipt和审计同事务提交。`Security`按服务端当前组织日实时加载本人和当前administrative一层直属下属；默认仅放行员工metadata/PII、面谈metadata及OP-INT-02创建，不放行通用`interview.write`、笔记、行动、评估、薪资或导出。v1–v16 migration bytes/checksum冻结。
-DEV-046分配当前schema v18并提供SQLite/PostgreSQL v17→v18 migration。原全局`education_level`复制为每个既有org的三档目录；`education_record`重建/变更为`(org_id,level_code)`复合外键并逐行保留；新organization触发默认三档；`structure_change_item.kind`加入`education_level`。OP-ORG-09仅允许append新学历code及显式rank，推进catalog revision并写既有change/receipt/audit；无end/replace或preview自动创建。v1–v17 migration bytes/checksum冻结。
+DEV-043分配schema v17并提供SQLite/PostgreSQL v16→v17 migration。新增immutable `staff_account_access(org_id,subject_id,employee_id,policy_version,created_by,created_at)`，同时外键约束既有local account及同一`subject_employee`映射，并保持一名employee最多一个Staff关联账号。migration只建表并登记checksum，不从既有账号或`subject_employee`推断政策。OP-SEC-07显式区分`standalone|staff`；staff用规范Staff Code MAC精确解析当前有效employee，账号、绑定、政策、凭证、receipt和审计同事务提交。`Security`按服务端当前组织日实时加载本人和当前administrative一层直属下属；默认仅放行员工metadata/PII、面谈metadata及OP-INT-02创建，不放行通用`interview.write`、笔记、行动、评估、薪资或导出。v1–v16 migration bytes/checksum冻结。
+DEV-046分配schema v18并提供SQLite/PostgreSQL v17→v18 migration。原全局`education_level`复制为每个既有org的三档目录；`education_record`重建/变更为`(org_id,level_code)`复合外键并逐行保留；新organization触发默认三档；`structure_change_item.kind`加入`education_level`。OP-ORG-09仅允许append新学历code及显式rank，推进catalog revision并写既有change/receipt/audit；无end/replace或preview自动创建。v1–v17 migration bytes/checksum冻结。
+DEV-047分配当前schema v19并提供SQLite/PostgreSQL v18→v19 migration。为避免重建有大量子外键的`compensation_adjustment_batch`，迁移保留父表`adjustment_type=normal|special`约束和所有v18行，只新增`compensation_salary_baseline_batch(org_id,batch_id)`关系子类型及`compensation_salary_baseline_counter(org_id,cycle_year,next_sequence)`。创建Baseline时父行存储为normal兼容值并在同一事务插入标记；所有repository读取以`EXISTS`投影领域/API类型`baseline`，Normal列表显式排除标记行。`B-YYYY-NNNN`使用独立counter，不消耗N/S编号。v1–v18 migration bytes/checksum冻结。
 
 
 OP-ORG-10是v12唯一跨员工主数据/组织任职命令：一个1..100项typed set可同时处理identifier、employment、education、job_assignment（含membership/position）及administrative/dotted reporting和employee lifecycle。请求携带graph/catalog及每个affected employee revision；服务端先规划全部owner/endpoints，按§6.1锁org graph/auth→subjects→employee UUID→facts，逐owner重验OrgR/OrgW及PII、全窗口/目录/Staff Code owner/单一assignment/reporting无环，然后在**一个事务**写全部facts、canonical projection、graph/catalog/employee revisions、auth/source epochs、一个command receipt、audit/outbox；任一项失败全部rollback。OP-ORG-03在v12不再是writer，不能把两个HTTP请求拼成“原子”。
@@ -432,12 +434,13 @@ R3 v6实际字典补充（上方逻辑目标命名与当前表名不混称）：
 | `compensation_terms_version` | employee、approval/event或batch activation FK、version_no、payload_id、schema_version | payload恰含一个CNY或JPY scale0的税前固定月薪组件（month/monthly/gross）；employee每时点仅一币种。奖金/浮动/加班/一次性/非固定津贴不进该组件；不可覆盖 |
 | `compensation_correction_group` / `correction_member` | employee、proposal/approval、basis_revision、mode replace/reverse、original_event_id、replacement_or_reversal_event_id、replacement_before_ref、显式依赖refs | `(org,group,original_event)`唯一；一个员工；同次原子批准；替代图无环，无重复active替代，依赖闭包完整 |
 | `compensation_schedule_projection` | employee、valid_from/to、selected_term_id、selected_event_id、projection_revision、derived_group_id | employee/valid_from唯一；无重叠、无歧义；可重建/改端点，不改原批准事实 |
-| `compensation_adjustment_batch`（v12引入、v13扩展） | cycle_year、不可变business_code、normal/special、legal_entity、legacy默认日、state、revision、manifest_digest、creator、批次专属service subject及v13 `header_payload_id` | `N/S-{year}-{seq}`；draft、activation_blocked/conflict、activated、withdrawn；current revision CAS。v13新建批次header ref非空；v12既有行只读兼容，不回填虚构业务值 |
-| `compensation_batch_header_payload`（v13） | batch exact owner的`compensation.batch_header.v1` envelope；name、default effective date、Special code/text、reference budget currency/amount | immutable且参与key inventory/rewrap；Special原因校验policy；CNY/JPY scale0预算仅参考，不参与activation约束 |
-| `compensation_batch_number_counter` / `compensation_batch_correction_counter` | org、cycle_year、type、next_sequence | adjustment分配N/S，activated batch correction分配NC/SC；最少四位且自然扩展；counter与创建事务共同提交 |
-| `compensation_batch_payload` / `compensation_batch_line` | revision化加密规范行、employee、result、ordinal；payload冻结Staff Code/组织/Range/current terms basis、工资差异确认及revision | 每revision≤500且employee唯一；CNY/JPY scale0，before＋increase=after；0=`no_change`；摘要按币种checked重建。已确认差异保存在manifest覆盖的行事实中 |
-| `compensation_batch_import_candidate` | batch/base revision/subject、手工或XLSX canonical digest、`compensation.batch_import.v1`加密payload、state valid/invalid/applied、line_count、24小时expiry | 不保存原XLSX；全空行忽略；payload含规范行、冻结basis、Special次数、工资差异warnings及安全errors；candidate本身不改draft |
-| `compensation_batch_activation` / `compensation_batch_event` / `compensation_batch_state_history` | manifest、固定service subject、激活时间、生成event关联、状态轨迹 | salary event/term/schedule、activation、receipt/audit/outbox同一最终事务；已确认工资差异先写`correction_replacement`再写adjustment；旧event/term保留；block/conflict由失败后的安全CAS记录 |
+| `compensation_adjustment_batch`（v12引入、v13扩展、v19关系子类型） | cycle_year、不可变business_code、normal/special存储类型、legal_entity、legacy默认日、state、revision、manifest_digest、creator、批次专属service subject及v13 `header_payload_id` | 领域类型为Baseline/Normal/Special；v19 Baseline通过标记表投影，编号`B/N/S-{year}-{seq}`；draft、activation_blocked/conflict、activated、withdrawn；current revision CAS |
+| `compensation_salary_baseline_batch` / `compensation_salary_baseline_counter`（v19） | `(org,batch)`一对一标记及`(org,cycle_year)`独立next sequence | 只追加子类型，不改v18父行/约束；标记行的父batch必须存在；B编号与N/S互不消耗 |
+| `compensation_batch_header_payload`（v13） | batch exact owner的`compensation.batch_header.v1` envelope；name、default effective date；Normal/Special参考预算，Special code/text；Baseline只用统一工资时点 | immutable且参与key inventory/rewrap；Special原因校验policy；Baseline禁预算/原因；CNY/JPY scale0预算仅参考，不参与activation约束 |
+| `compensation_batch_number_counter` / `compensation_batch_correction_counter` | org、cycle_year、type、next_sequence | adjustment分配N/S，activated batch correction分配NC/SC；Baseline用v19独立counter；最少四位且自然扩展；counter与创建事务共同提交 |
+| `compensation_batch_payload` / `compensation_batch_line` | revision化加密规范行、employee、result、ordinal；payload冻结Staff Code/组织/current terms basis，Normal/Special另含Range、工资差异确认及revision | 每revision≤500且employee唯一；CNY/JPY scale0。Normal/Special要求before＋increase=after；Baseline要求server before、空increase、after=指定日工资；相同值`no_change` |
+| `compensation_batch_import_candidate` | batch/base revision/subject、手工或XLSX canonical digest、`compensation.batch_import.v1`加密payload、state valid/invalid/applied、line_count、24小时expiry | 不保存原XLSX；全空行忽略；Baseline只收三列并阻断同日冲突/未来term；candidate本身不改draft |
+| `compensation_batch_activation` / `compensation_batch_event` / `compensation_batch_state_history` | manifest、固定service subject、激活时间、生成event关联、`counts_as_adjustment`、状态轨迹 | salary event/term/schedule、activation、receipt/audit/outbox同一最终事务；Baseline写initial/adjustment/no_change且固定不计调薪次数；旧event/term保留 |
 | `bonus_target` / `bonus_target_version` | employee、period_start/end、draft/confirmed/withdrawn、revision、payload（目标口径/amount或ratio/reason） | employee/period/status；version历史；target非债项/非payment |
 | `bonus_award` / `bonus_award_revision` / `bonus_approval` | employee、target_id nullable、period、proposal状态/revision、corrects_award_id nullable、payload、immutable approval | employee/state/period；批准revision唯一；corrects复合FK同employee；有效替代投影每原award最多一个批准后继、无环且只有链尾计入有效批准额，不改原approved事实 |
 | `bonus_payment` | employee、award_id nullable仅unmatched、kind payment/reversal、original_payment_id nullable、paid_date、payload（含完整business key）、command_id | employee/paid_date、award索引；immutable，reversal FK同employee/原kind payment；业务key查重经独立派生索引 |
@@ -468,8 +471,8 @@ R4 v7实际新增aggregate/proposal及immutable revision/approval/event/terms/pa
 | `compensation.terms.v1` | 薪资恰一个`monthly_base_salary`：Money为CNY或JPY/scale0，unit=month、pay_frequency=monthly、tax_basis=gross、rounding=ROUND_HALF_UP；拒奖金/浮动/加班/一次性/非固定津贴组件及额外币种/口径。同一terms不得双币种 |
 | `compensation.salary_range.v1`（v12） | min/mid/max为规范非负int64字符串，统一绑定record的CNY或JPY/scale0/month/monthly/gross；`0<mid`、有序且无额外currency/scale字段。ratio policy未批时不在payload中 |
 | `compensation.proposal.v1` / `bonus.target.v1` / `bonus.award.v1` / `bonus.payment.v1` | terms或显式target/award/payment Money、reason、必要凭证ref、纠错说明；不能把凭证原文/金额作日志字段 |
-| `compensation.batch_header.v1` / `compensation.batch_line.v1` / `compensation.correction_member.v1` | header含业务名、默认生效日、Special原因和参考预算；adjustment line含Staff Code、金额/日期/Normal参考字段、冻结basis及工资纠正确认；correction member显式target/dependency、source kind/owner/head/witness及replacement。禁止自动补链、隐式FX或把预算当批准 |
-| `compensation.batch_import.v1` | 手工/XLSX同构candidate：规范rows、冻结basis、Special计数、工资差异warnings及安全errors；AAD绑定exact batch/candidate，invalid candidate仍用同一context；不保存原工作簿或把正文/digest写日志 |
+| `compensation.batch_header.v1` / `compensation.batch_line.v1` / `compensation.correction_member.v1` | header含业务名和统一日期；Normal/Special另含参考预算，Special含原因。adjustment line含Staff Code、before/increase/after、日期/参考字段、冻结basis及工资纠正确认；Baseline line以`salary_after`承载指定日工资、server填before、increase为空。correction member显式target/dependency、source kind/owner/head/witness及replacement |
+| `compensation.batch_import.v1` | 手工/XLSX同构candidate：规范rows、冻结basis、Special计数、调薪工资差异warnings或Baseline同日/未来term errors；AAD绑定exact batch/candidate，invalid candidate仍用同一context；不保存原工作簿或把正文/digest写日志 |
 | `compensation_memo.v1` | `memo`必填≤2000 Unicode字符、`source_reference`可选≤200，整体≤16KiB；拒未知字段，不从备注计算金额 |
 | `identity.mapping.v1` / `identity.transaction.v1` / `identity.local_username.v1` / `identity.local_mfa_factor.v1` / `identity.local_mfa_enrollment.v1` | mapping为canonical issuer/sub；transaction为nonce/verifier/action/return/binding；local username为账号owner绑定source；MFA payload只含TOTP secret。factor/enrollment AAD绑定org/account、factor或enrollment ID、generation、purpose与schema；不得跨owner/mode互换或进入日志/普通审计 |
 | `assessment.input.v1` / `assessment.result.v1` | 最小已批准结构事实/片段；result仅facts/support_needs/followups/source citations/caveats；无score/rank/诊断/隐藏推理 |
@@ -1315,11 +1318,11 @@ result draft→published/discarded/invalidated；published→invalidated（由so
 
 ### 9.2 迁移与备份
 
-当前v18 binary分四路：①v1-v11/未知版本/checksum drift只读拒绝且零写；②fresh空目标顺序安装至v18；③exact v12–v17按冻结顺序前向执行至v18并保留业务/密文/审计子事实；④exact v18正常重启。
+当前v19 binary分四路：①v1-v11/未知版本/checksum drift只读拒绝且零写；②fresh空目标顺序安装至v19；③exact v12–v18按冻结顺序前向执行至v19并保留业务/密文/审计子事实；④exact v19正常重启。
 
-v1–v18已发布migration bytes/checksum冻结。升级前必须停写并验证绑定源/目标版本的数据库备份和keyring双介质副本。v13→v14仍须完成16→18 domain升级/ack；v14→v18不增加key domain。中断、未知source、漂移或缺恢复条件保持阻塞，不能drop/重建、fallback空库或手工重导冒充migration。
+v1–v19已发布migration bytes/checksum冻结。升级前必须停写并验证绑定源/目标版本的数据库备份和keyring双介质副本。v13→v14仍须完成16→18 domain升级/ack；v14→v19不增加key domain。中断、未知source、漂移或缺恢复条件保持阻塞，不能drop/重建、fallback空库或手工重导冒充migration。
 
-v15建立管理员安全事实；v16补齐38项authority；v17新增空Staff关联政策且不推断既有账号；v18把既有全局教育三档按org复制、保持全部education记录并为新org初始化默认目录。SQLite及PostgreSQL迁移均须验证schema ledger、org隔离和既有记录引用。
+v15建立管理员安全事实；v16补齐38项authority；v17新增空Staff关联政策且不推断既有账号；v18把既有全局教育三档按org复制并保持全部education记录；v19只追加工资基线批次关系子类型与独立编号counter。SQLite及PostgreSQL迁移均须验证schema ledger、org隔离和既有记录引用。
 
 R3只新增v6，两方言扩有限typed面谈对象/source批准、事件/密文/receipt及OIDC intent；必要SQLite旧表copy/rebuild完整保旧列，PG按真实v5约束名变更，不改v1-v5 bytes/checksum。有数据v5→v6、原KMS/receipt、真实CHECK/FK/schema漂移/回滚/多连接消费者及最新464.45s all/race/vet绿；四最终binary已build，双库compiled migrate/API原DB重启、精确版本head裁剪/导出/撤权成品及175 Vue已验。此前完整身份CLI bind/unbind与有限敏感扫描保持各自证据边界。标准PG并发all+race曾原生out-of-shared-memory，失败不记绿；最终串行`-p 2`，不减native约束、不加应用重试或调PG容量掩盖。
 
@@ -1383,7 +1386,7 @@ PG身份维护窄入口直接以同descriptor已检查的完整PEM CA bytes构�
 | F-BONUS-001 / compensation | target/award/payment分列、crossorg refs、异常事实、reversal累计、永久业务key、extension拒绝 | 双库异常/冲销/幂等/atomic rollback、UI不跨币种假余额 |
 | F-AI-001 / assessment | 日历/DST/unknown/partial、source digest/交集ACL、lease fencing、provider失败、人工publish重验 | 双库真实job竞争；可控provider边界；真实provider/model/合同与人审质量另验，不pin自然文案 |
 | F-SEC-001 / identity/authz/sensitive/audit | 授权先于keyd；本地首次改密/TOTP/recovery受限session；`identity.manage`与grant/audit分离；38项bootstrap authority精确tuple/object边界；standalone/Staff关联原子创建及动态一层默认scope；持久replay；openat2/no-replace/lock；AAD/KWP；18-domain inventory与DB ack；MAC staging | bootstrap固定三项安全direct grant＋38项当前可委派authority、用户list/create幂等/分页/拒绝、Staff关联员工/面谈窄默认权与越界拒绝、首次改密直达API隔离；显式目标assignment仍用于普通grant；RFC向量、登记/登录/step-up/恢复/离线reset；secret不入DB明文/日志；真实OIDC/介质责任另验 |
-| F-DB-001 / adapters/ops | PK/FK/owner/CAS/失败回滚、每连接FK、busy/死锁、v12–v18 checksum及前向migration | SQLite/PG空schema安装至v18；v1-v11/未知目标拒绝；exact v12–v17顺序升v18、exact v18重启；业务/教育/MFA/审计/authority/账号映射保留；备份恢复、生产构建API/UI smoke与负载目标 |
+| F-DB-001 / adapters/ops | PK/FK/owner/CAS/失败回滚、每连接FK、busy/死锁、v12–v19 checksum及前向migration | SQLite/PG空schema安装至v19；v1-v11/未知目标拒绝；exact v12–v18顺序升v19、exact v19重启；业务/教育/MFA/审计/authority/账号映射及原调薪保留；备份恢复、生产构建API/UI smoke与负载目标 |
 
 纵向实施顺序与功能规范一致：安全/双库最小真实读写→组织历史→分区面谈/交接→薪资批准纠错→奖金事实→确定规则/AI人审→生产运行启用门禁；每片已有真实界面/API/存储/授权，不先堆空package再宣称功能。安全与恢复从相关切片落实，末项是上线验收不是此前许可忽略。Go行为table/fuzz/race、双库真实集成、Vue/Vitest和关键浏览器E2E各自证据不互替；分工不跑检查，集成负责人统一验证最终候选，整体task两轮串行实际luna review。
 

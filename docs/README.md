@@ -37,5 +37,7 @@
 - [DEV-045验证摘要](validation/DEV-045.md)
 - [DEV-046人员XLSX语义兼容与可编辑预览](plans/DEV-046.md)：数字/文本工号、1900/1904日期、目录label解析、18字段重验及org级学历目录。
 - [DEV-046验证摘要](validation/DEV-046.md)
+- [DEV-047指定日期工资批量录入](plans/DEV-047.md)：Baseline批次、三列XLSX、服务端preview、不可变工资历史及v18→v19迁移。
+- [DEV-047验证摘要](validation/DEV-047.md)
 
 历史私有计划、review会话、本机路径和旧文档commit台账不复制到public仓库；它们不是当前产品契约。当前行为以本仓库源码、迁移、永久测试和上述文档为准。

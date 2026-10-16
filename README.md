@@ -6,6 +6,7 @@
 - 技术架构图、keyd协议及密钥生命周期：[技术规范 §1.1/§1.2、§7.3/§7.4](docs/TECHNICAL_SPEC.md#1-架构部署与信任边界)。
 - Public文档归并范围及验证：[DEV-024 PLAN](docs/plans/DEV-024.md)。
 - 人员XLSX兼容、可编辑预览与org级学历目录：[DEV-046 PLAN](docs/plans/DEV-046.md) · [验证记录](docs/validation/DEV-046.md)。
+- 指定日期工资批量录入：[DEV-047 PLAN](docs/plans/DEV-047.md) · [验证记录](docs/validation/DEV-047.md)。
 
 ## Docker 安装与运维
 
@@ -345,10 +346,32 @@ curl --fail --cacert docker/secrets/tls-cert.pem \
 
 成功标准：migration以0退出，服务均为`Up`/`healthy`，ready返回`{"status":"ready"}`；原员工的学历记录仍可读取。打开 **人员资料 → 批量上传人员**，预览结果应显示当前组织学历目录。失败时保留原volume和错误输出，不执行`down -v`、不重跑bootstrap；从已验证的v17备份恢复后处理。
 
+#### 1.10.1 从schema v18升级到v19（既有v18安装执行一次）
+
+v19追加“工资基线”批次。迁移只新增两个关系表：工资基线批次标记及其独立业务编号计数器；不会重建既有Normal/Special批次父表，也不会修改原账号、MFA、员工、工资term/event、调薪批次、审计或outbox事实，不增加key domain。
+
+先按§5完成并验证数据库备份。保持现有`.env.docker`、named volume、deployment ID和18-domain keyring不变：
+
+```bash
+set -eu
+cd ~/team-ledger
+docker compose --env-file .env.docker down
+git pull --ff-only
+docker compose --env-file .env.docker build
+docker compose --env-file .env.docker up \
+  --abort-on-container-exit --exit-code-from migrate migrate
+docker compose --env-file .env.docker up -d --wait
+docker compose --env-file .env.docker ps
+curl --fail --cacert docker/secrets/tls-cert.pem \
+  https://localhost:8443/health/ready
+```
+
+成功标准：migration以0退出，服务均为`Up`/`healthy`，ready返回`{"status":"ready"}`；原调薪批次仍可读取。打开 **调薪批次 → 建立批次**，类型应包含“工资基线（指定日期工资）”；建立后XLSX区域可下载三列表格模板。失败时保留原volume和错误输出，不执行`down -v`、不重跑bootstrap；从已验证的v18备份恢复后处理。
+
 
 #### 1.11 用户管理和一次性初始密码
 
-完成fresh安装或升级到当前v18后，以具有近期MFA的`admin.user`打开顶部 **用户管理**：
+完成fresh安装或升级到当前v19后，以具有近期MFA的`admin.user`打开顶部 **用户管理**：
 
 1. 选择账号类型：
    - **非关联账号**：输入唯一登录账号、一次性初始密码和确认密码；不绑定员工，也不增加业务访问权。
@@ -432,7 +455,7 @@ docker compose --env-file .env.docker logs --tail=200 \
 | curl报告证书错误 | 必须保留`--cacert docker/secrets/tls-cert.pem`，URL必须是证书覆盖的`localhost`或`127.0.0.1`。 |
 | TOTP设备遗失，但恢复码仍在 | 在登录页选择“使用恢复码”，输入username、当前密码和一次性恢复码，只进入受限恢复页；设置新验证器并保存新的恢复码。恢复码不能直接进入业务页面。 |
 | TOTP设备和恢复码都遗失 | 不能从网页关闭MFA或绕过第二因素；由有权维护者按下述“离线MFA重置”操作。 |
-| 审计页或用户管理提示缺少权限 | fresh/bootstrap `admin.user`从v15起固定拥有`audit.read`、`access_grant.manage`和`identity.manage` direct grant；先确认已升级到当前v18、已重新登录且近期MFA有效。v16另给该管理员38项当前可委派authority，但不自动创建目标用户的职责assignment或业务grant。v17 Staff关联账号只取得本人/当前一层直属下属的窄默认读取与面谈创建资格；非关联账号仍默认零业务/安全权限。其他访问须按批准职责显式配置对应assignment＋grant，不能靠TOTP、账号名称或直接改库获得。 |
+| 审计页或用户管理提示缺少权限 | fresh/bootstrap `admin.user`从v15起固定拥有`audit.read`、`access_grant.manage`和`identity.manage` direct grant；先确认已升级到当前v19、已重新登录且近期MFA有效。v16另给该管理员38项当前可委派authority，但不自动创建目标用户的职责assignment或业务grant。v17 Staff关联账号只取得本人/当前一层直属下属的窄默认读取与面谈创建资格；非关联账号仍默认零业务/安全权限。 |
 | 最新人员模板上传后仍提示错误 | 展开 **批量上传人员** 查看每条`Employees!单元格 · 字段`错误或警告。Staff Code必须有值；文本保留前导零，Excel整数cell按原始十进制转文本，decimal/scientific/sign数字须在预览表修正。日期接受已列文本格式、Excel 1900/1904日期系统的整数日期cell和OOXML日期；serial 60、负数、fraction或非零时间须修正。Location和目录可按唯一code/名称规范；歧义不猜。未知学历会保留在可编辑表中，须明确追加该组织的学历名称和唯一rank后重新校验。每次编辑后必须点 **校验编辑内容**；只有错误为零且目录版本有效才可确认创建。公式、宏和外部链接仍拒绝。结构错误/服务端故障显示request ID；API日志可按`PERSONNEL_IMPORT_REJECTED`、`PERSONNEL_IMPORT_ROW_REJECTED`或request ID定位，日志不记录单元格内容。 |
 
 只有在**确认是全新测试安装且所有数据都可以永久删除**时，才能彻底重置：
