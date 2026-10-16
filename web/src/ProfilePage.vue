@@ -591,10 +591,10 @@ onBeforeUnmount(() => {
           <dd>{{ details.as_of }}</dd>
           <dt>当前授权判断日</dt>
           <dd>{{ details.authorization_date }}</dd>
-          <dt>生命周期生效日</dt>
+          <dt>入职日</dt>
           <dd>{{ details.lifecycle.valid_from }}</dd>
-          <dt>生命周期结束日</dt>
-          <dd>{{ details.lifecycle.valid_to ?? '未结束' }}</dd>
+          <dt>退职日</dt>
+          <dd>{{ details.lifecycle.valid_to ?? '未退职' }}</dd>
         </dl>
         <dl v-if="details.profile">
           <dt>本地姓名</dt>
@@ -709,16 +709,16 @@ onBeforeUnmount(() => {
 
           <div v-if="routeKind === 'create'" class="profile-form-section">
             <div class="profile-section-heading">
-              <h2>生命周期</h2>
-              <p>明确人员记录的业务有效期；结束日可在创建后再维护。</p>
+              <h2>入职与退职</h2>
+              <p>明确人员记录的入职日与退职日；退职日可在创建后再维护。</p>
             </div>
             <div class="profile-form-grid">
               <label class="profile-field" for="profile-valid-from">
-                <span>生效日 <small>valid_from</small></span>
+                <span>入职日 <small>valid_from</small></span>
                 <input id="profile-valid-from" v-model="form.validFrom" name="valid_from" type="date" required :readonly="commandUncertain" />
               </label>
               <label class="profile-field" for="profile-valid-to">
-                <span>结束日 <small>valid_to · 可留空</small></span>
+                <span>退职日 <small>valid_to · 可留空</small></span>
                 <input id="profile-valid-to" v-model="form.validTo" name="valid_to" type="date" :readonly="commandUncertain" />
               </label>
             </div>

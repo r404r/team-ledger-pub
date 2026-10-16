@@ -355,7 +355,7 @@ DEV-028 T1将业务有效期投影日收敛为认证态顶部全局“查看日�
 
 DEV-028 T2将员工目录收敛为业务查询页：初次显示当前获准在职员工，空条件“显示全部员工”包含全部生命周期状态；姓名/Staff Code、Department、状态和每页数量为主要筛选，员工ID收进高级筛选。目录只在当前`pii.read`成立时自动请求并显示受保护资料，不再要求用户理解“请求PII”；结果用表格、空状态、当前页及前后游标分页呈现，不显示未授权总数。组织数据revision移入“数据状态”，批量JSON维护入口默认折叠。员工详情链接同时触发应用级路由并带合法历史查看日期，应用内和新标签页均读取相同`as_of`，不再出现空白详情。
 
-DEV-028 T3将创建人员收敛为一次原子业务动作：创建页必填全集团Staff Code，可从当前获准员工中查找并选择直属主管/HOD，也可明确无直属主管。OP-ORG-05同一事务写profile/lifecycle、canonical identifier及可选administrative reporting；Staff Code冲突、主管不存在/跨组织/无权引用或revision变化时不留下半成品员工。成功后页面只以receipt确认提交，再按当前授权和查看日期重读完整资料；命令推进组织图导致本次会话auth epoch变化时，主体与org不变且重核对成功才继续。
+DEV-028 T3将创建人员收敛为一次原子业务动作：创建页必填全集团Staff Code，可从当前获准员工中查找并选择直属主管/HOD，也可明确无直属主管。OP-ORG-05同一事务写profile/lifecycle、canonical identifier及可选administrative reporting；Staff Code冲突、主管不存在/跨组织/无权引用或revision变化时不留下半成品员工。成功后页面只以receipt确认提交，再按当前授权和查看日期重读完整资料；命令推进组织图导致本次会话auth epoch变化时，主体与org不变且重核对成功才继续。人员页面把lifecycle `valid_from/valid_to`的业务中文统一显示为“入职日/退职日”，API字段及半开有效期语义不变。
 
 字段分类：`M` 为受 scope 约束但允许必要明文的结构 metadata（ID、关系、日期、状态、revision、记录时间）；`P` 为加密 PII/姓名/联系方式及敏感职位资料；`N` 为加密面谈/行动文本，按三个分区授权；`F` 为加密薪酬/奖金/原因/凭证/扩展；`A` 为加密 AI 文本与最小输入；`U` 为脱敏授权/审计 metadata。即使是 M/U 也不是公开数据；内容不得因字段名称“备注”变为 M。
 
