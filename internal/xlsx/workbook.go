@@ -16,6 +16,9 @@ type Limits struct {
 	CompressedBytes int
 	ExpandedBytes   uint64
 	Entries         int
+	Rows            int
+	Cells           int
+	XMLNodes        int
 }
 
 type Cell struct {
@@ -54,12 +57,21 @@ type worksheet struct {
 
 type relationships struct {
 	Items []struct {
+		ID         string `xml:"Id,attr"`
+		Type       string `xml:"Type,attr"`
+		Target     string `xml:"Target,attr"`
 		TargetMode string `xml:"TargetMode,attr"`
 	} `xml:"Relationship"`
 }
 
+type workbookManifest struct {
+	Sheets []struct {
+		RelationshipID string `xml:"http://schemas.openxmlformats.org/officeDocument/2006/relationships id,attr"`
+	} `xml:"sheets>sheet"`
+}
+
 func ReadFirstSheet(raw []byte, limits Limits) ([]Row, error) {
-	if len(raw) == 0 || limits.CompressedBytes <= 0 || len(raw) > limits.CompressedBytes || limits.ExpandedBytes == 0 || limits.Entries <= 0 {
+	if len(raw) == 0 || limits.CompressedBytes <= 0 || len(raw) > limits.CompressedBytes || limits.ExpandedBytes == 0 || limits.Entries <= 0 || limits.Rows <= 0 || limits.Cells <= 0 || limits.XMLNodes <= 0 {
 		return nil, errors.New("invalid workbook")
 	}
 	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
@@ -68,6 +80,7 @@ func ReadFirstSheet(raw []byte, limits Limits) ([]Row, error) {
 	}
 	var expanded uint64
 	worksheets := 0
+	worksheetName := ""
 	for _, file := range zr.File {
 		if !safeEntryName(file.Name) {
 			return nil, errors.New("invalid workbook entry")
@@ -78,13 +91,14 @@ func ReadFirstSheet(raw []byte, limits Limits) ([]Row, error) {
 		}
 		if strings.HasPrefix(file.Name, "xl/worksheets/") && strings.HasSuffix(file.Name, ".xml") {
 			worksheets++
+			worksheetName = file.Name
 		}
 		if strings.EqualFold(file.Name, "xl/vbaProject.bin") {
 			return nil, errors.New("macros are not accepted")
 		}
 		if strings.HasSuffix(file.Name, ".rels") {
 			var rels relationships
-			if err := decodeZipXML(file, limits.ExpandedBytes, &rels); err != nil {
+			if err := decodeZipXML(file, limits.ExpandedBytes, xmlBounds{Nodes: limits.XMLNodes}, &rels); err != nil {
 				return nil, errors.New("invalid workbook relationships")
 			}
 			for _, relationship := range rels.Items {
@@ -97,11 +111,35 @@ func ReadFirstSheet(raw []byte, limits Limits) ([]Row, error) {
 	if worksheets != 1 {
 		return nil, errors.New("workbook must contain exactly one worksheet")
 	}
+	var manifest workbookManifest
+	workbookFile := zipEntry(zr.File, "xl/workbook.xml")
+	workbookRelsFile := zipEntry(zr.File, "xl/_rels/workbook.xml.rels")
+	if workbookFile == nil || workbookRelsFile == nil || decodeZipXML(workbookFile, limits.ExpandedBytes, xmlBounds{Nodes: limits.XMLNodes}, &manifest) != nil || len(manifest.Sheets) != 1 {
+		return nil, errors.New("workbook must declare exactly one worksheet")
+	}
+	var workbookRels relationships
+	if decodeZipXML(workbookRelsFile, limits.ExpandedBytes, xmlBounds{Nodes: limits.XMLNodes}, &workbookRels) != nil {
+		return nil, errors.New("invalid workbook relationships")
+	}
+	declaredWorksheet := ""
+	for _, relationship := range workbookRels.Items {
+		if relationship.ID == manifest.Sheets[0].RelationshipID && strings.HasSuffix(relationship.Type, "/worksheet") {
+			if strings.HasPrefix(relationship.Target, "/") {
+				declaredWorksheet = strings.TrimPrefix(path.Clean(relationship.Target), "/")
+			} else {
+				declaredWorksheet = path.Clean(path.Join("xl", relationship.Target))
+			}
+			break
+		}
+	}
+	if declaredWorksheet != worksheetName || !strings.HasPrefix(declaredWorksheet, "xl/worksheets/") {
+		return nil, errors.New("invalid worksheet relationship")
+	}
 
 	shared := []string{}
 	if file := zipEntry(zr.File, "xl/sharedStrings.xml"); file != nil {
 		var values sharedStrings
-		if err := decodeZipXML(file, limits.ExpandedBytes, &values); err != nil {
+		if err := decodeZipXML(file, limits.ExpandedBytes, xmlBounds{SharedStrings: limits.Cells, Nodes: limits.XMLNodes}, &values); err != nil {
 			return nil, errors.New("invalid shared strings")
 		}
 		shared = make([]string, 0, len(values.Items))
@@ -110,12 +148,12 @@ func ReadFirstSheet(raw []byte, limits Limits) ([]Row, error) {
 		}
 	}
 
-	sheetFile := zipEntry(zr.File, "xl/worksheets/sheet1.xml")
+	sheetFile := zipEntry(zr.File, declaredWorksheet)
 	if sheetFile == nil {
-		return nil, errors.New("sheet1 is required")
+		return nil, errors.New("declared worksheet is required")
 	}
 	var sheet worksheet
-	if err := decodeZipXML(sheetFile, limits.ExpandedBytes, &sheet); err != nil {
+	if err := decodeZipXML(sheetFile, limits.ExpandedBytes, xmlBounds{Rows: limits.Rows, Cells: limits.Cells, Nodes: limits.XMLNodes}, &sheet); err != nil {
 		return nil, errors.New("invalid worksheet")
 	}
 	rows := make([]Row, 0, len(sheet.Rows))
@@ -188,13 +226,20 @@ func zipEntry(files []*zip.File, name string) *zip.File {
 	return nil
 }
 
-func decodeZipXML(file *zip.File, limit uint64, out any) error {
+type xmlBounds struct {
+	Rows          int
+	Cells         int
+	SharedStrings int
+	Nodes         int
+}
+
+func decodeZipXML(file *zip.File, limit uint64, bounds xmlBounds, out any) error {
 	reader, err := file.Open()
 	if err != nil {
 		return err
 	}
 	defer reader.Close()
-	if limit > uint64(^uint(0)>>1)-1 {
+	if limit > uint64(^uint(0)>>1)-1 || bounds.Nodes <= 0 {
 		return errors.New("invalid XML limit")
 	}
 	raw, err := io.ReadAll(io.LimitReader(reader, int64(limit)+1))
@@ -202,6 +247,7 @@ func decodeZipXML(file *zip.File, limit uint64, out any) error {
 		return errors.New("XML exceeds workbook limit")
 	}
 	decoder := xml.NewDecoder(bytes.NewReader(raw))
+	rows, cells, sharedStrings, nodes := 0, 0, 0, 0
 	for {
 		token, tokenErr := decoder.Token()
 		if tokenErr == io.EOF {
@@ -214,8 +260,29 @@ func decodeZipXML(file *zip.File, limit uint64, out any) error {
 		case xml.Directive:
 			return errors.New("XML directives are not accepted")
 		case xml.StartElement:
+			nodes++
+			if nodes > bounds.Nodes {
+				return errors.New("XML contains too many elements")
+			}
 			if value.Name.Space == "http://www.w3.org/2001/XInclude" {
 				return errors.New("XInclude is not accepted")
+			}
+			switch value.Name.Local {
+			case "row":
+				rows++
+				if bounds.Rows > 0 && rows > bounds.Rows {
+					return errors.New("worksheet contains too many rows")
+				}
+			case "c":
+				cells++
+				if bounds.Cells > 0 && cells > bounds.Cells {
+					return errors.New("worksheet contains too many cells")
+				}
+			case "si":
+				sharedStrings++
+				if bounds.SharedStrings > 0 && sharedStrings > bounds.SharedStrings {
+					return errors.New("workbook contains too many shared strings")
+				}
 			}
 		}
 	}
@@ -223,17 +290,22 @@ func decodeZipXML(file *zip.File, limit uint64, out any) error {
 }
 
 func columnNumber(reference string) (int, bool) {
+	const maxColumn = 16_384
 	column := 0
 	position := 0
 	for position < len(reference) && reference[position] >= 'A' && reference[position] <= 'Z' {
-		column = column*26 + int(reference[position]-'A'+1)
+		digit := int(reference[position]-'A') + 1
+		if column > (maxColumn-digit)/26 {
+			return 0, false
+		}
+		column = column*26 + digit
 		position++
 	}
-	if column == 0 || position == len(reference) {
+	if column == 0 || column > maxColumn || position == len(reference) {
 		return 0, false
 	}
 	row, err := strconv.Atoi(reference[position:])
-	if err != nil || row <= 0 {
+	if err != nil || row <= 0 || row > 1_048_576 {
 		return 0, false
 	}
 	return column, true

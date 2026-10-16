@@ -126,7 +126,7 @@ R2固定C实际路径：[organization契约](https://github.com/r404r/team-ledge
 
 R3当前源契约：`internal/interview/{contracts,commands,reads,export,service,state}.go`、`internal/store/interview.go`/`interview_tx.go`、`internal/httpapi/interviews.go`、`web/src/InterviewPage.vue`/`interviewDTO.ts`及`internal/authz/object*.go`。当前空库由`internal/store/migrations/*_v12.sql`安装；`*_v6.sql`仅保留历史迁移校验，不是当前安装入口。
 
-R4及员工调薪批次当前源：`internal/compensation/`内contracts/policy/commands/chain/reads/cursor/export、batch、salary range及xlsx实现；`internal/store/compensation*.go`、`internal/httpapi/compensation*.go`、`internal/value/financial.go`、`web/src/CompensationPage.vue`/`CompensationBatchPage.vue`/`CompensationTermsEditor.vue`/`compensationDTO.ts`/`compensationAPI.ts`及`cmd/api/finance.go`。当前空库同样使用v12 baseline；`*_v7.sql`仅保留历史迁移校验。
+R4及员工调薪批次当前源：`internal/compensation/`内contracts/policy/commands/chain/reads/cursor/export、batch及salary range实现，共用`internal/xlsx`有界工作簿读取器；`internal/store/compensation*.go`、`internal/httpapi/compensation*.go`、`internal/value/financial.go`、`web/src/CompensationPage.vue`/`CompensationBatchPage.vue`/`CompensationTermsEditor.vue`/`compensationDTO.ts`/`compensationAPI.ts`及`cmd/api/finance.go`。当前空库同样使用v12 baseline；`*_v7.sql`仅保留历史迁移校验。
 
 R5当前代码源：`internal/compensation/bonus*.go`、`internal/store/bonus*.go`、`internal/httpapi/bonus.go`、`web/src/BonusPage.vue`/`bonusDTO.ts`、`cmd/bonus-hmac`及`cmd/api/finance.go`。当前空库使用v12 baseline；`*_v8.sql`只保留历史迁移校验。
 R6a/R6b当前代码源：`internal/assessment/`、`internal/store/assessment*.go`、`internal/httpapi/assessment*.go`、`web/src/FollowupPage.vue`/`assessmentDTO.ts`、`internal/authz`、`internal/providerapproval`及`cmd/assessment-worker`。当前空库使用v12 baseline；`*_v9.sql`/`*_v10.sql`只保留历史迁移校验。
@@ -141,6 +141,8 @@ DEV-028 T1在`GET /session`增加规范Date字段`business_date`，由handler使
 
 DEV-028 T2的`OrganizationPage`继续只调用OP-ORG-04 `POST /orgs/:id/employees/query`，PII能力由重读后的scoped session决定：有`pii.read`才发送`include_profile=true`及允许`q`，无权时不发送姓名查询。筛选表单与已应用查询快照分离，opaque cursor历史只保存在页面内存，实现上一页/下一页且不推导总数；新查询或全局日期变化清空cursor历史并回到第一页。目录与catalog并行读取并在同一operation generation提交，结果映射法分公司/Department业务名称；SPA链接dispatch `popstate`通知应用router，并在URL保留受控`as_of`供新标签页恢复。
 
+DEV-032的`PersonnelImportPanel.vue`只在P-ORG-03创建态且当前session同时含org级organization/PII read/write时挂载。模板GET和preview POST由`internal/httpapi/personnel_import.go`转入`internal/organization/personnel_import.go`；模板和预览都复用`internal/xlsx`，后者统一实施ZIP/XML/公式/文本单元格边界。preview在授权后只规范内存DTO，不调用repository。页面明确确认后以稳定逐行key复用OP-ORG-05且不先写manager，再以一个冻结key/body复用OP-ORG-10写已确认两端的administrative reporting；partial/unknown不伪装整批事务，离页或session销毁清空文件、PII预览、命令和结果。
+
 
 | 拟定 Go package | 职责 / 依赖 |
 | --- | --- |
@@ -153,6 +155,7 @@ DEV-028 T2的`OrganizationPage`继续只调用OP-ORG-04 `POST /orgs/:id/employee
 | `internal/authz` | capability/scope/category/grant/purpose/MFA唯一判定；必须在调用keyd前通过 |
 | `internal/organization` | 组织/员工/assignment/reporting |
 | `internal/interview` | 面谈状态、版本、行动与来源 |
+| `internal/xlsx` | 不依赖业务域的单工作表XLSX生成/有界读取；拒公式、DTD/XInclude、外部relationship、宏、numeric/date serial及多工作表；不访问网络/文件系统 |
 | `internal/compensation` | 薪资/批次/奖金业务 |
 | `internal/assessment` | 规则、job、worker、人审 |
 | `internal/sensitive` | schema/AAD/DEK及keyd client窄接口；不读key文件、不推断授权 |
@@ -168,7 +171,7 @@ DEV-028 T2的`OrganizationPage`继续只调用OP-ORG-04 `POST /orgs/:id/employee
 | 页面 ID | 建议前端路由 | 模块/按需 DTO |
 | --- | --- | --- |
 | P-ORG-01 / P-ORG-02 | `/orgs/:org_id/tree` / `/orgs/:org_id/employees` | tree/as_of、目录 cursor；PII labels 独立许可，不带金额/笔记 |
-| P-ORG-03 | `/employees/:employee_id/:tab?` | profile/history；tab 拆独立查询与权限，不一次加载全部敏感资料 |
+| P-ORG-03 | `/`、`/employees/:employee_id/:tab?` | 单人profile/history；创建态另有人员XLSX模板、只读预览及复用OP-ORG-05/10的逐行批量结果，不一次加载全部敏感资料 |
 | P-INT-01 | `/interviews`、`/employees/:employee_id/interviews`、`/interviews/:id` | 当前选择/列表/安排与详情；独立metadata、可见版本/heads、行动、有限操作hint及NDJSON内存输出 |
 | P-COMP-01 | `/employees/:employee_id/compensation`、`/orgs/:org_id/compensation-adjustments` | employee as_of/schedule/change chain；批次list/detail、Salary Range、XLSX隔离candidate/apply、冻结核对、显式submit/blocked重试/conflict重做及activated correction；special显示当前业务日所属年与上一年次数；Money/decimal一直为字符串 |
 | P-BONUS-01 | `/employees/:employee_id/bonuses` | targets/awards/payment/anomaly 分列、有限 extension |
@@ -190,7 +193,7 @@ R2-R5页面保持；R6a FollowupPage与R6b最小输入/job/result/source review�
 - `revision`/`expected_revision`：正 int64 的十进制字符串；创建 singleton 用 `"0"` 表示预期不存在，此后从 `"1"` 起。`basis_revision` 指 employee compensation aggregate，`expected_graph_revision` 指组织图，不能用 proposal revision 替代。state转换枚举见第6节。
 - Money共同wire为`amount_minor`规范非负int64字符串、currency及scale；薪资v12只接受CNY/JPY、scale0，`amount_minor`必须匹配`0|[1-9][0-9]*`，任何小数点/指数/正负号（含`100.0`）拒绝。整数表示元/日元且不经float。Bonus仍用独立未决policy；salary可零，payment/reversal须正；无FX。
 - exact decimal量化为薪资Money只用decimal/integer实现的`ROUND_HALF_UP`。验收向量100.49→100、100.50→101、100.51→101、0.5→1、9007199254740993.5→9007199254740994；量化后超int64拒绝。Money输入本身绝不舍入；Compa公式未批前没有该计算入口。
-- JSON `snake_case`、UTF-8、拒未知/重复字段/非法枚举；普通body≤256KiB、profile/extension≤16KiB、worker目标输出≤64KiB、嵌套≤8。结构变更/薪资纠错≤100；DES-003批次最多500名唯一员工，`.xlsx`压缩体≤10MiB、展开总量≤50MiB、ZIP entry≤10,000，超过即在解析前/流式计数时拒绝；生产扩大上限必须先完成容量/锁时长验证。
+- JSON `snake_case`、UTF-8、拒未知/重复字段/非法枚举；普通body≤256KiB、profile/extension≤16KiB、worker目标输出≤64KiB、嵌套≤8。结构变更/薪资纠错≤100。人员导入最多100行、`.xlsx`压缩体≤5MiB、展开≤20MiB、ZIP entry≤1,000；调薪批次最多500名唯一员工、压缩体≤10MiB、展开≤50MiB、entry≤10,000。共同XLSX读取器在构造对象前限制row/cell/XML node数量，并按`workbook.xml`＋relationship确认唯一worksheet；两类工作簿均拒公式、numeric/date serial、外部relationship、宏、额外/未声明工作表。扩大上限必须先完成容量/锁时长验证。
 - 字符串limits默认UTF-8 bytes；一般原因≤4096、姓名各≤256、staff code规范化后1..64、财务理由≤4096。敏感正文/原因/身份/凭证不入URL/log。一般列表默认50最大100，R3列表默认20/详情默认100；所有查询有界，有限sort/完整范围。
 
 ### 3.2 响应、分页、cursor 与幂等
@@ -368,6 +371,10 @@ OP-ORG-10是v12唯一跨员工主数据/组织任职命令：一个1..100项type
 
 DEV-028扩展OP-ORG-05的初建组合模式：请求可携带`staff_code`、可选`manager_employee_id`以及必配对的`expected_catalog_revision`/`expected_graph_revision`。服务先在事务外按OP-ORG-10相同schema准备Staff Code digest/密文；事务按graph→subject锁顺序重验创建权和manager endpoint，创建employee/profile后调用共同的workforce commit写identifier及administrative reporting。`command_receipt`同时保存profile、workforce、graph revision，重复原key/body精确返回原结果；任一冲突或失败由同一事务回滚employee/profile/workforce/receipt/audit。未携带workforce字段的最小API创建仍只写profile/lifecycle，供不需要立即建立业务标识的受控调用；交互创建页始终要求Staff Code。
 
+DEV-032的模板固定唯一`Employees`工作表和`staff_code/local_name/english_name/email/phone/profile_summary/manager_staff_code/hire_date/departure_date`九列；空模板无示例人员或租户数据。`GET /orgs/:org/employees/import-template`与`POST .../import-preview`是OP-ORG-05的辅助入口，要求同等org级OrgR/OrgW/PIIR/PIIW；preview虽为POST敏感read而非mutation，仍要求same-origin＋CSRF，但不要求Idempotency-Key、不建receipt/audit正文且不保存原XLSX。结构/容量错误422；字段错误以200有限code列表返回且UI禁止执行。
+
+批量确认没有新数据库事务或schema：浏览器先固定catalog/graph并精确解析现有主管，同批主管按成功OP-ORG-05回执取得ID。每行创建body不含manager，故只写profile/lifecycle/identifier、推进该employee workforce revision而不推进graph；响应未知时只重放该行原key/body。全部可处理行结束后，UI仅为两端ID都已确认的关系构造一个OP-ORG-10，使用实际employee revisions和独立冻结key/body；同批主管失败的下属保留为“主管待维护”，不得按冲突Staff Code认领其他employee。最终关系命令仍由服务端重验endpoint、环、revision和当前授权，成功只推进一次graph/auth epoch。页面刷新后内存key丢失，不自动恢复或认领未知提交。
+
 Staff-code HMAC唯一性按唯一集团`org_id`的永久owner维护：创建/换号/rehire查完整owner mapping；digest属于本人仅可加不重叠区间，属于他人永久拒绝。物理索引含key version；换键必须停写、以旧完整索引逐条解密/规范化后重建全部owner与identifier digest，跨版本验证normalized code→同一owner一对一，再原子切唯一active版本并删除旧写资格；不存在两个可写key namespace。批次冻结resolved employee/identifier/owner/revision/date，不把明文工号放普通metadata。
 
 R2 v5实际字典补充：
@@ -505,7 +512,7 @@ DB必须执行 PK/NOT NULL、复合org/employee FK、有限state/kind/category C
 | OP-ORG-02 | **v12移除** | — | — | 路由不存在；不保留team创建shim |
 | OP-ORG-03 | **v12移除** | — | — | 路由不存在；canonical员工/任职/reporting组合写只经OP-ORG-10 |
 | OP-ORG-04 | POST `/orgs/:org_id/employees/query` | OrgR/O/G/P；profile/search另PIIR/G；cookie CSRF | JSON as_of/department_id/employee_id/lifecycle/q/cursor/limit/include_profile；team_id拒绝 | 200 IDs/准许PII/scan状态；SQL current scope先于LIMIT，≤500解密＋peek |
-| OP-ORG-05 | POST `/orgs/:org_id/employees` | OrgW＋OrgR＋PIIW＋PIIR/O/PII G/P；manager另需其OrgR | profile、lifecycle；交互创建必传staff_code，可选manager_employee_id；组合模式另传expected_catalog_revision＋expected_graph_revision | 201 employee/profile revision；组合模式另返workforce/graph revision并原子写canonical identifier/administrative reporting；I。Staff Code owner、manager endpoint、权限或revision失败零部分员工；不隐式建department/assignment/grant，后续结构/任职经OP-ORG-10 |
+| OP-ORG-05 | GET `/orgs/:org_id/employees/import-template`；POST `/orgs/:org_id/employees/import-preview`；POST `/orgs/:org_id/employees` | OrgW＋OrgR＋PIIW＋PIIR/O/PII G/P；manager另需其OrgR | 固定九列空XLSX模板；≤100行XLSX preview；单人profile、lifecycle、staff_code及可选manager/revisions | template无租户数据；preview仅规范内存行/错误、零DB写；create 201 employee/profile/workforce/graph revision并原子写canonical identifier/可选administrative reporting；create用I。批量UI逐行复用create并最终复用OP-ORG-10，不声称整批原子；Staff Code owner、权限或revision失败不留该行半成品 |
 | OP-ORG-06 | GET `/employees/:employee_id` | OrgR/O/G/P；profile/identifier/education另PIIR/G | as_of、include枚举profile/identifiers/employment/education/assignment/reporting；未知include（含独立`hod`）拒绝 | 指定日唯一获准projection及profile/employee/catalog/graph revisions；reporting DTO用同一administrative fact同时提供`direct_manager`和展示别名`hod`，ID/revision必须相同；无PII省略对应字段/版本，不含薪资 |
 | OP-ORG-07 | GET `/employees/:employee_id/organization-history` | 当前OrgR/O/G/P；profile/identifier/education/position/reason逐类PIIR | 成对recorded from/to、kinds有限枚举、cursor/limit | typed immutable/effective历史、fact IDs/revisions/替代refs；manager/HOD同一administrative reporting事件只返回一次，不含薪资 |
 | OP-ORG-08 | PATCH `/employees/:employee_id/profile` | PIIW＋PIIR/O/PII G/P | expected_profile_revision、完整v2 local/English name/contact replacement、edit_reason | 200 append profile version；I；v12仅v2，未知/旧schema拒绝 |

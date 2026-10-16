@@ -5,10 +5,11 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 )
 
-var testLimits = Limits{CompressedBytes: 1 << 20, ExpandedBytes: 4 << 20, Entries: 100}
+var testLimits = Limits{CompressedBytes: 1 << 20, ExpandedBytes: 4 << 20, Entries: 100, Rows: 100, Cells: 1_000, XMLNodes: 20_000}
 
 func TestBuildTemplateProducesTextHeadersAndSingleFrozenSheet(t *testing.T) {
 	headers := []string{"staff_code", "local_name", "hire_date"}
@@ -36,10 +37,16 @@ func TestReadFirstSheetRejectsFormulaDirectiveExternalRelationshipAndSecondSheet
 		name  string
 		files map[string]string
 	}{
+		{"overflow column", map[string]string{"xl/worksheets/sheet1.xml": sheet(`<c r="ZZZ1" t="inlineStr"><is><t>x</t></is></c>`)}},
 		{"formula", map[string]string{"xl/worksheets/sheet1.xml": sheet(`<c r="A1" t="str"><f>1+1</f><v>2</v></c>`)}},
 		{"directive", map[string]string{"xl/worksheets/sheet1.xml": `<?xml version="1.0"?><!DOCTYPE worksheet [<!ENTITY x "boom">]><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>`}},
 		{"external relationship", map[string]string{"xl/worksheets/sheet1.xml": sheet(`<c r="A1" t="inlineStr"><is><t>x</t></is></c>`), "xl/worksheets/_rels/sheet1.xml.rels": `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" TargetMode="External" Target="https://invalid.example/"/></Relationships>`}},
 		{"second sheet", map[string]string{"xl/worksheets/sheet1.xml": sheet(`<c r="A1" t="inlineStr"><is><t>x</t></is></c>`), "xl/worksheets/sheet2.xml": sheet(`<c r="A1" t="inlineStr"><is><t>hidden</t></is></c>`)}},
+		{"declared second sheet", map[string]string{
+			"xl/worksheets/sheet1.xml":   sheet(`<c r="A1" t="inlineStr"><is><t>x</t></is></c>`),
+			"xl/workbook.xml":            `<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="one" sheetId="1" r:id="rId1"/><sheet name="two" sheetId="2" r:id="rId2"/></sheets></workbook>`,
+			"xl/_rels/workbook.xml.rels": `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="extra.xml"/></Relationships>`,
+		}},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -47,6 +54,30 @@ func TestReadFirstSheetRejectsFormulaDirectiveExternalRelationshipAndSecondSheet
 				t.Fatal("hostile workbook was accepted")
 			}
 		})
+	}
+}
+
+func TestReadFirstSheetRejectsStructuralRowLimitsBeforeMaterializing(t *testing.T) {
+	blankRows := strings.Repeat(`<row/>`, testLimits.Rows+1)
+	nonemptyRows := strings.Repeat(`<row><c r="A1" t="inlineStr"><is><t>x</t></is></c></row>`, testLimits.Rows+1)
+	for name, rows := range map[string]string{"blank rows": blankRows, "nonempty rows": nonemptyRows} {
+		t.Run(name, func(t *testing.T) {
+			xml := `<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>` + rows + `</sheetData></worksheet>`
+			if _, err := ReadFirstSheet(workbook(t, map[string]string{"xl/worksheets/sheet1.xml": xml}), testLimits); err == nil {
+				t.Fatal("workbook exceeding the structural row limit was accepted")
+
+			}
+		})
+	}
+}
+func TestReadFirstSheetAcceptsPackageAbsoluteWorksheetTarget(t *testing.T) {
+	raw := workbook(t, map[string]string{
+		"xl/worksheets/sheet1.xml":   sheet(`<c r="A1" t="inlineStr"><is><t>x</t></is></c>`),
+		"xl/_rels/workbook.xml.rels": `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="/xl/worksheets/sheet1.xml"/></Relationships>`,
+	})
+	rows, err := ReadFirstSheet(raw, testLimits)
+	if err != nil || len(rows) != 1 || rows[0].Cells[1].Text != "x" {
+		t.Fatalf("package-absolute worksheet target: rows=%#v err=%v", rows, err)
 	}
 }
 
@@ -67,6 +98,12 @@ func sheet(cells string) string {
 
 func workbook(t *testing.T, files map[string]string) []byte {
 	t.Helper()
+	if _, ok := files["xl/workbook.xml"]; !ok {
+		files["xl/workbook.xml"] = `<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Employees" sheetId="1" r:id="rId1"/></sheets></workbook>`
+	}
+	if _, ok := files["xl/_rels/workbook.xml.rels"]; !ok {
+		files["xl/_rels/workbook.xml.rels"] = `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`
+	}
 	var buffer bytes.Buffer
 	writer := zip.NewWriter(&buffer)
 	for name, body := range files {

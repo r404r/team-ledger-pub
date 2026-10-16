@@ -29,6 +29,7 @@ func testWorkbook(t *testing.T, headers, row []string, numericColumn int) []byte
 	t.Helper()
 	var buffer bytes.Buffer
 	archive := zip.NewWriter(&buffer)
+	writeTestWorkbookManifest(t, archive)
 	entry, err := archive.Create("xl/worksheets/sheet1.xml")
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +57,7 @@ func testFormulaWorkbook(t *testing.T, headers, row []string) []byte {
 	t.Helper()
 	var buffer bytes.Buffer
 	archive := zip.NewWriter(&buffer)
+	writeTestWorkbookManifest(t, archive)
 	entry, err := archive.Create("xl/worksheets/sheet1.xml")
 	if err != nil {
 		t.Fatal(err)
@@ -77,6 +79,22 @@ func testFormulaWorkbook(t *testing.T, headers, row []string) []byte {
 		t.Fatal(err)
 	}
 	return buffer.Bytes()
+}
+
+func writeTestWorkbookManifest(t *testing.T, archive *zip.Writer) {
+	t.Helper()
+	for name, body := range map[string]string{
+		"xl/workbook.xml":            `<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Adjustments" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+		"xl/_rels/workbook.xml.rels": `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`,
+	} {
+		entry, err := archive.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = fmt.Fprint(entry, body); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func testColumn(column int) string {

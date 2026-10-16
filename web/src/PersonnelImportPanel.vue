@@ -27,7 +27,7 @@ type Employee = {
   lifecycle: { valid_from: string; valid_to: string | null }
   identifiers: { kind: string; staff_code?: string }[]
 }
-type Directory = { items: Employee[]; graph_revision: string }
+type Directory = { items: Employee[]; graph_revision: string; next_cursor?: string | null; search_incomplete?: boolean }
 type Catalog = { catalog_revision: string; graph_revision: string }
 type CreateResult = { id: string; profile_revision: string; workforce_revision: string; graph_revision: string }
 type WorkforceResult = { graph_revision: string }
@@ -37,7 +37,7 @@ type RowExecution = ImportRow & {
   message: string
   employeeId?: string
   workforceRevision?: string
-  command?: { key: string; body: string }
+  command?: { key: string; body: string; graphRevision: string }
 }
 type ReportingCommand = { key: string; body: string; rowNumbers: number[] }
 
@@ -55,10 +55,14 @@ const errorMessage = ref('')
 const notice = ref('')
 const reportingCommand = shallowRef<ReportingCommand | null>(null)
 const reportingUncertain = ref(false)
+const reportingComplete = ref(false)
+const fileGeneration = ref(0)
 let controller: AbortController | null = null
 
 const busy = computed(() => phase.value !== 'idle')
 const hasPreviewErrors = computed(() => Boolean(preview.value?.errors.length))
+const batchComplete = computed(() => reportingComplete.value && executions.value.length > 0 && executions.value.every(row => row.status === 'created' || row.status === 'manager_pending' || row.status === 'failed'))
+const executionLocked = computed(() => reportingComplete.value || reportingCommand.value !== null || executions.value.some(row => row.command !== undefined))
 const summary = computed(() => executions.value.reduce((result, row) => {
   result[row.status] = (result[row.status] ?? 0) + 1
   return result
@@ -68,6 +72,7 @@ const issueMessages: Record<string, string> = {
   invalid_staff_code: 'Staff Code 格式不正确',
   invalid_profile: '姓名或资料字段不符合规则',
   invalid_employment_dates: '入职日/退职日必须为 YYYY-MM-DD，且退职日晚于入职日',
+  field_too_large: '字段超过允许长度，预览未回传其内容',
   manager_cycle: '同一文件内的直属主管关系形成自引用或闭环',
   unexpected_column: '存在模板以外的非空列',
 }
@@ -100,12 +105,20 @@ function resetResults() {
   executions.value = []
   reportingCommand.value = null
   reportingUncertain.value = false
+  reportingComplete.value = false
   errorMessage.value = ''
   notice.value = ''
 }
 function chooseWorkbook(event: Event) {
+  if (busy.value || executionLocked.value) return
   const input = event.target as HTMLInputElement
   workbook.value = input.files?.[0] ?? null
+  resetResults()
+}
+function startNewBatch() {
+  if (busy.value || !batchComplete.value) return
+  workbook.value = null
+  fileGeneration.value += 1
   resetResults()
 }
 function stopOperation() {
@@ -172,33 +185,65 @@ async function readJSON<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!response.ok) throw Object.assign(new Error(String(response.status)), { status: response.status })
   return await response.json() as T
 }
-async function preflight() {
+async function resolveExistingManager(current: Session, catalog: Catalog, code: string) {
+  const seen = new Set<string>()
+  let cursor = ''
+  for (let page = 0; page < 100; page++) {
+    const body: Record<string, unknown> = { as_of: props.asOf, lifecycle: 'active', q: code, include_profile: true, limit: 100 }
+    if (cursor) body.cursor = cursor
+    const directory = await readJSON<Directory>(`/orgs/${current.org_id}/employees/query`, {
+      method: 'POST',
+      headers: csrfHeaders(true),
+      body: JSON.stringify(body),
+    })
+    if (directory.graph_revision !== catalog.graph_revision) throw Object.assign(new Error('409'), { status: 409 })
+    const matches = directory.items.filter(employee => exactStaffCode(employee, code))
+    if (matches.length > 1) return { matches: [] as Employee[], ambiguous: true }
+    if (matches.length === 1) return { matches, ambiguous: false }
+    if (directory.next_cursor === null || directory.next_cursor === undefined) {
+      if (directory.search_incomplete) throw Object.assign(new Error('503'), { status: 503 })
+      return { matches: [] as Employee[], ambiguous: false }
+    }
+    if (typeof directory.next_cursor !== 'string' || directory.next_cursor === '' || seen.has(directory.next_cursor)) throw Object.assign(new Error('503'), { status: 503 })
+    seen.add(directory.next_cursor)
+    cursor = directory.next_cursor
+  }
+  throw Object.assign(new Error('503'), { status: 503 })
+}
+
+async function verifyCurrentSession() {
   const current = await readJSON<Session>('/session', { headers: headers() })
   if (current.subject_id !== props.session.subject_id || current.org_id !== props.session.org_id || !['organization.read', 'organization.write', 'pii.read', 'pii.write'].every(capability => current.capabilities.includes(capability))) {
     throw Object.assign(new Error('403'), { status: 403 })
   }
+  return current
+}
+async function preflight() {
+  const current = await verifyCurrentSession()
   const catalog = await readJSON<Catalog>(`/orgs/${current.org_id}/workforce-catalogs?${new URLSearchParams({ as_of: props.asOf, limit: '100' })}`, { headers: headers() })
   const batchCodes = new Set(executions.value.map(row => row.staff_code))
-  const externalCodes = [...new Set(executions.value.map(row => row.manager_staff_code).filter((code): code is string => Boolean(code) && !batchCodes.has(code!)))]
+  const externalCodes = [...new Set(executions.value.filter(row => row.status !== 'failed' && row.status !== 'manager_pending').map(row => row.manager_staff_code).filter((code): code is string => Boolean(code) && !batchCodes.has(code!)))]
   const managers = new Map<string, string>()
+  let managerError = false
   for (const code of externalCodes) {
-    const directory = await readJSON<Directory>(`/orgs/${current.org_id}/employees/query`, {
-      method: 'POST',
-      headers: csrfHeaders(true),
-      body: JSON.stringify({ as_of: props.asOf, lifecycle: 'active', q: code, include_profile: true, limit: 100 }),
-    })
-    if (directory.graph_revision !== catalog.graph_revision) throw Object.assign(new Error('409'), { status: 409 })
-    const matches = directory.items.filter(employee => exactStaffCode(employee, code))
-    if (matches.length !== 1) {
-      for (const row of executions.value.filter(item => item.manager_staff_code === code)) {
-        row.status = 'failed'
-        row.message = matches.length === 0 ? '直属主管不存在、已退职或当前不可读' : '直属主管 Staff Code 匹配不唯一'
+    const resolved = await resolveExistingManager(current, catalog, code)
+    const matches = resolved.matches
+    if (resolved.ambiguous || matches.length !== 1) {
+      for (const row of executions.value.filter(item => item.status !== 'failed' && item.status !== 'manager_pending' && item.manager_staff_code === code)) {
+        if (row.employeeId) {
+          row.status = 'manager_pending'
+          row.message = '人员已创建；直属主管已退职、不可读或不再唯一，主管待维护'
+        } else {
+          row.status = 'failed'
+          row.message = resolved.ambiguous ? '直属主管 Staff Code 匹配不唯一' : '直属主管不存在、已退职或当前不可读'
+          managerError = true
+        }
       }
     } else {
       managers.set(code, matches[0]!.id)
     }
   }
-  if (executions.value.some(row => row.status === 'failed')) throw Object.assign(new Error('manager'), { status: 422 })
+  if (managerError) throw Object.assign(new Error('manager'), { status: 422 })
   return { current, catalog, managers }
 }
 function createBody(row: RowExecution, catalog: Catalog) {
@@ -216,20 +261,20 @@ function createBody(row: RowExecution, catalog: Catalog) {
   })
 }
 async function submitEmployee(row: RowExecution, catalog: Catalog) {
-  row.command ??= { key: crypto.randomUUID(), body: createBody(row, catalog) }
+  row.command ??= { key: crypto.randomUUID(), body: createBody(row, catalog), graphRevision: catalog.graph_revision }
   try {
     const response = await api(`/orgs/${props.session.org_id}/employees`, {
       method: 'POST', headers: csrfHeaders(true, row.command.key), body: row.command.body,
     })
     if (!response.ok) {
       if (response.status === 401) throw Object.assign(new Error('401'), { status: 401 })
-      if (response.status === 503) throw Object.assign(new Error('503'), { status: 503 })
+      if (response.status >= 500 || response.status === 408) throw Object.assign(new Error(String(response.status)), { status: response.status })
       row.status = 'failed'
-      row.message = response.status === 409 ? 'Staff Code 已存在，未创建' : '资料未被接受，未创建'
+      row.message = response.status === 409 ? 'Staff Code 已存在或组织版本已变化，未创建；请重新预览后核对' : '资料未被接受，未创建'
       return true
     }
     const result = await response.json() as CreateResult
-    if (!result.id || !result.workforce_revision || result.graph_revision !== catalog.graph_revision) throw Object.assign(new Error('503'), { status: 503 })
+    if (!result.id || !result.workforce_revision || result.graph_revision !== row.command.graphRevision) throw Object.assign(new Error('503'), { status: 503 })
     row.employeeId = result.id
     row.workforceRevision = result.workforce_revision
     row.status = 'created'
@@ -272,12 +317,13 @@ async function submitReporting(command: ReportingCommand, catalog: Catalog) {
     const response = await api(`/orgs/${props.session.org_id}/workforce-changes`, { method: 'POST', headers: csrfHeaders(true, command.key), body: command.body })
     if (!response.ok) {
       if (response.status === 401) throw Object.assign(new Error('401'), { status: 401 })
-      if (response.status === 503) throw Object.assign(new Error('503'), { status: 503 })
+      if (response.status >= 500 || response.status === 408) throw Object.assign(new Error(String(response.status)), { status: response.status })
       for (const row of executions.value.filter(item => command.rowNumbers.includes(item.row_number))) {
         row.status = 'manager_pending'
         row.message = '人员已创建；主管关系因版本或业务冲突未写入'
       }
       reportingCommand.value = null
+      reportingComplete.value = true
       return true
     }
     const result = await response.json() as WorkforceResult
@@ -287,6 +333,7 @@ async function submitReporting(command: ReportingCommand, catalog: Catalog) {
     }
     reportingUncertain.value = false
     reportingCommand.value = null
+    reportingComplete.value = true
     try {
       const next = await readJSON<Session>('/session', { headers: headers() })
       if (next.subject_id === props.session.subject_id && next.org_id === props.session.org_id) emit('session-updated', { session: next, catalogRevision: catalog.catalog_revision, graphRevision: result.graph_revision })
@@ -302,17 +349,35 @@ async function submitReporting(command: ReportingCommand, catalog: Catalog) {
     return false
   }
 }
+function setCompletionNotice() {
+  const created = executions.value.filter(row => row.status === 'created').length
+  const pending = executions.value.filter(row => row.status === 'manager_pending').length
+  const failed = executions.value.filter(row => row.status === 'failed').length
+  notice.value = `批量处理完成：已创建 ${created}，主管待维护 ${pending}，失败 ${failed}。`
+}
+
 async function applyBatch() {
-  if (busy.value || !preview.value || hasPreviewErrors.value) return
+  if (busy.value || !preview.value || hasPreviewErrors.value || batchComplete.value) return
   phase.value = 'applying'
   errorMessage.value = ''
   notice.value = ''
   controller = new AbortController()
   try {
     if (reportingUncertain.value && reportingCommand.value) {
+      await verifyCurrentSession()
       const catalog = await readJSON<Catalog>(`/orgs/${props.session.org_id}/workforce-catalogs?${new URLSearchParams({ as_of: props.asOf, limit: '100' })}`, { headers: headers() })
-      await submitReporting(reportingCommand.value, catalog)
+      if (await submitReporting(reportingCommand.value, catalog)) setCompletionNotice()
       return
+    }
+    const uncertainCreates = executions.value.filter(row => row.status === 'uncertain' && row.command && !row.employeeId)
+    if (uncertainCreates.length) {
+      await verifyCurrentSession()
+      for (const row of uncertainCreates) {
+        if (!await submitEmployee(row, { catalog_revision: '', graph_revision: row.command!.graphRevision })) {
+          notice.value = '批量创建仍无法确认；请继续使用原提交确认。'
+          return
+        }
+      }
     }
     const { catalog, managers } = await preflight()
     for (const row of executions.value) {
@@ -323,18 +388,16 @@ async function applyBatch() {
       }
     }
     reportingCommand.value ??= freezeReportingCommand(catalog, managers)
+    if (!reportingCommand.value) reportingComplete.value = true
     if (reportingCommand.value && !await submitReporting(reportingCommand.value, catalog)) {
       notice.value = '主管关系提交结果不确定；请使用原命令确认。'
       return
     }
-    const created = executions.value.filter(row => row.status === 'created').length
-    const pending = executions.value.filter(row => row.status === 'manager_pending').length
-    const failed = executions.value.filter(row => row.status === 'failed').length
-    notice.value = `批量处理完成：已创建 ${created}，主管待维护 ${pending}，失败 ${failed}。`
+    setCompletionNotice()
   } catch (error) {
     const status = (error as { status?: number }).status
     if (status === 401) emit('session-expired')
-    errorMessage.value = status === 403 ? '当前权限不足，尚未创建任何人员。' : status === 422 ? '主管预检未通过，尚未创建任何人员。' : '批量处理前置核对失败，尚未开始新的创建。'
+    errorMessage.value = status === 403 ? '当前权限不足，批量处理已停止；此前已确认结果保持不变。' : status === 422 ? '主管预检未通过，未开始新的创建；此前已确认结果保持不变。' : '批量处理前置核对失败，未开始新的创建；此前已确认结果保持不变。'
   } finally {
     if (phase.value === 'applying') stopOperation()
   }
@@ -363,9 +426,10 @@ onBeforeUnmount(() => stopOperation())
         <li><strong>3</strong><span>确认后批量创建</span></li>
       </ol>
       <div class="import-controls">
-        <label>选择 XLSX<input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" :disabled="busy" @change="chooseWorkbook"></label>
-        <button type="button" class="secondary" :disabled="busy || !workbook" @click="previewWorkbook">校验并预览</button>
-        <button type="button" :disabled="busy || !preview || hasPreviewErrors" @click="applyBatch">{{ executions.some(row => row.status === 'uncertain') ? '确认原提交并继续' : '确认并批量创建' }}</button>
+        <label>选择 XLSX<input :key="fileGeneration" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" :disabled="busy || executionLocked" @change="chooseWorkbook"></label>
+        <button type="button" class="secondary" :disabled="busy || !workbook || executionLocked" @click="previewWorkbook">校验并预览</button>
+        <button type="button" :disabled="busy || !preview || hasPreviewErrors || batchComplete" @click="applyBatch">{{ batchComplete ? '批量处理已完成' : executions.some(row => row.status === 'uncertain') ? '确认原提交并继续' : '确认并批量创建' }}</button>
+        <button v-if="batchComplete" type="button" class="secondary" :disabled="busy" @click="startNewBatch">开始下一批</button>
       </div>
       <p v-if="errorMessage" class="error" role="alert">{{ errorMessage }}</p>
       <p v-if="notice" class="notice" role="status">{{ notice }}</p>
@@ -385,10 +449,13 @@ onBeforeUnmount(() => stopOperation())
         </ul>
         <div class="import-table-wrap">
           <table>
-            <thead><tr><th>行</th><th>Staff Code</th><th>姓名</th><th>直属主管 Staff Code</th><th>入职日</th><th>退职日</th><th>结果</th></tr></thead>
+            <thead><tr><th>行</th><th>Staff Code</th><th>姓名</th><th>联系方式</th><th>资料摘要</th><th>直属主管 Staff Code</th><th>入职日</th><th>退职日</th><th>结果</th></tr></thead>
             <tbody>
               <tr v-for="row in executions" :key="row.row_number">
-                <td>{{ row.row_number }}</td><td>{{ row.staff_code }}</td><td>{{ row.local_name || row.english_name }}</td><td>{{ row.manager_staff_code || '—' }}</td><td>{{ row.hire_date }}</td><td>{{ row.departure_date || '未退职' }}</td>
+                <td>{{ row.row_number }}</td><td>{{ row.staff_code }}</td>
+                <td><span>{{ row.local_name || '—' }}</span><small>英文：{{ row.english_name || '—' }}</small></td>
+                <td><span>{{ row.email || '—' }}</span><small>电话：{{ row.phone || '—' }}</small></td>
+                <td class="profile-summary">{{ row.profile_summary || '—' }}</td><td>{{ row.manager_staff_code || '—' }}</td><td>{{ row.hire_date }}</td><td>{{ row.departure_date || '未退职' }}</td>
                 <td><span :class="['row-status', `is-${row.status}`]">{{ statusLabels[row.status] }}</span><small v-if="row.message">{{ row.message }}</small></td>
               </tr>
             </tbody>
@@ -422,10 +489,11 @@ details[open] .summary-action::after { content: '收起'; font-size: .78rem; }
 .import-summary { display: flex; flex-wrap: wrap; gap: .55rem 1rem; margin: 1rem 0 .65rem; color: var(--ink-600); font-size: .78rem; }
 .import-errors { margin: .5rem 0 1rem; padding: .75rem 1rem .75rem 2rem; border: 1px solid var(--danger-100); border-radius: var(--radius-md); background: var(--danger-50); color: var(--danger-700); font-size: .78rem; }
 .import-table-wrap { overflow-x: auto; border: 1px solid var(--line-soft); border-radius: var(--radius-md); }
-table { width: 100%; min-width: 62rem; border-collapse: collapse; }
+table { width: 100%; min-width: 82rem; border-collapse: collapse; }
 th, td { padding: .7rem .8rem; border-bottom: 1px solid var(--line-soft); text-align: left; vertical-align: top; font-size: .75rem; }
 th { background: var(--surface-muted); color: var(--ink-700); }
 td small { display: block; max-width: 16rem; margin-top: .25rem; color: var(--ink-600); }
+.profile-summary { max-width: 18rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 .row-status { display: inline-flex; padding: .15rem .45rem; border-radius: 999px; background: var(--surface-muted); font-weight: 720; }
 .is-created { background: var(--success-50); color: var(--success-700); }
 .is-manager_pending, .is-uncertain { background: var(--accent-100); color: var(--accent-700); }

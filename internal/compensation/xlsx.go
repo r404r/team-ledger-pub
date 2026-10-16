@@ -33,6 +33,9 @@ func ParseAdjustmentWorkbook(raw []byte, typ string) ([]BatchLineCommand, error)
 		CompressedBytes: maxWorkbookCompressed,
 		ExpandedBytes:   maxWorkbookExpanded,
 		Entries:         maxWorkbookEntries,
+		Rows:            510,
+		Cells:           20_000,
+		XMLNodes:        200_000,
 	})
 	if err != nil {
 		return nil, workbookSafetyError(err.Error())

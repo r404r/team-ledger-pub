@@ -232,6 +232,16 @@ func batchWorkbook(t *testing.T, headers, row []string) []byte {
 	t.Helper()
 	var buffer bytes.Buffer
 	writer := zip.NewWriter(&buffer)
+	for name, body := range map[string]string{
+		"xl/workbook.xml":            `<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Adjustments" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+		"xl/_rels/workbook.xml.rels": `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`,
+	} {
+		manifestEntry, createErr := writer.Create(name)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		_, _ = fmt.Fprint(manifestEntry, body)
+	}
 	entry, err := writer.Create("xl/worksheets/sheet1.xml")
 	if err != nil {
 		t.Fatal(err)

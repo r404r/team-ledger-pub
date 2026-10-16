@@ -24,7 +24,7 @@ func TestAPIPersonnelImportTemplateAndPreviewAreAuthorizedAndReadOnly(t *testing
 			if readErr != nil || response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" || response.Header.Get("Content-Disposition") != `attachment; filename="teamledger-personnel-import.xlsx"` {
 				t.Fatalf("template response status=%d headers=%v read=%v", response.StatusCode, response.Header, readErr)
 			}
-			rows, err := xlsx.ReadFirstSheet(raw, xlsx.Limits{CompressedBytes: 5 << 20, ExpandedBytes: 20 << 20, Entries: 1_000})
+			rows, err := xlsx.ReadFirstSheet(raw, xlsx.Limits{CompressedBytes: 5 << 20, ExpandedBytes: 20 << 20, Entries: 1_000, Rows: 101, Cells: 909, XMLNodes: 20_000})
 			if err != nil || len(rows) != 1 || rows[0].Cells[1].Text != "staff_code" || rows[0].Cells[9].Text != "departure_date" {
 				t.Fatalf("downloaded template = %#v err=%v", rows, err)
 			}

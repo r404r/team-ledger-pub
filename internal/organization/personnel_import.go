@@ -26,6 +26,8 @@ var personnelImportHeaders = []string{
 	"departure_date",
 }
 
+var personnelImportFieldLimits = []int{64, 256, 256, 320, 64, 16 << 10, 64, 10, 10}
+
 type PersonnelImportRow struct {
 	RowNumber        int     `json:"row_number"`
 	StaffCode        string  `json:"staff_code"`
@@ -80,6 +82,9 @@ func parsePersonnelWorkbook(raw []byte) (PersonnelImportPreview, error) {
 		CompressedBytes: personnelWorkbookCompressed,
 		ExpandedBytes:   personnelWorkbookExpanded,
 		Entries:         personnelWorkbookEntries,
+		Rows:            personnelWorkbookRows + 1,
+		Cells:           (personnelWorkbookRows + 1) * len(personnelImportHeaders),
+		XMLNodes:        20_000,
 	})
 	if err != nil || len(rows) == 0 || rows[0].Number != 1 {
 		return PersonnelImportPreview{}, fault.Invalid
@@ -95,19 +100,31 @@ func parsePersonnelWorkbook(raw []byte) (PersonnelImportPreview, error) {
 		if len(preview.Rows) >= personnelWorkbookRows {
 			return PersonnelImportPreview{}, fault.Invalid
 		}
+		values := make([]string, len(personnelImportHeaders))
+		for column, limit := range personnelImportFieldLimits {
+			cell, ok := source.Cells[column+1]
+			if !ok || !cell.IsText {
+				continue
+			}
+			if len(cell.Text) > limit {
+				preview.Errors = append(preview.Errors, PersonnelImportIssue{RowNumber: source.Number, Field: personnelImportHeaders[column], Code: "field_too_large"})
+				continue
+			}
+			values[column] = cell.Text
+		}
 		row := PersonnelImportRow{
 			RowNumber:        source.Number,
-			StaffCode:        textCell(source, 1),
-			LocalName:        textCell(source, 2),
-			EnglishName:      textCell(source, 3),
-			Email:            textCell(source, 4),
-			Phone:            textCell(source, 5),
-			ProfileSummary:   textCell(source, 6),
-			ManagerStaffCode: textCell(source, 7),
-			HireDate:         textCell(source, 8),
+			StaffCode:        values[0],
+			LocalName:        values[1],
+			EnglishName:      values[2],
+			Email:            values[3],
+			Phone:            values[4],
+			ProfileSummary:   values[5],
+			ManagerStaffCode: values[6],
+			HireDate:         values[7],
 		}
-		if departure := textCell(source, 9); departure != "" {
-			row.DepartureDate = &departure
+		if values[8] != "" {
+			row.DepartureDate = &values[8]
 		}
 		preview.Rows = append(preview.Rows, row)
 		validatePersonnelRow(source, &preview, len(preview.Rows)-1)
@@ -142,14 +159,6 @@ func rowEmpty(row xlsx.Row) bool {
 		}
 	}
 	return true
-}
-
-func textCell(row xlsx.Row, column int) string {
-	cell, ok := row.Cells[column]
-	if !ok || !cell.IsText {
-		return ""
-	}
-	return cell.Text
 }
 
 func validatePersonnelRow(source xlsx.Row, preview *PersonnelImportPreview, index int) {

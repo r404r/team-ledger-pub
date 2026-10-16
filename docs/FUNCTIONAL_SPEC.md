@@ -357,13 +357,47 @@ DEV-028 T2将员工目录收敛为业务查询页：初次显示当前获准在�
 
 DEV-028 T3将创建人员收敛为一次原子业务动作：创建页必填全集团Staff Code，可从当前获准员工中查找并选择直属主管/HOD，也可明确无直属主管。OP-ORG-05同一事务写profile/lifecycle、canonical identifier及可选administrative reporting；Staff Code冲突、主管不存在/跨组织/无权引用或revision变化时不留下半成品员工。成功后页面只以receipt确认提交，再按当前授权和查看日期重读完整资料；命令推进组织图导致本次会话auth epoch变化时，主体与org不变且重核对成功才继续。人员页面把lifecycle `valid_from/valid_to`的业务中文统一显示为“入职日/退职日”，API字段及半开有效期语义不变。
 
+DEV-032在P-ORG-03人员资料创建页增加可折叠的批量入口。操作者先下载TeamLedger本体生成的单工作表XLSX模板，再上传最多100行并查看规范预览；公式、数字/日期serial、额外工作表、外部关系、错误表头、重复Staff Code及同批主管闭环均拒绝。预览不保存原文件、不写employee；明确确认后，每行继续复用OP-ORG-05原子创建profile/lifecycle/Staff Code，所有两端均已确认的直属主管关系最后复用一次OP-ORG-10写入。该批量操作不是整批数据库事务：页面逐行区分已创建、主管待维护、失败、结果不确定和未处理；结果不确定只重放页面内保留的原key/body，刷新后不自动认领同Staff Code的既有员工。模板不包含任职、部门、学历或薪资字段。
+
+```mermaid
+flowchart LR
+    operator["组织/人员维护者"]
+    template["下载空白XLSX模板<br/>固定9列；无租户数据"]
+    workbook["本地填写≤100人<br/>Staff Code＋姓名＋联系<br/>主管Staff Code＋入职/退职日"]
+    preview["有界安全解析与规范预览<br/>5MiB/20MiB/1000 entries<br/>不执行公式；不写数据库"]
+    confirm{"错误为0且明确确认？"}
+    create["逐行OP-ORG-05<br/>profile＋lifecycle＋Staff Code<br/>每行独立receipt/audit"]
+    createResult{"单行提交结果"}
+    createPause["暂停批次<br/>保留原key/body并明确重放"]
+    endpoints{"员工与主管ID<br/>均已确认？"}
+    reporting["一次OP-ORG-10<br/>administrative reporting<br/>固定revision＋key/body"]
+    reportResult{"主管关系提交结果"}
+    reportPause["暂停<br/>只重放原主管命令"]
+    pending["人员已保留<br/>主管待维护"]
+    complete["逐行完成结果"]
+    directory["后续由用户进入<br/>员工目录/人员详情查询"]
+
+    operator --> template --> workbook --> preview --> confirm
+    confirm -->|"否：修正后重传"| workbook
+    confirm -->|"是"| create --> createResult
+    createResult -->|"结果不确定"| createPause --> create
+    createResult -->|"明确失败：仅该行"| complete
+    createResult -->|"receipt确认"| endpoints
+    endpoints -->|"否"| pending --> complete
+    endpoints -->|"是"| reporting --> reportResult
+    reportResult -->|"结果不确定"| reportPause --> reporting
+    reportResult -->|"明确拒绝/冲突"| pending
+    reportResult -->|"receipt确认"| complete
+    complete -.->|"后续用户操作"| directory
+```
+
 字段分类：`M` 为受 scope 约束但允许必要明文的结构 metadata（ID、关系、日期、状态、revision、记录时间）；`P` 为加密 PII/姓名/联系方式及敏感职位资料；`N` 为加密面谈/行动文本，按三个分区授权；`F` 为加密薪酬/奖金/原因/凭证/扩展；`A` 为加密 AI 文本与最小输入；`U` 为脱敏授权/审计 metadata。即使是 M/U 也不是公开数据；内容不得因字段名称“备注”变为 M。
 
 | 页面 ID / feature | 入口、字段及数据来源 | 详情/表单与操作条件 |
 | --- | --- | --- |
 | P-ORG-01 / F-ORG-001 | v12“组织树”：BG/Division/Department、employee安全ID、边/生命周期、as_of与graph revision；label另需PII，不返employee profile | root department/depth≤3/上限后重载；目录变更用OP-ORG-09，employee assignment/reporting用OP-ORG-10；不建team或自动grant |
 | P-ORG-02 / F-ORG-001 | v12“员工目录”：ID、lifecycle、as_of assignment/reporting；获PII权才含双语姓名/联系/职位正文 | department/lifecycle/as_of及body q有界过滤；创建页通过OP-ORG-05原子提交profile/lifecycle、Staff Code及可选直属主管，进入详情/历史不预载其他敏感域 |
-| P-ORG-03 / F-ORG-001及员工相关feature | v12资料/profile revision、工号/雇佣/教育、as_of单一任职、Direct Manager/HOD及历史；各工作台独立链接 | 初建Staff Code/主管随OP-ORG-05；profile更正用OP-ORG-08，后续组合主数据用OP-ORG-10；薪酬/面谈/奖金/AI各自授权/分页，不互相转授 |
+| P-ORG-03 / F-ORG-001及员工相关feature | v12资料/profile revision、工号/雇佣/教育、as_of单一任职、Direct Manager/HOD及历史；各工作台独立链接 | 单人或批量初建Staff Code复用OP-ORG-05；批量主管关系复用OP-ORG-10并逐行显示部分结果；profile更正用OP-ORG-08，后续组合主数据用OP-ORG-10；薪酬/面谈/奖金/AI各自授权/分页，不互相转授 |
 | P-INT-01 / F-INT-001 | 当前主导航`/interviews`员工ID选择、员工面谈列表/安排页、`/interviews/:id`详情；metadata及分区/授权版本/行动各自独立 | 8 INT OP已实装；列表/详情自己的有限操作提示不依赖目录read。状态/补录、显式supersedes/理由更正、独立source批准与人工发布、额外授权NDJSON、原key/body结果确认；清理/冲突/partial明确呈现 |
 | P-COMP-01 / F-COMP-001 | 已固定`/employees/:employee_id/compensation`；明确as_of/from/to四栏：现状、未来批准、当前提案、immutable批准/完整纠错，所选提案原史另显式有界页 | 5OP/initial-adjustment-correction/member_key/独立状态转换/精确对象NDJSON/grant已接通；当前快照不内嵌原史，旧修订页替换不累积，head/cursor变更销毁旧body需人工重查。无币种/税制默认，409不自动rebase |
 | P-BONUS-01 / F-BONUS-001 | DEV-010固定代码路由`/employees/:employee_id/bonuses`；目标、奖励、支付/冲销、余额/异常、扩展分离（F，OP-BONUS-01），日期/状态（M） | 目标 OP-BONUS-02/07、奖励 OP-BONUS-03/04/05、支付 OP-BONUS-06、有限扩展 OP-BONUS-08；能力分别检查，命令前重验会话并按bonus/comp revision CAS，不放一个“财务编辑”总开关 |
