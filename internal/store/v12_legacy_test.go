@@ -62,7 +62,7 @@ func TestV16MigratesPersistedV12BatchWithoutClearingData(t *testing.T) {
 		t.Fatal(err)
 	}
 	var version, rows int
-	if err = repo.DB.QueryRowContext(ctx, "SELECT max(version),count(*) FROM schema_version").Scan(&version, &rows); err != nil || version != 16 || rows != 16 {
+	if err = repo.DB.QueryRowContext(ctx, "SELECT max(version),count(*) FROM schema_version").Scan(&version, &rows); err != nil || version != 17 || rows != 17 {
 		t.Fatalf("ledger version=%d rows=%d err=%v", version, rows, err)
 	}
 	var code, state string
@@ -247,7 +247,7 @@ func TestV16MigratesPersistedV14AuditOutboxWithoutClearingData(t *testing.T) {
 	if err = repo.DB.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM audit_event WHERE id=?),(SELECT count(*) FROM audit_outbox WHERE event_id=?),(SELECT max(version) FROM schema_version)", event, event).Scan(&events, &outbox, &versions); err != nil {
 		t.Fatal(err)
 	}
-	if events != 1 || outbox != 1 || versions != 16 {
+	if events != 1 || outbox != 1 || versions != 17 {
 		t.Fatalf("migrated audit event=%d outbox=%d schema=%d", events, outbox, versions)
 	}
 	if err = repo.CheckSchema(ctx); err != nil {

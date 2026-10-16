@@ -15,6 +15,8 @@ import (
 type localUserCreateCommand struct {
 	Username        string `json:"username"`
 	InitialPassword string `json:"initial_password"`
+	AccountType     string `json:"account_type"`
+	StaffCode       string `json:"staff_code,omitempty"`
 }
 
 func (h *handler) localUserRoute(w http.ResponseWriter, r *http.Request, tokenHash []byte, requestID, purpose, key string) bool {
@@ -62,7 +64,7 @@ func (h *handler) localUserRoute(w http.ResponseWriter, r *http.Request, tokenHa
 		h.fail(w, err, requestID)
 		return true
 	}
-	result, err := h.identities.CreateLocalUser(r.Context(), identity.LocalUserRequest{SessionHash: tokenHash, Username: command.Username, InitialPassword: command.InitialPassword, Key: key, RequestID: requestID})
+	result, err := h.identities.CreateLocalUser(r.Context(), identity.LocalUserRequest{SessionHash: tokenHash, Username: command.Username, InitialPassword: command.InitialPassword, AccountType: command.AccountType, StaffCode: command.StaffCode, Key: key, RequestID: requestID})
 	if err != nil {
 		h.fail(w, err, requestID)
 		return true

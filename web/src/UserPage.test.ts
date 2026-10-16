@@ -6,8 +6,9 @@ const SUBJECT = '10000000-0000-4000-8000-000000000001'
 const ORG = '10000000-0000-4000-8000-000000000002'
 const ACCOUNT = '10000000-0000-4000-8000-000000000003'
 const CREATED_SUBJECT = '10000000-0000-4000-8000-000000000004'
+const EMPLOYEE = '10000000-0000-4000-8000-000000000007'
 const session = { subject_id: SUBJECT, org_id: ORG, capabilities: ['identity.manage'], csrf_token: 'csrf-users', mfa_recent: true, mfa_valid_until: '2027-01-01T00:00:00Z' }
-const user = { account_id: ACCOUNT, subject_id: SUBJECT, username: 'admin.user', active: true, password_change_required: false, mfa_status: 'active', created_at: '2026-10-16T01:02:03Z' }
+const user = { account_id: ACCOUNT, subject_id: SUBJECT, username: 'admin.user', account_type: 'standalone', employee_id: undefined as string | undefined, active: true, password_change_required: false, mfa_status: 'active', created_at: '2026-10-16T01:02:03Z' }
 const page = (items = [user], next_cursor: string | null = null) => ({ items, next_cursor, consistency: 'current' })
 function response(status: number, body?: unknown) { return new Response(status === 204 ? null : JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }) }
 type Call = { url: URL; method: string; headers: Headers; body?: string }
@@ -58,7 +59,7 @@ describe('P-SEC-03 local user administration', () => {
     let listReads = 0
     install(call => {
       if (call.url.pathname === '/api/v1/session') return response(200, session)
-      if (call.method === 'POST') return response(201, { account_id: ACCOUNT, subject_id: CREATED_SUBJECT })
+      if (call.method === 'POST') return response(201, { account_id: ACCOUNT, subject_id: CREATED_SUBJECT, account_type: 'standalone' })
       listReads += 1
       return response(200, page(listReads === 1 ? [user] : [user, { ...user, account_id: '10000000-0000-4000-8000-000000000005', subject_id: CREATED_SUBJECT, username: 'new.operator', password_change_required: true, mfa_status: 'enrollment_required' }]))
     })
@@ -73,13 +74,38 @@ describe('P-SEC-03 local user administration', () => {
     expect(create.headers.get('X-Access-Purpose')).toBe('security_administration')
     expect(create.headers.get('X-CSRF-Token')).toBe('csrf-users')
     expect(create.headers.get('Idempotency-Key')).toMatch(/^[0-9a-f-]{36}$/)
-    expect(JSON.parse(create.body!)).toEqual({ username: 'new.operator', initial_password: 'temporary horse battery staple' })
+    expect(JSON.parse(create.body!)).toEqual({ username: 'new.operator', initial_password: 'temporary horse battery staple', account_type: 'standalone' })
     expect((wrapper.get('input[name="initial-password"]').element as HTMLInputElement).value).toBe('')
     expect((wrapper.get('input[name="confirm-password"]').element as HTMLInputElement).value).toBe('')
     expect(wrapper.text()).not.toContain('temporary horse battery staple')
-    expect(wrapper.text()).toContain('new.operator 已创建')
+    expect(wrapper.text()).toContain('非关联账号 new.operator 已创建')
     expect(wrapper.text()).toContain('等待首次改密')
     expect(listReads).toBe(2)
+    wrapper.unmount()
+  })
+
+  it('requires an exact Staff Code for a staff-linked account and shows the returned employee binding', async () => {
+    let listReads = 0
+    install(call => {
+      if (call.url.pathname === '/api/v1/session') return response(200, session)
+      if (call.method === 'POST') return response(201, { account_id: ACCOUNT, subject_id: CREATED_SUBJECT, account_type: 'staff', employee_id: EMPLOYEE })
+      listReads += 1
+      return response(200, page(listReads === 1 ? [user] : [user, { ...user, account_id: '10000000-0000-4000-8000-000000000005', subject_id: CREATED_SUBJECT, username: 'staff.operator', account_type: 'staff', employee_id: EMPLOYEE }]))
+    })
+    const wrapper = await open()
+    await wrapper.get('select[name="account-type"]').setValue('staff')
+    await wrapper.get('input[name="staff-code"]').setValue('0007')
+    await wrapper.get('input[name="username"]').setValue('staff.operator')
+    await wrapper.get('input[name="initial-password"]').setValue('temporary horse battery staple')
+    await wrapper.get('input[name="confirm-password"]').setValue('temporary horse battery staple')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    const create = calls.find(call => call.method === 'POST')!
+    expect(JSON.parse(create.body!)).toEqual({ username: 'staff.operator', initial_password: 'temporary horse battery staple', account_type: 'staff', staff_code: '0007' })
+    expect(wrapper.text()).toContain('Staff关联账号 staff.operator 已创建')
+    expect(wrapper.text()).toContain(EMPLOYEE)
+    expect(wrapper.text()).toContain('Staff关联')
+    expect((wrapper.get('input[name="staff-code"]').element as HTMLInputElement).value).toBe('')
     wrapper.unmount()
   })
 

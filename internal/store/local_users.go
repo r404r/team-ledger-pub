@@ -49,7 +49,7 @@ func (r *Repository) ListLocalUsers(ctx context.Context, query identity.LocalUse
 	if err = authorizeLocalUserSnapshot(current, query.ExpectedOrgID, query.ExpectedSubjectID, query.ExpectedAuthEpoch, query.Now); err != nil {
 		return nil, err
 	}
-	statement := q.sql("SELECT a.id,a.subject_id,a.active,a.password_change_required,m.status,a.record_id,a.version_id,a.format_version,a.algorithm,a.dek_id,a.kek_id,a.kek_version,a.wrapped_dek,a.sealed_bytes,a.created_at FROM local_account a JOIN local_mfa_account m ON m.account_id=a.id WHERE a.org_id=? AND a.id>? ORDER BY a.id LIMIT ?", "SELECT a.id,a.subject_id,a.active,a.password_change_required,m.status,a.record_id,a.version_id,a.format_version,a.algorithm,a.dek_id,a.kek_id,a.kek_version,a.wrapped_dek,a.sealed_bytes,a.created_at FROM local_account a JOIN local_mfa_account m ON m.account_id=a.id WHERE a.org_id=$1 AND a.id>$2 ORDER BY a.id COLLATE \"C\" LIMIT $3")
+	statement := q.sql("SELECT a.id,a.subject_id,a.active,a.password_change_required,m.status,CASE WHEN p.subject_id IS NULL THEN 'standalone' ELSE 'staff' END,COALESCE(p.employee_id,''),a.record_id,a.version_id,a.format_version,a.algorithm,a.dek_id,a.kek_id,a.kek_version,a.wrapped_dek,a.sealed_bytes,a.created_at FROM local_account a JOIN local_mfa_account m ON m.account_id=a.id LEFT JOIN staff_account_access p ON p.org_id=a.org_id AND p.subject_id=a.subject_id WHERE a.org_id=? AND a.id>? ORDER BY a.id LIMIT ?", "SELECT a.id,a.subject_id,a.active,a.password_change_required,m.status,CASE WHEN p.subject_id IS NULL THEN 'standalone' ELSE 'staff' END,COALESCE(p.employee_id,''),a.record_id,a.version_id,a.format_version,a.algorithm,a.dek_id,a.kek_id,a.kek_version,a.wrapped_dek,a.sealed_bytes,a.created_at FROM local_account a JOIN local_mfa_account m ON m.account_id=a.id LEFT JOIN staff_account_access p ON p.org_id=a.org_id AND p.subject_id=a.subject_id WHERE a.org_id=$1 AND a.id>$2 ORDER BY a.id COLLATE \"C\" LIMIT $3")
 	rows, err := tx.QueryContext(ctx, statement, current.OrgID, query.After, query.Limit+1)
 	if err != nil {
 		return nil, safeError(err)
@@ -63,7 +63,7 @@ func (r *Repository) ListLocalUsers(ctx context.Context, query identity.LocalUse
 		var keyVersion, schemaVersion uint32
 		var recordID, versionID string
 		envelope := &item.Username
-		if err = rows.Scan(&item.AccountID, &item.SubjectID, &item.Active, &item.PasswordChangeRequired, &item.MFAStatus, &recordID, &versionID, &format, &envelope.Algorithm, &envelope.DEKID, &envelope.Key.KEKID, &keyVersion, &envelope.Key.Data, &envelope.SealedBytes, &created); err != nil {
+		if err = rows.Scan(&item.AccountID, &item.SubjectID, &item.Active, &item.PasswordChangeRequired, &item.MFAStatus, &item.AccountType, &item.EmployeeID, &recordID, &versionID, &format, &envelope.Algorithm, &envelope.DEKID, &envelope.Key.KEKID, &keyVersion, &envelope.Key.Data, &envelope.SealedBytes, &created); err != nil {
 			return nil, safeError(err)
 		}
 		schemaVersion = 1
@@ -89,7 +89,23 @@ func (r *Repository) ListLocalUsers(ctx context.Context, query identity.LocalUse
 
 func validLocalUserProvision(input identity.LocalUserProvision) bool {
 	binding := input.UsernameEnvelope.Context
-	return len(input.SessionHash) == 32 && value.ValidID(input.ExpectedOrgID) && value.ValidID(input.ExpectedSubjectID) && input.ExpectedAuthEpoch > 0 && value.ValidID(input.RequestID) && value.ValidID(input.Key) && value.ValidID(input.AccountID) && value.ValidID(input.SubjectID) && len(input.UsernameDigest) == 32 && len(input.CommandDigest) == 32 && input.UsernameKey.KeyID != "" && input.UsernameKey.Version > 0 && input.CommandKey.KeyID != "" && input.CommandKey.Version > 0 && input.PepperKey.KeyID != "" && input.PepperKey.Version > 0 && len(input.PasswordPHC) >= 80 && len(input.PasswordPHC) <= 256 && binding.OrgID == input.ExpectedOrgID && binding.RecordID == input.AccountID && binding.VersionID == input.AccountID && binding.EmployeeID == "" && binding.ObjectKind == "local_username" && binding.Purpose == "identity" && binding.SchemaType == "identity.local_username.v1" && binding.SchemaVersion == 1 && input.UsernameEnvelope.FormatVersion == 1 && input.UsernameEnvelope.Algorithm == "A256GCM-RANDOMNONCE" && input.UsernameEnvelope.DEKID != "" && input.UsernameEnvelope.Key.KEKID != "" && input.UsernameEnvelope.Key.Version > 0 && len(input.UsernameEnvelope.Key.Data) > 0 && len(input.UsernameEnvelope.SealedBytes) >= 39 && !input.Now.IsZero()
+	staffLookupValid := input.AccountType == "standalone" && len(input.StaffLookupDigest) == 0 && input.StaffLookupKey.KeyID == "" && input.StaffLookupKey.Version == 0 ||
+		input.AccountType == "staff" && len(input.StaffLookupDigest) == 32 && input.StaffLookupKey.KeyID != "" && input.StaffLookupKey.Version > 0
+	return staffLookupValid && len(input.SessionHash) == 32 && value.ValidID(input.ExpectedOrgID) && value.ValidID(input.ExpectedSubjectID) && input.ExpectedAuthEpoch > 0 && value.ValidID(input.RequestID) && value.ValidID(input.Key) && value.ValidID(input.AccountID) && value.ValidID(input.SubjectID) && len(input.UsernameDigest) == 32 && len(input.CommandDigest) == 32 && input.UsernameKey.KeyID != "" && input.UsernameKey.Version > 0 && input.CommandKey.KeyID != "" && input.CommandKey.Version > 0 && input.PepperKey.KeyID != "" && input.PepperKey.Version > 0 && len(input.PasswordPHC) >= 80 && len(input.PasswordPHC) <= 256 && binding.OrgID == input.ExpectedOrgID && binding.RecordID == input.AccountID && binding.VersionID == input.AccountID && binding.EmployeeID == "" && binding.ObjectKind == "local_username" && binding.Purpose == "identity" && binding.SchemaType == "identity.local_username.v1" && binding.SchemaVersion == 1 && input.UsernameEnvelope.FormatVersion == 1 && input.UsernameEnvelope.Algorithm == "A256GCM-RANDOMNONCE" && input.UsernameEnvelope.DEKID != "" && input.UsernameEnvelope.Key.KEKID != "" && input.UsernameEnvelope.Key.Version > 0 && len(input.UsernameEnvelope.Key.Data) > 0 && len(input.UsernameEnvelope.SealedBytes) >= 39 && !input.Now.IsZero()
+}
+
+func localUserResult(ctx context.Context, q reader, orgID, subjectID, accountID string) (identity.LocalUserResult, error) {
+	result := identity.LocalUserResult{AccountID: accountID, SubjectID: subjectID, AccountType: "standalone"}
+	var employeeID string
+	err := q.db.QueryRowContext(ctx, q.sql("SELECT employee_id FROM staff_account_access WHERE org_id=? AND subject_id=?", "SELECT employee_id FROM staff_account_access WHERE org_id=$1 AND subject_id=$2"), orgID, subjectID).Scan(&employeeID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return result, nil
+	}
+	if err != nil {
+		return identity.LocalUserResult{}, safeError(err)
+	}
+	result.AccountType, result.EmployeeID = "staff", employeeID
+	return result, nil
 }
 
 func (r *Repository) CreateLocalUser(ctx context.Context, input identity.LocalUserProvision) (identity.LocalUserResult, error) {
@@ -117,10 +133,26 @@ func (r *Repository) CreateLocalUser(ctx context.Context, input identity.LocalUs
 		if keyID != input.CommandKey.KeyID || keyVersion != input.CommandKey.Version || subtle.ConstantTimeCompare(digest, input.CommandDigest) != 1 {
 			return identity.LocalUserResult{}, fault.Mismatch
 		}
-		return identity.LocalUserResult{AccountID: accountID, SubjectID: subjectID}, nil
+		return localUserResult(ctx, q, current.OrgID, subjectID, accountID)
 	}
 	if !errors.Is(receiptErr, sql.ErrNoRows) {
 		return identity.LocalUserResult{}, safeError(receiptErr)
+	}
+	employeeID := ""
+	if input.AccountType == "staff" {
+		location, locationErr := time.LoadLocation(current.Timezone)
+		if locationErr != nil {
+			return identity.LocalUserResult{}, fault.Unavailable
+		}
+		day := input.Now.In(location).Format("2006-01-02")
+		lookup := q.sql(
+			"SELECT i.employee_id FROM employee_business_identifier i JOIN employee e ON e.org_id=i.org_id AND e.id=i.employee_id WHERE i.org_id=? AND i.kind='staff_code' AND i.lookup_key_id=? AND i.lookup_key_version=? AND i.lookup_digest=? AND i.valid_from<=? AND (i.valid_to IS NULL OR i.valid_to>?) AND e.valid_from<=? AND (e.valid_to IS NULL OR e.valid_to>?) LIMIT 1",
+			"SELECT i.employee_id FROM employee_business_identifier i JOIN employee e ON e.org_id=i.org_id AND e.id=i.employee_id WHERE i.org_id=$1 AND i.kind='staff_code' AND i.lookup_key_id=$2 AND i.lookup_key_version=$3 AND i.lookup_digest=$4 AND i.valid_from<=$5 AND (i.valid_to IS NULL OR i.valid_to>$6) AND e.valid_from<=$7 AND (e.valid_to IS NULL OR e.valid_to>$8) LIMIT 1 FOR UPDATE OF i,e")
+		if err = tx.QueryRowContext(ctx, lookup, current.OrgID, input.StaffLookupKey.KeyID, input.StaffLookupKey.Version, input.StaffLookupDigest, day, day, day, day).Scan(&employeeID); errors.Is(err, sql.ErrNoRows) {
+			return identity.LocalUserResult{}, fault.NotFound
+		} else if err != nil {
+			return identity.LocalUserResult{}, safeError(err)
+		}
 	}
 	at := r.BindTime(input.Now)
 	if _, err = tx.ExecContext(ctx, q.sql("INSERT INTO subject(org_id,id,active,auth_epoch) VALUES(?,?,1,1)", "INSERT INTO subject(org_id,id,active,auth_epoch) VALUES($1,$2,true,1)"), current.OrgID, input.SubjectID); err != nil {
@@ -129,6 +161,14 @@ func (r *Repository) CreateLocalUser(ctx context.Context, input identity.LocalUs
 	e := input.UsernameEnvelope
 	if _, err = tx.ExecContext(ctx, q.sql("INSERT INTO local_account(id,org_id,subject_id,username_digest,username_key_id,username_key_version,active,password_change_required,record_id,version_id,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes,created_at) VALUES(?,?,?,?,?,?,1,1,?,?,'identity','identity.local_username.v1',1,1,?,?,?,?,?,?,?)", "INSERT INTO local_account(id,org_id,subject_id,username_digest,username_key_id,username_key_version,active,password_change_required,record_id,version_id,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes,created_at) VALUES($1,$2,$3,$4,$5,$6,true,true,$7,$8,'identity','identity.local_username.v1',1,1,$9,$10,$11,$12,$13,$14,$15)"), input.AccountID, current.OrgID, input.SubjectID, input.UsernameDigest, input.UsernameKey.KeyID, input.UsernameKey.Version, input.AccountID, input.AccountID, e.Algorithm, e.DEKID, e.Key.KEKID, e.Key.Version, e.Key.Data, e.SealedBytes, at); err != nil {
 		return identity.LocalUserResult{}, conflictError(err)
+	}
+	if input.AccountType == "staff" {
+		if _, err = tx.ExecContext(ctx, q.sql("INSERT INTO subject_employee(org_id,subject_id,employee_id) VALUES(?,?,?)", "INSERT INTO subject_employee(org_id,subject_id,employee_id) VALUES($1,$2,$3)"), current.OrgID, input.SubjectID, employeeID); err != nil {
+			return identity.LocalUserResult{}, conflictError(err)
+		}
+		if _, err = tx.ExecContext(ctx, q.sql("INSERT INTO staff_account_access(org_id,subject_id,employee_id,policy_version,created_by,created_at) VALUES(?,?,?,'staff_default.v1',?,?)", "INSERT INTO staff_account_access(org_id,subject_id,employee_id,policy_version,created_by,created_at) VALUES($1,$2,$3,'staff_default.v1',$4,$5)"), current.OrgID, input.SubjectID, employeeID, current.SubjectID, at); err != nil {
+			return identity.LocalUserResult{}, conflictError(err)
+		}
 	}
 	if _, err = tx.ExecContext(ctx, q.sql("INSERT INTO local_credential(account_id,pepper_key_id,pepper_version,password_phc,revision,updated_at) VALUES(?,?,?,?,1,?)", "INSERT INTO local_credential(account_id,pepper_key_id,pepper_version,password_phc,revision,updated_at) VALUES($1,$2,$3,$4,1,$5)"), input.AccountID, input.PepperKey.KeyID, input.PepperKey.Version, input.PasswordPHC, at); err != nil {
 		return identity.LocalUserResult{}, safeError(err)
@@ -145,8 +185,12 @@ func (r *Repository) CreateLocalUser(ctx context.Context, input identity.LocalUs
 	if err = insertAudit(ctx, tx, r.Backend, organization.Audit{ID: value.NewID(), OrgID: current.OrgID, SubjectID: current.SubjectID, Operation: "OP-SEC-07", Purpose: authz.ManagementPurpose, RequestID: input.RequestID, Outcome: "allowed", At: input.Now}); err != nil {
 		return identity.LocalUserResult{}, err
 	}
+	created, err := localUserResult(ctx, q, current.OrgID, input.SubjectID, input.AccountID)
+	if err != nil {
+		return identity.LocalUserResult{}, err
+	}
 	if err = tx.Commit(); err != nil {
 		return identity.LocalUserResult{}, fault.Unavailable
 	}
-	return identity.LocalUserResult{AccountID: input.AccountID, SubjectID: input.SubjectID}, nil
+	return created, nil
 }

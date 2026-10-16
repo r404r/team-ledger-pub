@@ -15,6 +15,7 @@ import (
 
 	"github.com/r404r/team-ledger/internal/httpapi"
 	"github.com/r404r/team-ledger/internal/identity"
+	"github.com/r404r/team-ledger/internal/organization"
 	"github.com/r404r/team-ledger/internal/sensitive"
 	"github.com/r404r/team-ledger/internal/testsupport"
 	"github.com/r404r/team-ledger/internal/value"
@@ -33,6 +34,9 @@ func TestLocalUserAdministrationRequiresPermissionAndInitialPasswordChange(t *te
 	exec("INSERT INTO capability_assignment(org_id,subject_id,capability,scope_kind,scope_id) VALUES(?,?,'identity.manage','org',?)", f.OrgID, f.Owner.SubjectID, f.OrgID)
 	exec("INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required) VALUES(?,?,?,'identity.manage','audit','org',?,'security_administration',?,?,0,0,1)", value.NewID(), f.OrgID, f.Owner.SubjectID, f.OrgID, f.Repo.BindTime(f.Now.Add(-time.Hour)), f.Repo.BindTime(f.Now.Add(time.Hour)))
 	keys := testsupport.MACKeys{Key: f.CSRFKey}
+	f.Service.StaffCodeMAC = func(ctx context.Context, frame []byte) (sensitive.MACValue, error) {
+		return keys.MAC(ctx, sensitive.DomainStaffCodeLookup, frame)
+	}
 	identities, err := identity.NewLocal(ctx, f.Repo, f.Repo, keys, sensitive.Cipher{Wrapper: unavailableUserTestWrapper{}}, sensitive.Cipher{Wrapper: httpLocalWrapper{}})
 	if err != nil {
 		t.Fatal(err)
@@ -99,40 +103,66 @@ func TestLocalUserAdministrationRequiresPermissionAndInitialPasswordChange(t *te
 		t.Fatal("user without identity.manage listed local users", denied.Status, string(denied.Body))
 	}
 	key := value.NewID()
-	created := send(f.Owner, http.MethodPost, "/api/v1/security/users", `{"username":"first.operator","initial_password":"temporary horse battery staple"}`, "security_administration", key, nil, "")
+	created := send(f.Owner, http.MethodPost, "/api/v1/security/users", `{"username":"first.operator","initial_password":"temporary horse battery staple","account_type":"standalone"}`, "security_administration", key, nil, "")
 	if created.Status != http.StatusCreated {
 		t.Fatal("local user create failed", created.Status, string(created.Body))
 	}
 	var first identity.LocalUserResult
-	if json.Unmarshal(created.Body, &first) != nil || !value.ValidID(first.AccountID) || !value.ValidID(first.SubjectID) {
+	if json.Unmarshal(created.Body, &first) != nil || !value.ValidID(first.AccountID) || !value.ValidID(first.SubjectID) || first.AccountType != "standalone" || first.EmployeeID != "" {
 		t.Fatal("local user create result invalid", string(created.Body))
 	}
-	replayed := send(f.Owner, http.MethodPost, "/api/v1/security/users", `{"username":"first.operator","initial_password":"temporary horse battery staple"}`, "security_administration", key, nil, "")
+	replayed := send(f.Owner, http.MethodPost, "/api/v1/security/users", `{"username":"first.operator","initial_password":"temporary horse battery staple","account_type":"standalone"}`, "security_administration", key, nil, "")
 	var replayResult identity.LocalUserResult
 	if replayed.Status != http.StatusCreated || json.Unmarshal(replayed.Body, &replayResult) != nil || replayResult != first {
 		t.Fatal("local user idempotent replay changed result", replayed.Status, string(replayed.Body))
 	}
-	duplicate := send(f.Owner, http.MethodPost, "/api/v1/security/users", `{"username":"first.operator","initial_password":"another temporary password"}`, "security_administration", value.NewID(), nil, "")
+	duplicate := send(f.Owner, http.MethodPost, "/api/v1/security/users", `{"username":"first.operator","initial_password":"another temporary password","account_type":"standalone"}`, "security_administration", value.NewID(), nil, "")
 	if duplicate.Status != http.StatusConflict {
 		t.Fatal("duplicate username was not rejected", duplicate.Status, string(duplicate.Body))
 	}
-	second := send(f.Owner, http.MethodPost, "/api/v1/security/users", `{"username":"second.operator","initial_password":"second temporary password"}`, "security_administration", value.NewID(), nil, "")
+	second := send(f.Owner, http.MethodPost, "/api/v1/security/users", `{"username":"second.operator","initial_password":"second temporary password","account_type":"standalone"}`, "security_administration", value.NewID(), nil, "")
 	if second.Status != http.StatusCreated {
 		t.Fatal("second local user create failed", second.Status, string(second.Body))
 	}
 	listed := send(f.Owner, http.MethodGet, "/api/v1/security/users?limit=1", "", "security_administration", "", nil, "")
 	var page identity.LocalUserPage
-	if listed.Status != http.StatusOK || json.Unmarshal(listed.Body, &page) != nil || len(page.Items) != 1 || page.NextCursor == nil || !page.Items[0].PasswordChangeRequired {
+	if listed.Status != http.StatusOK || json.Unmarshal(listed.Body, &page) != nil || len(page.Items) != 1 || page.NextCursor == nil || !page.Items[0].PasswordChangeRequired || page.Items[0].AccountType != "standalone" || page.Items[0].EmployeeID != "" {
 		t.Fatal("first local user page invalid", listed.Status, string(listed.Body))
 	}
 	nextPageResponse := send(f.Owner, http.MethodGet, "/api/v1/security/users?limit=1&cursor="+url.QueryEscape(*page.NextCursor), "", "security_administration", "", nil, "")
 	var nextPage identity.LocalUserPage
-	if nextPageResponse.Status != http.StatusOK || json.Unmarshal(nextPageResponse.Body, &nextPage) != nil || len(nextPage.Items) != 1 || nextPage.NextCursor != nil || !nextPage.Items[0].PasswordChangeRequired || nextPage.Items[0].Username == page.Items[0].Username {
+	if nextPageResponse.Status != http.StatusOK || json.Unmarshal(nextPageResponse.Body, &nextPage) != nil || len(nextPage.Items) != 1 || nextPage.NextCursor != nil || !nextPage.Items[0].PasswordChangeRequired || nextPage.Items[0].AccountType != "standalone" || nextPage.Items[0].EmployeeID != "" || nextPage.Items[0].Username == page.Items[0].Username {
 		t.Fatal("second local user page invalid", nextPageResponse.Status, string(nextPageResponse.Body))
 	}
 	names := map[string]bool{page.Items[0].Username: true, nextPage.Items[0].Username: true}
 	if !names["first.operator"] || !names["second.operator"] {
 		t.Fatal("paginated local user list lost an account", names)
+	}
+	staffCode, catalogRevision, graphRevision := "STAFF-ACCOUNT-001", "1", "1"
+	employee, createErr := f.Service.Create(ctx, f.Request(f.Owner), f.OrgID, organization.CreateCommand{
+		Profile:   organization.Profile{LocalName: "合成员工账号"},
+		Lifecycle: organization.Lifecycle{ValidFrom: f.Now.Format("2006-01-02")},
+		StaffCode: &staffCode, ExpectedCatalogRevision: &catalogRevision, ExpectedGraphRevision: &graphRevision,
+	})
+	if createErr != nil {
+		t.Fatal("create staff candidate:", createErr)
+	}
+	staffBody := `{"username":"staff.operator","initial_password":"staff temporary password","account_type":"staff","staff_code":"STAFF-ACCOUNT-001"}`
+	staffResponse := send(f.Owner, http.MethodPost, "/api/v1/security/users", staffBody, "security_administration", value.NewID(), nil, "")
+	var staffUser identity.LocalUserResult
+	if staffResponse.Status != http.StatusCreated || json.Unmarshal(staffResponse.Body, &staffUser) != nil || staffUser.AccountType != "staff" || staffUser.EmployeeID != employee.ID {
+		t.Fatal("staff-linked account create failed", staffResponse.Status, string(staffResponse.Body))
+	}
+	if f.Count(t, "staff_account_access") != 1 || f.Count(t, "subject_employee") != 1 {
+		t.Fatal("staff account binding and default policy were not committed")
+	}
+	duplicateStaff := send(f.Owner, http.MethodPost, "/api/v1/security/users", `{"username":"staff.duplicate","initial_password":"staff duplicate password","account_type":"staff","staff_code":"STAFF-ACCOUNT-001"}`, "security_administration", value.NewID(), nil, "")
+	if duplicateStaff.Status != http.StatusConflict || f.Count(t, "local_account") != 3 || f.Count(t, "staff_account_access") != 1 {
+		t.Fatal("duplicate staff binding left partial account", duplicateStaff.Status, string(duplicateStaff.Body))
+	}
+	missingStaff := send(f.Owner, http.MethodPost, "/api/v1/security/users", `{"username":"staff.missing","initial_password":"staff missing password","account_type":"staff","staff_code":"UNKNOWN-STAFF"}`, "security_administration", value.NewID(), nil, "")
+	if missingStaff.Status != http.StatusNotFound || f.Count(t, "local_account") != 3 {
+		t.Fatal("unknown Staff Code did not fail atomically", missingStaff.Status, string(missingStaff.Body))
 	}
 
 	login := send(testsupport.Credential{}, http.MethodPost, "/api/v1/auth/local/login", `{"username":"first.operator","password":"temporary horse battery staple","return_to":"/security/users","totp_code":""}`, "", "", nil, "")
@@ -158,7 +188,7 @@ func TestLocalUserAdministrationRequiresPermissionAndInitialPasswordChange(t *te
 		t.Fatal("initial password remained usable", oldLogin.Status)
 	}
 	var createAudits, listAudits int
-	if err = f.Repo.DB.QueryRowContext(ctx, "SELECT count(*) FROM audit_event WHERE operation='OP-SEC-07' AND subject_id=?", f.Owner.SubjectID).Scan(&createAudits); err != nil || createAudits != 2 {
+	if err = f.Repo.DB.QueryRowContext(ctx, "SELECT count(*) FROM audit_event WHERE operation='OP-SEC-07' AND subject_id=?", f.Owner.SubjectID).Scan(&createAudits); err != nil || createAudits != 3 {
 		t.Fatal("user create audit missing or replayed", createAudits, err)
 	}
 	if err = f.Repo.DB.QueryRowContext(ctx, "SELECT count(*) FROM audit_event WHERE operation='OP-SEC-08' AND subject_id=?", f.Owner.SubjectID).Scan(&listAudits); err != nil || listAudits != 2 {

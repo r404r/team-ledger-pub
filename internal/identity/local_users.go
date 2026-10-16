@@ -12,6 +12,7 @@ import (
 
 	"github.com/r404r/team-ledger/internal/authz"
 	"github.com/r404r/team-ledger/internal/fault"
+	"github.com/r404r/team-ledger/internal/organization"
 	"github.com/r404r/team-ledger/internal/sensitive"
 	"github.com/r404r/team-ledger/internal/value"
 )
@@ -22,6 +23,8 @@ type LocalUserRequest struct {
 	SessionHash     []byte
 	Username        string
 	InitialPassword string
+	AccountType     string
+	StaffCode       string
 	Key             string
 	RequestID       string
 }
@@ -37,6 +40,8 @@ type LocalUser struct {
 	AccountID              string    `json:"account_id"`
 	SubjectID              string    `json:"subject_id"`
 	Username               string    `json:"username"`
+	AccountType            string    `json:"account_type"`
+	EmployeeID             string    `json:"employee_id,omitempty"`
 	Active                 bool      `json:"active"`
 	PasswordChangeRequired bool      `json:"password_change_required"`
 	MFAStatus              string    `json:"mfa_status"`
@@ -50,15 +55,17 @@ type LocalUserPage struct {
 }
 
 type LocalUserResult struct {
-	AccountID string `json:"account_id"`
-	SubjectID string `json:"subject_id"`
+	AccountID   string `json:"account_id"`
+	SubjectID   string `json:"subject_id"`
+	AccountType string `json:"account_type"`
+	EmployeeID  string `json:"employee_id,omitempty"`
 }
 
 type LocalUserRecord struct {
-	AccountID, SubjectID, MFAStatus string
-	Username                        sensitive.Envelope
-	Active, PasswordChangeRequired  bool
-	CreatedAt                       time.Time
+	AccountID, SubjectID, MFAStatus, AccountType, EmployeeID string
+	Username                                                 sensitive.Envelope
+	Active, PasswordChangeRequired                           bool
+	CreatedAt                                                time.Time
 }
 
 type LocalUserStoreQuery struct {
@@ -71,15 +78,15 @@ type LocalUserStoreQuery struct {
 }
 
 type LocalUserProvision struct {
-	SessionHash                          []byte
-	ExpectedOrgID, ExpectedSubjectID     string
-	ExpectedAuthEpoch                    int64
-	RequestID, Key, AccountID, SubjectID string
-	UsernameDigest, CommandDigest        []byte
-	UsernameKey, CommandKey, PepperKey   sensitive.KeyReference
-	UsernameEnvelope                     sensitive.Envelope
-	PasswordPHC                          string
-	Now                                  time.Time
+	SessionHash                                        []byte
+	ExpectedOrgID, ExpectedSubjectID                   string
+	ExpectedAuthEpoch                                  int64
+	RequestID, Key, AccountID, SubjectID, AccountType  string
+	UsernameDigest, CommandDigest, StaffLookupDigest   []byte
+	UsernameKey, CommandKey, PepperKey, StaffLookupKey sensitive.KeyReference
+	UsernameEnvelope                                   sensitive.Envelope
+	PasswordPHC                                        string
+	Now                                                time.Time
 }
 
 type localUserCursorPayload struct {
@@ -222,7 +229,7 @@ func (s *Service) ListLocalUsers(ctx context.Context, request LocalUserQuery) (L
 		if _, canonicalErr := CanonicalLocalUsername(username); canonicalErr != nil {
 			return LocalUserPage{}, fault.Unavailable
 		}
-		page.Items = append(page.Items, LocalUser{AccountID: record.AccountID, SubjectID: record.SubjectID, Username: username, Active: record.Active, PasswordChangeRequired: record.PasswordChangeRequired, MFAStatus: record.MFAStatus, CreatedAt: record.CreatedAt})
+		page.Items = append(page.Items, LocalUser{AccountID: record.AccountID, SubjectID: record.SubjectID, Username: username, AccountType: record.AccountType, EmployeeID: record.EmployeeID, Active: record.Active, PasswordChangeRequired: record.PasswordChangeRequired, MFAStatus: record.MFAStatus, CreatedAt: record.CreatedAt})
 	}
 	if more {
 		cursor, cursorErr := s.sealLocalUserCursor(ctx, current, page.Items[len(page.Items)-1].AccountID, request.Limit, now)
@@ -235,7 +242,18 @@ func (s *Service) ListLocalUsers(ctx context.Context, request LocalUserQuery) (L
 }
 
 func (s *Service) CreateLocalUser(ctx context.Context, request LocalUserRequest) (LocalUserResult, error) {
-	if s == nil || s.local == nil || len(request.SessionHash) != sha256.Size || !value.ValidID(request.Key) || !value.ValidID(request.RequestID) {
+	if s == nil || s.local == nil || len(request.SessionHash) != sha256.Size || !value.ValidID(request.Key) || !value.ValidID(request.RequestID) ||
+		(request.AccountType != "standalone" && request.AccountType != "staff") {
+		return LocalUserResult{}, fault.Invalid
+	}
+	staffCode := ""
+	if request.AccountType == "staff" {
+		var ok bool
+		staffCode, ok = organization.NormalizeStaffCode(request.StaffCode)
+		if !ok {
+			return LocalUserResult{}, fault.Invalid
+		}
+	} else if request.StaffCode != "" {
 		return LocalUserResult{}, fault.Invalid
 	}
 	username, err := CanonicalLocalUsername(request.Username)
@@ -255,6 +273,17 @@ func (s *Service) CreateLocalUser(ctx context.Context, request LocalUserRequest)
 		return LocalUserResult{}, err
 	}
 	defer clear(usernameMAC.Digest)
+	var staffMAC sensitive.MACValue
+	if request.AccountType == "staff" {
+		frame := []byte("staff-code\x00" + current.OrgID + "\x00" + staffCode)
+		staffMAC, err = s.local.keys.MAC(ctx, sensitive.DomainStaffCodeLookup, frame)
+		clear(frame)
+		if err != nil || staffMAC.KeyID == "" || staffMAC.Version == 0 || len(staffMAC.Digest) != sha256.Size {
+			clear(staffMAC.Digest)
+			return LocalUserResult{}, fault.Unavailable
+		}
+		defer clear(staffMAC.Digest)
+	}
 	phc, pepper, err := NewPasswordCredential(ctx, s.local.keys, request.InitialPassword)
 	if err != nil {
 		return LocalUserResult{}, err
@@ -267,8 +296,10 @@ func (s *Service) CreateLocalUser(ctx context.Context, request LocalUserRequest)
 	}
 	defer clear(envelope.SealedBytes)
 	commandPlain := append(localFrame("username", []byte(username)), localFrame("initial_password", []byte(request.InitialPassword))...)
+	commandPlain = append(commandPlain, localFrame("account_type", []byte(request.AccountType))...)
+	commandPlain = append(commandPlain, localFrame("staff_code", []byte(staffCode))...)
 	defer clear(commandPlain)
-	commandFrame := localFrame("TEAMLEDGER-LOCAL-USER-CREATE\x00V1", commandPlain)
+	commandFrame := localFrame("TEAMLEDGER-LOCAL-USER-CREATE\x00V2", commandPlain)
 	defer clear(commandFrame)
 	commandMAC, err := s.local.keys.MAC(ctx, sensitive.DomainCommandReceipt, commandFrame)
 	if err != nil || commandMAC.KeyID == "" || commandMAC.Version == 0 || len(commandMAC.Digest) != sha256.Size {
@@ -276,5 +307,13 @@ func (s *Service) CreateLocalUser(ctx context.Context, request LocalUserRequest)
 		return LocalUserResult{}, fault.Unavailable
 	}
 	defer clear(commandMAC.Digest)
-	return s.local.store.CreateLocalUser(ctx, LocalUserProvision{SessionHash: request.SessionHash, ExpectedOrgID: current.OrgID, ExpectedSubjectID: current.SubjectID, ExpectedAuthEpoch: current.AuthEpoch, RequestID: request.RequestID, Key: request.Key, AccountID: accountID, SubjectID: subjectID, UsernameDigest: usernameMAC.Digest, CommandDigest: commandMAC.Digest, UsernameKey: sensitive.KeyReference{KeyID: usernameMAC.KeyID, Version: usernameMAC.Version}, CommandKey: sensitive.KeyReference{KeyID: commandMAC.KeyID, Version: commandMAC.Version}, PepperKey: pepper, UsernameEnvelope: envelope, PasswordPHC: phc, Now: now})
+	return s.local.store.CreateLocalUser(ctx, LocalUserProvision{
+		SessionHash: request.SessionHash, ExpectedOrgID: current.OrgID, ExpectedSubjectID: current.SubjectID, ExpectedAuthEpoch: current.AuthEpoch,
+		RequestID: request.RequestID, Key: request.Key, AccountID: accountID, SubjectID: subjectID, AccountType: request.AccountType,
+		UsernameDigest: usernameMAC.Digest, CommandDigest: commandMAC.Digest, StaffLookupDigest: staffMAC.Digest,
+		UsernameKey: sensitive.KeyReference{KeyID: usernameMAC.KeyID, Version: usernameMAC.Version},
+		CommandKey:  sensitive.KeyReference{KeyID: commandMAC.KeyID, Version: commandMAC.Version},
+		PepperKey:   pepper, StaffLookupKey: sensitive.KeyReference{KeyID: staffMAC.KeyID, Version: staffMAC.Version},
+		UsernameEnvelope: envelope, PasswordPHC: phc, Now: now,
+	})
 }

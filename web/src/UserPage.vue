@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 
 
 const emit = defineEmits<{ 'session-expired': [] }>()
 type Session = { subject_id: string; org_id: string; capabilities: string[]; csrf_token: string; mfa_recent: boolean; mfa_valid_until: string }
-type LocalUser = { account_id: string; subject_id: string; username: string; active: boolean; password_change_required: boolean; mfa_status: 'enrollment_required' | 'active'; created_at: string }
+type LocalUser = { account_id: string; subject_id: string; username: string; account_type: 'standalone' | 'staff'; employee_id?: string; active: boolean; password_change_required: boolean; mfa_status: 'enrollment_required' | 'active'; created_at: string }
 type UserPage = { items: LocalUser[]; next_cursor: string | null; consistency: 'current' }
 type Operation = { generation: number; controller: AbortController }
 
@@ -16,12 +16,12 @@ const busy = ref(false)
 const creating = ref(false)
 const error = ref('')
 const notice = ref('')
-const form = reactive({ username: '', password: '', confirm: '' })
+const form = reactive({ username: '', password: '', confirm: '', accountType: 'standalone' as 'standalone' | 'staff', staffCode: '' })
 let alive = false
 let generation = 0
 let controller: AbortController | null = null
 
-const canSubmit = computed(() => !creating.value && usernamePattern.test(form.username) && form.password.length >= 12 && form.password.length <= 256 && form.password === form.confirm)
+const canSubmit = computed(() => !creating.value && usernamePattern.test(form.username) && form.password.length >= 12 && form.password.length <= 256 && form.password === form.confirm && (form.accountType === 'standalone' ? form.staffCode === '' : form.staffCode.length > 0 && form.staffCode.length <= 256 && form.staffCode.trim() === form.staffCode))
 function timestamp(value: unknown): value is string { return typeof value === 'string' && !Number.isNaN(Date.parse(value)) && /^\d{4}-\d{2}-\d{2}T/.test(value) }
 function validSession(value: unknown): value is Session {
   if (!value || typeof value !== 'object') return false
@@ -31,7 +31,7 @@ function validSession(value: unknown): value is Session {
 function validUser(value: unknown): value is LocalUser {
   if (!value || typeof value !== 'object') return false
   const item = value as LocalUser
-  return uuid.test(item.account_id) && uuid.test(item.subject_id) && usernamePattern.test(item.username) && typeof item.active === 'boolean' && typeof item.password_change_required === 'boolean' && ['enrollment_required', 'active'].includes(item.mfa_status) && timestamp(item.created_at)
+  return uuid.test(item.account_id) && uuid.test(item.subject_id) && usernamePattern.test(item.username) && ['standalone', 'staff'].includes(item.account_type) && (item.account_type === 'staff' ? typeof item.employee_id === 'string' && uuid.test(item.employee_id) : item.employee_id === undefined) && typeof item.active === 'boolean' && typeof item.password_change_required === 'boolean' && ['enrollment_required', 'active'].includes(item.mfa_status) && timestamp(item.created_at)
 }
 function begin(): Operation {
   generation += 1
@@ -89,31 +89,35 @@ async function load(cursor = '', append = false) {
 }
 async function createUser() {
   if (!session.value || !canSubmit.value) {
-    error.value = form.password !== form.confirm ? '两次输入的新用户初始密码不一致。' : '账号须为 3..64 位小写字母、数字、点、下划线或连字符；初始密码须为 12..256 位。'
+    error.value = form.password !== form.confirm ? '两次输入的新用户初始密码不一致。' : form.accountType === 'staff' && !form.staffCode ? 'Staff关联账号必须填写当前有效的Staff Code。' : '账号须为 3..64 位小写字母、数字、点、下划线或连字符；初始密码须为 12..256 位。'
     return
   }
   const operation = begin()
   creating.value = true
   notice.value = ''
   const username = form.username
+  const accountType = form.accountType
+  const staffCode = form.staffCode
   const key = crypto.randomUUID()
   try {
     const response = await request('/security/users', operation, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': session.value.csrf_token, 'Idempotency-Key': key },
-      body: JSON.stringify({ username, initial_password: form.password }),
+      body: JSON.stringify({ username, initial_password: form.password, account_type: accountType, ...(accountType === 'staff' ? { staff_code: staffCode } : {}) }),
     })
     form.password = ''; form.confirm = ''
     const result: unknown = await response.json()
-    if (!current(operation) || !result || typeof result !== 'object' || !uuid.test((result as { account_id?: string }).account_id ?? '') || !uuid.test((result as { subject_id?: string }).subject_id ?? '')) throw Object.assign(new Error('invalid result'), { status: 503 })
-    form.username = ''
-    notice.value = `账号 ${username} 已创建。初始密码不会再次显示；用户首次登录必须修改密码并登记 TOTP。`
+    if (!current(operation) || !result || typeof result !== 'object' || !uuid.test((result as { account_id?: string }).account_id ?? '') || !uuid.test((result as { subject_id?: string }).subject_id ?? '') || (result as { account_type?: string }).account_type !== accountType || (accountType === 'staff' && !uuid.test((result as { employee_id?: string }).employee_id ?? ''))) throw Object.assign(new Error('invalid result'), { status: 503 })
+    form.username = ''; form.staffCode = ''
+    notice.value = accountType === 'staff'
+      ? `Staff关联账号 ${username} 已创建。默认仅可查看本人及当前一层直属下属的员工与面谈信息，并可新建面谈；初始密码不会再次显示。`
+      : `非关联账号 ${username} 已创建且没有默认业务权限。初始密码不会再次显示；用户首次登录必须修改密码并登记 TOTP。`
     await load()
   } catch (cause) {
     form.password = ''; form.confirm = ''
     if (!current(operation)) return
     const status = Number((cause as { status?: number }).status ?? 503)
-    error.value = status === 401 ? '会话已失效，创建结果未保留在页面。' : status === 403 ? 'identity.manage 权限或近期 MFA 已失效。' : status === 409 ? '账号已存在，或相同请求标识对应了不同内容。' : status === 422 ? '账号或初始密码格式不符合要求。' : '创建结果不确定。请先刷新用户列表核对，避免重复创建。'
+    error.value = status === 401 ? '会话已失效，创建结果未保留在页面。' : status === 403 ? 'identity.manage 权限或近期 MFA 已失效。' : status === 404 ? 'Staff Code未对应当前有效员工；未创建账号。' : status === 409 ? '账号已存在、员工已绑定其他账号，或相同请求标识对应了不同内容。' : status === 422 ? '账号、账号类型、Staff Code或初始密码格式不符合要求。' : '创建结果不确定。请先刷新用户列表核对，避免重复创建。'
     if (status === 401) { clearProtected(); emit('session-expired') }
   } finally {
     creating.value = false
@@ -135,13 +139,15 @@ onBeforeUnmount(() => { alive = false; generation += 1; controller?.abort(); cle
     <header class="page-hero">
       <p class="eyebrow">P-SEC-03 · 本地身份</p>
       <h1>用户管理</h1>
-      <p>创建可登录 TeamLedger 的本地账号。账号创建与员工资料、业务授权相互独立；新用户默认没有业务权限。</p>
+      <p>创建可登录 TeamLedger 的本地账号。非关联账号没有默认业务权限；Staff关联账号按当前直属关系获得最小默认读取与面谈创建权限。</p>
     </header>
     <p v-if="error" class="error-banner" role="alert">{{ error }}</p>
     <p v-if="notice" class="notice-banner" role="status">{{ notice }}</p>
     <section v-if="session" class="surface-card user-create-card" aria-labelledby="create-user-title">
       <div class="section-heading"><div><p class="eyebrow">一次性初始凭证</p><h2 id="create-user-title">追加用户</h2></div><p>初始密码提交后立即从页面清除，管理员无法再次查看。</p></div>
       <form class="user-create-form" @submit.prevent="createUser">
+        <label>账号类型<select v-model="form.accountType" name="account-type" @change="form.staffCode = ''"><option value="standalone">非关联账号</option><option value="staff">Staff关联账号</option></select></label>
+        <label v-if="form.accountType === 'staff'">Staff Code<input v-model="form.staffCode" name="staff-code" autocomplete="off" required maxlength="256" placeholder="精确输入当前Staff Code"></label>
         <label>登录账号<input v-model.trim="form.username" name="username" autocomplete="off" required minlength="3" maxlength="64" pattern="[a-z0-9][a-z0-9._-]{2,63}" placeholder="例如: shanghai.hr"></label>
         <label>初始密码<input v-model="form.password" name="initial-password" type="password" autocomplete="new-password" required minlength="12" maxlength="256"></label>
         <label>确认初始密码<input v-model="form.confirm" name="confirm-password" type="password" autocomplete="new-password" required minlength="12" maxlength="256"></label>
@@ -152,8 +158,8 @@ onBeforeUnmount(() => { alive = false; generation += 1; controller?.abort(); cle
       <div class="section-heading"><div><p class="eyebrow">当前本地账号</p><h2 id="local-users-title">用户一览</h2></div><button type="button" :disabled="busy" @click="load()">刷新</button></div>
       <div class="table-scroll">
         <table>
-          <thead><tr><th>账号</th><th>登录状态</th><th>MFA</th><th>创建时间</th><th>主体 ID</th></tr></thead>
-          <tbody><tr v-for="user in users" :key="user.account_id"><td><strong>{{ user.username }}</strong><small>{{ user.account_id }}</small></td><td><span class="status-pill" :data-state="user.active && !user.password_change_required && user.mfa_status === 'active' ? 'ready' : 'pending'">{{ statusLabel(user) }}</span></td><td>{{ user.mfa_status === 'active' ? '已登记 TOTP' : '未登记' }}</td><td>{{ new Date(user.created_at).toLocaleString() }}</td><td><code>{{ user.subject_id }}</code></td></tr></tbody>
+          <thead><tr><th>账号</th><th>账号类型</th><th>关联员工</th><th>登录状态</th><th>MFA</th><th>创建时间</th><th>主体 ID</th></tr></thead>
+          <tbody><tr v-for="user in users" :key="user.account_id"><td><strong>{{ user.username }}</strong><small>{{ user.account_id }}</small></td><td>{{ user.account_type === 'staff' ? 'Staff关联' : '非关联' }}</td><td><code v-if="user.employee_id">{{ user.employee_id }}</code><span v-else>—</span></td><td><span class="status-pill" :data-state="user.active && !user.password_change_required && user.mfa_status === 'active' ? 'ready' : 'pending'">{{ statusLabel(user) }}</span></td><td>{{ user.mfa_status === 'active' ? '已登记 TOTP' : '未登记' }}</td><td>{{ new Date(user.created_at).toLocaleString() }}</td><td><code>{{ user.subject_id }}</code></td></tr></tbody>
         </table>
       </div>
       <p v-if="!busy && users.length === 0" class="empty-state">尚无本地用户。</p>
