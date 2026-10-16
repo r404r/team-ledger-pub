@@ -357,16 +357,16 @@ DEV-028 T2将员工目录收敛为业务查询页：初次显示当前获准在�
 
 DEV-028 T3将创建人员收敛为一次原子业务动作：创建页必填全集团Staff Code，可从当前获准员工中查找并选择直属主管/HOD，也可明确无直属主管。OP-ORG-05同一事务写profile/lifecycle、canonical identifier及可选administrative reporting；Staff Code冲突、主管不存在/跨组织/无权引用或revision变化时不留下半成品员工。成功后页面只以receipt确认提交，再按当前授权和查看日期重读完整资料；命令推进组织图导致本次会话auth epoch变化时，主体与org不变且重核对成功才继续。人员页面把lifecycle `valid_from/valid_to`的业务中文统一显示为“入职日/退职日”，API字段及半开有效期语义不变。
 
-DEV-032在P-ORG-03人员资料创建页增加可折叠的批量入口。操作者先下载TeamLedger本体生成的单工作表XLSX模板，再上传最多100行并查看规范预览；公式、数字/日期serial、额外工作表、外部关系、错误表头、重复Staff Code及同批主管闭环均拒绝。预览不保存原文件、不写employee；明确确认后，每行继续复用OP-ORG-05原子创建profile/lifecycle/Staff Code，所有两端均已确认的直属主管关系最后复用一次OP-ORG-10写入。该批量操作不是整批数据库事务：页面逐行区分已创建、主管待维护、失败、结果不确定和未处理；结果不确定只重放页面内保留的原key/body，刷新后不自动认领同Staff Code的既有员工。模板不包含任职、部门、学历或薪资字段。
+DEV-032在P-ORG-03人员资料创建页增加可折叠批量入口及安全XLSX解析/逐行恢复机制；DEV-033在不增加第二套employee字段的前提下，把同一入口升级为完整员工主数据创建。唯一`Employees`工作表固定18个双语表头，覆盖Staff Code、中英文姓名、Location、Branch Code、BG/Division/Department Code、学历、入职/退职日、职位、Job Family/Career Level Code、HOD Staff Code及可选联系/摘要；明确不包含薪资。preview按每行入职日把受控code解析为ID并验证固定三层父链，返回冻结catalog/graph revision；确认后每行OP-ORG-05原子创建profile、lifecycle、identifier、employment、education及job assignment，所有两端均确认的直属主管关系最后以一次OP-ORG-10写入。文件安全边界、≤100行、逐行状态、原key/body结果确认和不自动认领重复Staff Code的规则保持不变。
 
 ```mermaid
 flowchart LR
     operator["组织/人员维护者"]
-    template["下载空白XLSX模板<br/>固定9列；无租户数据"]
-    workbook["本地填写≤100人<br/>Staff Code＋姓名＋联系<br/>主管Staff Code＋入职/退职日"]
-    preview["有界安全解析与规范预览<br/>5MiB/20MiB/1000 entries<br/>不执行公式；不写数据库"]
+    template["下载空白XLSX模板<br/>固定18个双语字段；无租户数据"]
+    workbook["本地填写≤100人<br/>身份＋雇佣＋三层组织code<br/>学历＋任职＋HOD；不含薪资"]
+    preview["按每行入职日解析目录与父链<br/>有界安全解析；不执行公式<br/>冻结catalog/graph；不写数据库"]
     confirm{"错误为0且明确确认？"}
-    create["逐行OP-ORG-05<br/>profile＋lifecycle＋Staff Code<br/>每行独立receipt/audit"]
+    create["逐行OP-ORG-05原子创建<br/>profile＋lifecycle＋identifier<br/>employment＋education＋assignment"]
     createResult{"单行提交结果"}
     createPause["暂停批次<br/>保留原key/body并明确重放"]
     endpoints{"员工与主管ID<br/>均已确认？"}
@@ -396,8 +396,8 @@ flowchart LR
 | 页面 ID / feature | 入口、字段及数据来源 | 详情/表单与操作条件 |
 | --- | --- | --- |
 | P-ORG-01 / F-ORG-001 | v12“组织树”：BG/Division/Department、employee安全ID、边/生命周期、as_of与graph revision；label另需PII，不返employee profile | root department/depth≤3/上限后重载；目录变更用OP-ORG-09，employee assignment/reporting用OP-ORG-10；不建team或自动grant |
-| P-ORG-02 / F-ORG-001 | v12“员工目录”：ID、lifecycle、as_of assignment/reporting；获PII权才含双语姓名/联系/职位正文 | department/lifecycle/as_of及body q有界过滤；创建页通过OP-ORG-05原子提交profile/lifecycle、Staff Code及可选直属主管，进入详情/历史不预载其他敏感域 |
-| P-ORG-03 / F-ORG-001及员工相关feature | v12资料/profile revision、工号/雇佣/教育、as_of单一任职、Direct Manager/HOD及历史；各工作台独立链接 | 单人或批量初建Staff Code复用OP-ORG-05；批量主管关系复用OP-ORG-10并逐行显示部分结果；profile更正用OP-ORG-08，后续组合主数据用OP-ORG-10；薪酬/面谈/奖金/AI各自授权/分页，不互相转授 |
+| P-ORG-02 / F-ORG-001 | v12“员工目录”：No.、Staff Code、中英文姓名、Location、Branch、BG、Division、Department、Latest Education、Date of Employment、Position、Job Family、Career Level、HOD；获PII权才含受保护正文 | department/lifecycle/as_of及body q有界过滤；结果保持服务端cursor分页，宽表仅在自身容器横向滚动；薪资不进入组织目录 |
+| P-ORG-03 / F-ORG-001及员工相关feature | 详情按目录同一字段顺序投影，内部ID/revision收进折叠数据状态；创建页以入职日读取目录并一次提交完整初始员工主数据 | 单人或18列XLSX批量均复用OP-ORG-05创建profile/lifecycle/Staff Code/employment/education/job assignment；批量主管关系复用OP-ORG-10并逐行显示部分结果；profile更正用OP-ORG-08，后续组合主数据用OP-ORG-10；薪酬/面谈/奖金/AI各自授权/分页，不互相转授 |
 | P-INT-01 / F-INT-001 | 当前主导航`/interviews`员工ID选择、员工面谈列表/安排页、`/interviews/:id`详情；metadata及分区/授权版本/行动各自独立 | 8 INT OP已实装；列表/详情自己的有限操作提示不依赖目录read。状态/补录、显式supersedes/理由更正、独立source批准与人工发布、额外授权NDJSON、原key/body结果确认；清理/冲突/partial明确呈现 |
 | P-COMP-01 / F-COMP-001 | 已固定`/employees/:employee_id/compensation`；明确as_of/from/to四栏：现状、未来批准、当前提案、immutable批准/完整纠错，所选提案原史另显式有界页 | 5OP/initial-adjustment-correction/member_key/独立状态转换/精确对象NDJSON/grant已接通；当前快照不内嵌原史，旧修订页替换不累积，head/cursor变更销毁旧body需人工重查。无币种/税制默认，409不自动rebase |
 | P-BONUS-01 / F-BONUS-001 | DEV-010固定代码路由`/employees/:employee_id/bonuses`；目标、奖励、支付/冲销、余额/异常、扩展分离（F，OP-BONUS-01），日期/状态（M） | 目标 OP-BONUS-02/07、奖励 OP-BONUS-03/04/05、支付 OP-BONUS-06、有限扩展 OP-BONUS-08；能力分别检查，命令前重验会话并按bonus/comp revision CAS，不放一个“财务编辑”总开关 |
@@ -478,8 +478,8 @@ flowchart LR
 | 姓名 / English Name | 加密profile版本 | 分字段保存，不从单一display name反拆；更正追加版本 |
 | 地点 / 所在公司 | `work_location` / `legal_entity`＋employment spell | Location只允许Shanghai/Wuxi/Tokyo；Branch语义固定为`法分公司`目录，不接受自由文本 |
 | 业务单元 / 事业部 / 部门 | 固定`business_group → division → department`及其有效期父子关系 | 不复制三份当前文本到employee；层级不得跳级/加team层，按`as_of`沿获准层级派生 |
-| Highest Education | 教育记录中的最高获准学历投影 | 固定排序Master>Bachelor>Diploma；不能以最新日期替代最高，同级按获授日/稳定ID确定展示 |
-| Date of Employment | employment spell的两个明确投影 | rehire保留多段；页面同时显示首次入职日`first_employment_date`与本次有效employment spell起始日`current_employment_start`，不以一个含糊字段覆盖 |
+| Latest Education | 查询日有效的单一education record | 创建时只接受Master/Bachelor/Diploma；既有多段历史保留，不从日期或自由文本猜测等级 |
+| Date of Employment | 初建employee lifecycle与hire employment spell的`valid_from` | 初建两者必须相同；rehire/transfer继续保留独立历史段，统一员工信息页显示查询日获准的当前雇佣起始日 |
 | Job Family / Career Level | 单一job assignment引用受控目录 | 同一时点恰好至多一个primary assignment，不支持secondary/兼任；不得从title猜测 |
 | Direct Manager / HOD | administrative reporting line | 两列是同一事实的两个展示名；每时点最多一个直属主管，不另建HOD role、不允许两列出现不同人员 |
 | Monthly base salary | 获批compensation term中的唯一`monthly_base_salary`组件 | 税前固定月薪：unit=month、frequency=monthly、tax_basis=gross；仅CNY/JPY且scale0。奖金、浮动薪资、加班、一次性支付及非固定津贴不并入；同Branch员工可各用不同币种 |
@@ -487,12 +487,12 @@ flowchart LR
 
 目录默认只显示业务所需字段；教育、工号、财务字段分别经过PII/financial授权。批量导入以组织级Staff Code做全集团精确匹配，姓名只供人工核对，绝不作为身份键。
 
-目标员工主数据通过OP-ORG-09查询并维护`法分公司`、固定Location、固定三层org unit、job family/career level及固定education level目录；v12的OP-ORG-10是后续员工主数据/任职组合写，可在一个typed set原子提交identifier、employment、education、canonical job assignment/position、employee lifecycle及administrative/dotted reporting。OP-ORG-05仅在初建员工时复用同一canonical规则原子写必填Staff Code和可选administrative manager；不另建第二套identifier/reporting事实。直属主管/HOD由同一administrative reporting fact投影。目录、员工事实、组织图各有revision，命令显式列全依赖；没有“直接改Excel一行”或跨HTTP伪原子。Salary range仍由OP-COMP-11维护。
+目标员工主数据通过OP-ORG-09查询并维护`法分公司`、固定Location、固定三层org unit、job family/career level及固定education level目录；v12的OP-ORG-10是初建后的员工主数据/任职组合写，可在一个typed set原子提交identifier、employment、education、canonical job assignment/position、employee lifecycle及administrative/dotted reporting。OP-ORG-05在初建员工时复用同一canonical规划/提交路径，可一次原子写profile/lifecycle、必填Staff Code、employment、education、job assignment及可选administrative manager；不另建第二套事实。直属主管/HOD由同一administrative reporting fact投影。目录、员工事实、组织图各有revision，命令显式列全依赖；没有“直接改Excel一行”或跨HTTP伪原子。Salary range仍由OP-COMP-11维护。
 
 ### 流程与输入/输出
 
-1. v12不执行v11→v12升级或数据merge：在新的空SQLite文件或空PostgreSQL schema安装一份完整v12 baseline，旧开发数据库不作为启动输入。v12只创建Business Group→Division→Department、canonical job assignment及新授权类型；team/membership/position旧表、路由、scope/ref和decoder不进入新baseline。需要开发数据时仅以合成seed或v12 API重建。
-2. 创建页面以一个OP-ORG-05命令提交姓名、联系资料、生命周期、必填Staff Code及可选直属主管；profile、identifier、administrative reporting、revisions、receipt和audit同事务提交或全部回滚，不自动建立assignment或grant。
+1. v12最初以空SQLite文件或空PostgreSQL schema建立baseline，不执行v11 merge；自DEV-029起既有v12部署视为必须保留，后续任何schema变化都必须提供顺序migration及升级验证。DEV-033只组合既有canonical表，因此没有schema变化或数据merge。
+2. 创建页面以一个OP-ORG-05命令提交姓名、联系资料、生命周期、必填Staff Code、必填employment/education/job assignment及可选直属主管；profile与全部canonical workforce事实、revisions、receipt和audit同事务提交或全部回滚，不自动建立grant，也不写入薪资。
 3. OP-ORG-10在一个guard事务维护初建后的Staff Code换号/复用、employment、education、单一canonical job assignment/position和administrative/dotted reporting；页面Direct Manager/HOD共同读取同一administrative fact。普通转岗可在同一命令结束旧employment/assignment/reporting并新增后继，任一失败全部回滚。
 4. 树/目录/详情按`as_of`查询有效任职；组织历史按UTC `recorded_at`录入窗口查询，保留每项独立有效期及原任期ID。组织变更在原子提交中推进graph/相关epoch，每请求按服务端捕获的当前组织业务日验证scope/绑定任期，未来结束不提前失格，当前结束或replace不等调度器；不自动为新经理创建grant。
 

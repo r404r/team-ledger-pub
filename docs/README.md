@@ -16,5 +16,9 @@
 - [DEV-027验证摘要](validation/DEV-027.md) · [双轮审查记录](reviews/DEV-027.md)
 - [DEV-028全局查看日期与员工操作体验](plans/DEV-028.md)：全局日期、员工目录查询/分页及人员创建字段进度。
 - [DEV-028验证摘要](validation/DEV-028.md) · [串行审查记录](reviews/DEV-028.md)
+- [DEV-032人员资料批量上传](plans/DEV-032.md)：XLSX安全解析、逐行恢复与主管末段提交基线（字段范围已由DEV-033替代）。
+- [DEV-032验证摘要](validation/DEV-032.md) · [审查记录](reviews/DEV-032.md)
+- [DEV-033员工信息统一重构](plans/DEV-033.md)：完整员工主数据、18列模板、目录与详情统一字段。
+- [DEV-033验证摘要](validation/DEV-033.md) · [审查记录](reviews/DEV-033.md)
 
 历史私有计划、review会话、本机路径和旧文档commit台账不复制到public仓库；它们不是当前产品契约。当前行为以本仓库源码、迁移、永久测试和上述文档为准。

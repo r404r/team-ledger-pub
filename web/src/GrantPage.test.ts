@@ -73,6 +73,9 @@ class ExternalHTTP {
     this.requests.push({ url, method, headers: new Headers(init?.headers), body: init?.body as string | undefined, cache: init?.cache })
     if (url.pathname === '/api/v1/session') return response(this.sessionStatus, this.session)
     const index = this.replies.findIndex((item) => item.method === method && item.path === url.pathname)
+    if (index < 0 && method === 'GET' && /^\/api\/v1\/orgs\/[0-9a-f-]+\/workforce-catalogs$/.test(url.pathname)) {
+      return response(200, { catalog_revision: '1', graph_revision: '1', legal_entities: [], locations: [], org_units: [], org_unit_parents: [], education_levels: [], job_families: [], career_levels: [] })
+    }
     if (index < 0) { this.unexpected.push(`${method} ${url.pathname}`); throw new Error('Unconfigured HTTP response') }
     return this.replies.splice(index, 1)[0]!.reply
   }

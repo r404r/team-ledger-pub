@@ -79,6 +79,9 @@ class ExternalHTTP {
         ? this.contextCapabilities : this.session.capabilities
       return response(200, { ...this.session, capabilities })
     }
+    if (method === 'GET' && /^\/api\/v1\/orgs\/[0-9a-f-]+\/workforce-catalogs$/.test(url.pathname)) {
+      return response(200, { catalog_revision: '1', graph_revision: '1', legal_entities: [], locations: [], org_units: [], org_unit_parents: [], education_levels: [], job_families: [], career_levels: [] })
+    }
     this.unexpected.push(`${method} ${url.pathname}`)
     throw new Error('Unconfigured external response')
   }
