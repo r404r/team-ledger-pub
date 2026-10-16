@@ -3,7 +3,7 @@ import type { VueWrapper } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
-import { validGrantPair, validGrantObject, validPersistedGrantPair, validPersistedGrantObject, validSourceApproval } from './grantPairs'
+import { grantCapabilities, validGrantPair, validGrantObject, validPersistedGrantPair, validPersistedGrantObject, validSourceApproval } from './grantPairs'
 
 const ORG = '10000000-0000-4000-8000-000000000001'
 const MANAGER = '10000000-0000-4000-8000-000000000002'
@@ -576,6 +576,52 @@ describe('P-SEC-01 current independent grant management', () => {
     expect(JSON.parse(api.commands()[0]!.body!).scope).toEqual({ kind: 'employee', id: EMPLOYEE })
     expect(api.requests.some((request) => request.url.pathname.includes('/employees'))).toBe(false)
     expect(page.text()).not.toMatch(/授予成功/)
+  })
+})
+
+describe('DEV-041 complete delegable authority contract', () => {
+  const pairs = [
+    ['organization.read', 'metadata', 'organization_management'],
+    ['organization.write', 'metadata', 'organization_management'],
+    ['pii.read', 'pii', 'organization_management'],
+    ['pii.write', 'pii', 'organization_management'],
+    ['audit.read', 'audit', 'security_administration'],
+    ['identity.manage', 'audit', 'security_administration'],
+    ...['interview.read', 'interview.write', 'interview_policy.manage', 'assessment.request', 'assessment.read', 'assessment.input.approve', 'assessment.publish'].map(capability => [capability, 'metadata', 'interview_followup']),
+    ...['note.read', 'note.write', 'note.publish'].flatMap(capability => ['shared', 'manager_private', 'hr_confidential'].map(category => [capability, category, 'interview_followup'])),
+    ['action.read', 'shared', 'interview_followup'],
+    ['action.write', 'shared', 'interview_followup'],
+    ...['compensation.read', 'compensation.propose', 'compensation.approve', 'bonus.target.manage', 'bonus.propose', 'bonus.approve', 'bonus.payment.record', 'compensation.extension.manage'].map(capability => [capability, 'financial', 'compensation_management']),
+    ['sensitive.export', 'pii', 'organization_management'],
+    ...['metadata', 'shared', 'manager_private', 'hr_confidential'].map(category => ['sensitive.export', category, 'interview_followup']),
+    ['sensitive.export', 'financial', 'compensation_management'],
+  ]
+  it('accepts exactly all 38 currently delegable capability/category/purpose tuples', () => {
+    expect(pairs).toHaveLength(38)
+    expect(new Set(grantCapabilities)).toEqual(new Set(pairs.map(([capability]) => capability)))
+    const expected = new Set(pairs.map(pair => pair.join('|')))
+    const purposes = ['organization_management', 'security_administration', 'interview_followup', 'compensation_management']
+    const categories = ['metadata', 'pii', 'audit', 'shared', 'manager_private', 'hr_confidential', 'financial']
+    for (const capability of grantCapabilities) {
+      for (const category of categories) {
+        for (const purpose of purposes) {
+          expect(validGrantPair(capability, category, purpose), `${capability}|${category}|${purpose}`).toBe(expected.has(`${capability}|${category}|${purpose}`))
+        }
+      }
+    }
+    expect(validGrantPair('access_grant.manage', 'audit', 'security_administration')).toBe(false)
+    expect(validGrantPair('future.capability', 'metadata', 'organization_management')).toBe(false)
+  })
+  it('keeps assessment, bonus and compensation extension authorities aggregate-only', () => {
+    for (const capability of ['assessment.request', 'assessment.read', 'assessment.input.approve', 'assessment.publish']) {
+      expect(validGrantObject(null, capability, 'metadata', 'interview_followup')).toBe(true)
+      expect(validGrantObject({ kind: 'interview', id: OTHER }, capability, 'metadata', 'interview_followup')).toBe(false)
+    }
+    for (const capability of ['bonus.target.manage', 'bonus.propose', 'bonus.approve', 'bonus.payment.record', 'compensation.extension.manage']) {
+      expect(validGrantObject(null, capability, 'financial', 'compensation_management')).toBe(true)
+      expect(validGrantObject({ kind: 'compensation_proposal', id: OTHER }, capability, 'financial', 'compensation_management')).toBe(false)
+    }
+    expect(validGrantObject({ kind: 'interview', id: OTHER }, 'interview_policy.manage', 'metadata', 'interview_followup')).toBe(true)
   })
 })
 

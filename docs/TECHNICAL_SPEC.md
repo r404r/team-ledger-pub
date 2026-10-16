@@ -1,8 +1,8 @@
 # TeamLedger · 整体最新技术文档
 
 - 当前修订日期：**2026-10-16**。本文件与源码同属 `team-ledger`，是当前架构、HTTP语义、安全边界和运行设计的唯一公开技术说明。
-- 当前实现基线：Go模块化单体、Vue、SQLite/PostgreSQL schema v15、本地keyd、local密码＋首次改密＋TOTP/OIDC互斥身份模式、`identity.manage`用户管理、同库独立audit receiver及Docker Compose独立部署。
-- 历史Task ID用于说明实现阶段；历史私有计划、审查会话、本机路径及旧文档commit台账不属于public文档。实现事实以本仓库源码、v15迁移、永久测试和当前文档为准。
+- 当前实现基线：Go模块化单体、Vue、SQLite/PostgreSQL schema v16、本地keyd、local密码＋首次改密＋TOTP/OIDC互斥身份模式、`identity.manage`用户管理、bootstrap管理员38项当前可委派authority、同库独立audit receiver及Docker Compose独立部署。
+- 历史Task ID用于说明实现阶段；历史私有计划、审查会话、本机路径及旧文档commit台账不属于public文档。实现事实以本仓库源码、v16迁移、永久测试和当前文档为准。
 - 功能/page/OP/AC登记见[功能规范](FUNCTIONAL_SPEC.md)，开发与验证门禁见[开发规则](DEVELOPMENT_RULES.md)，Docker操作见[README](../README.md)。
 
 ## 1. 架构、部署与信任边界
@@ -11,7 +11,7 @@
 
 ### 1.1 上下文与数据流
 
-R7历史实现使用受控外部Transit adapter；DEV-018已用本地keyd替换生产KMS依赖，保留并收窄envelope/AAD/用途分离接口。DEV-019交付内置账号密码，DEV-020交付Compose内置同库audit receiver，DEV-035在v14交付本地TOTP、恢复码、step-up及18-domain keyring，DEV-038在v15交付管理员固定安全权限、本地用户管理及首次改密。本地keyd和receiver均为同一安装包组件，不抵御整机root。
+R7历史实现使用受控外部Transit adapter；DEV-018已用本地keyd替换生产KMS依赖，保留并收窄envelope/AAD/用途分离接口。DEV-019交付内置账号密码，DEV-020交付Compose内置同库audit receiver，DEV-035在v14交付本地TOTP、恢复码、step-up及18-domain keyring，DEV-038在v15交付管理员固定安全权限、本地用户管理及首次改密，DEV-041在v16补齐初始管理员全部38项当前可委派authority。本地keyd和receiver均为同一安装包组件，不抵御整机root。
 
 ```mermaid
 flowchart LR
@@ -38,7 +38,7 @@ flowchart LR
         keyring --> keyd
     end
     subgraph storage["边界 D：每次部署只选一个后端"]
-        db["SQLite持久盘 或 PostgreSQL服务<br/>当前schema v15；v14可前向升级<br/>员工、调薪、canonical授权、账号与MFA状态"]
+        db["SQLite持久盘 或 PostgreSQL服务<br/>当前schema v16；v12–v15可前向升级<br/>员工、调薪、canonical授权、账号与MFA状态"]
         outbox["同库 audit_outbox / receipt / job / result<br/>业务事实与投递意图原子提交"]
         archive["每archive随机DEK的认证分块备份包<br/>DEK经keyd backup_archive包装<br/>SQLite VACUUM或PG exported snapshot/custom dump"]
         db --> outbox
@@ -124,11 +124,11 @@ flowchart TB
 
 R2固定C实际路径：[organization契约](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_contracts.go)、[service](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_service.go)、[逐owner权限](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_authority.go)、[queries](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_queries.go)、[graph](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/graph.go)、[cursor](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/cursor.go)；[HTTP handler](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/httpapi/structure.go)与[store](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/store/structure.go)承接现有事务。上述固定代码已实际push，不再用漂移main定位代替版本。查询尽量使用窄`GraphState`/employee关系/SQL候选，不为目录和history读取全org图；写与tree的窗口图仍由组织模块负责。
 
-R3当前源契约：`internal/interview/{contracts,commands,reads,export,service,state}.go`、`internal/store/interview.go`/`interview_tx.go`、`internal/httpapi/interviews.go`、`web/src/InterviewPage.vue`/`interviewDTO.ts`及`internal/authz/object*.go`。当前空库顺序安装至`internal/store/migrations/*_v15.sql`；`*_v6.sql`仅保留历史迁移校验，不是当前安装终点。
+R3当前源契约：`internal/interview/{contracts,commands,reads,export,service,state}.go`、`internal/store/interview.go`/`interview_tx.go`、`internal/httpapi/interviews.go`、`web/src/InterviewPage.vue`/`interviewDTO.ts`及`internal/authz/object*.go`。当前空库顺序安装至`internal/store/migrations/*_v16.sql`；`*_v6.sql`仅保留历史迁移校验，不是当前安装终点。
 
-R4及员工调薪批次当前源：`internal/compensation/`、`internal/store/compensation*.go`、`internal/httpapi/compensation*.go`、`internal/value/financial.go`、`web/src/CompensationPage.vue`/`CompensationBatchPage.vue`及`cmd/api/finance.go`。当前schema v15；`*_v7.sql`/`*_v13.sql`只保留历史迁移校验。
-R5当前代码源：`internal/compensation/bonus*.go`、`internal/store/bonus*.go`、`internal/httpapi/bonus.go`、`web/src/BonusPage.vue`/`bonusDTO.ts`、`cmd/bonus-hmac`及`cmd/api/finance.go`。当前schema v15；`*_v8.sql`只保留历史迁移校验。
-R6a/R6b当前代码源：`internal/assessment/`、`internal/store/assessment*.go`、`internal/httpapi/assessment*.go`、`web/src/FollowupPage.vue`/`assessmentDTO.ts`、`internal/authz`、`internal/providerapproval`及`cmd/assessment-worker`。当前schema v15；`*_v9.sql`/`*_v10.sql`只保留历史迁移校验。
+R4及员工调薪批次当前源：`internal/compensation/`、`internal/store/compensation*.go`、`internal/httpapi/compensation*.go`、`internal/value/financial.go`、`web/src/CompensationPage.vue`/`CompensationBatchPage.vue`及`cmd/api/finance.go`。当前schema v16；`*_v7.sql`/`*_v13.sql`只保留历史迁移校验。
+R5当前代码源：`internal/compensation/bonus*.go`、`internal/store/bonus*.go`、`internal/httpapi/bonus.go`、`web/src/BonusPage.vue`/`bonusDTO.ts`、`cmd/bonus-hmac`及`cmd/api/finance.go`。当前schema v16；`*_v8.sql`只保留历史迁移校验。
+R6a/R6b当前代码源：`internal/assessment/`、`internal/store/assessment*.go`、`internal/httpapi/assessment*.go`、`web/src/FollowupPage.vue`/`assessmentDTO.ts`、`internal/authz`、`internal/providerapproval`及`cmd/assessment-worker`。当前schema v16；`*_v9.sql`/`*_v10.sql`只保留历史迁移校验。
 
 DEV-025前端视觉基础集中在`web/src/styles.css`并由`main.ts`静态导入；Vite production build生成内容hash CSS/JS，由Go静态服务同源返回。`App.vue`负责品牌栏、sticky主导航和当前路由状态，`IdentityGate.vue`负责认证态会话条及未认证/首次改密/MFA gate；10个业务页面继续使用原生语义/ARIA和既有scoped专属布局。无远程字体、CSS框架、图标CDN、分析SDK或运行时主题服务；全局层只改变呈现，不缓存或扩大敏感DTO。
 
@@ -138,11 +138,13 @@ DEV-030把认证态`IdentityGate`的原生`details/summary`经deferred Teleport�
 
 DEV-040把P-SEC-01的客户端grant契约拆分为可签发与可读取集合：`grantCapabilities`加入经bootstrap authority批准的`identity.manage`；`readableGrantCapabilities`另含不可普通签发的`access_grant.manage`。`validPersistedGrantPair/Object`只接受无对象限制的`access_grant.manage / audit / security_administration`固定事实，命令预览仍使用较窄`validGrantPair/Object`，因此不会把读取兼容误变成委派权。bootstrap响应中的合法管理grant不再使整个DTO进入伪503；未知tuple仍fail closed。筛选器同步覆盖`audit`、`security_administration`及两项安全能力。
 
+DEV-041把`grantCapabilities`与服务端`authz.SupportedPair`收敛为精确38个当前可委派tuple：组织metadata 2、PII 2、安全2、面谈/评估metadata 7、三分区note 9、shared action 2、financial 8及按目的拆分的`sensitive.export` 6。`access_grant.manage`仍只在`readableGrantCapabilities`中读取bootstrap固定事实，不能由OP-SEC-02签发。assessment与bonus/extension仅允许无对象grant；interview policy只允许interview对象；薪资proposal/event/term继续按读写能力区分。未知tuple或对象组合在客户端预览和服务端/数据库三层均fail closed。
+
 DEV-028 T1在`GET /session`增加规范Date字段`business_date`，由handler使用同一次授权时钟和snapshot中的组织IANA timezone计算；timezone缺失/不可加载时fail closed。`IdentityGate`验证后以其初始化session级`globalViewDate`，通过受保护slot交给`App.vue`顶部日期控件及Profile/Organization/Compensation页面；单一合法`as_of`深链接优先初始化该内存值，内部导航保留，session销毁时清空。相关页面仍向既有API发送`as_of`并在全局值变化后取消旧请求、清敏感投影、重新读取；授权服务继续使用独立当前业务日，客户端值不参与scope判断。
 
 DEV-028 T2的`OrganizationPage`继续只调用OP-ORG-04 `POST /orgs/:id/employees/query`，PII能力由重读后的scoped session决定：有`pii.read`才发送`include_profile=true`及允许`q`，无权时不发送姓名查询。筛选表单与已应用查询快照分离，opaque cursor历史只保存在页面内存，实现上一页/下一页且不推导总数；新查询或全局日期变化清空cursor历史并回到第一页。DEV-033把同日catalog与每个employee投影组合为No.、Staff Code、双语姓名、Location、Branch、BG、Division、Department、Education、Employment Date、Position、Job Family、Career Level及HOD宽表；BG/Division仅沿Department父链派生，不持久化副本，容器自身横向滚动。
 
-DEV-033的`PersonnelImportPanel.vue`只在P-ORG-03创建态且当前session同时含org级organization/PII read/write时挂载。模板GET和preview POST由`internal/httpapi/personnel_import.go`转入`internal/organization/personnel_import.go`；唯一`Employees`工作表固定18个双语表头。模板和预览复用`internal/xlsx`统一实施ZIP/XML/公式/文本单元格边界；preview按每行hire date读取catalog，解析Branch/BG/Division/Department/Job Family/Career Level code，验证固定父链，并返回冻结catalog/graph revision及规范ID。页面明确确认后，每行以稳定key调用扩展OP-ORG-05原子写profile/lifecycle/identifier/employment/education/job assignment且暂不写manager，再以一个冻结key/body复用OP-ORG-10写已确认两端的administrative reporting。partial/unknown不伪装整批事务，离页或session销毁清空文件、PII预览、命令和结果；薪资不进入模板、preview或人员创建body。
+DEV-033的`PersonnelImportPanel.vue`只在P-ORG-03创建态且当前session同时含org级organization/PII read/write时挂载。模板GET和preview POST由`internal/httpapi/personnel_import.go`转入`internal/organization/personnel_import.go`；唯一`Employees`工作表固定18个双语表头。模板和预览复用`internal/xlsx`统一实施ZIP/XML/公式/文本单元格边界；parser用固定`xlsx.ParseError`代码及可选安全sheet/cell定位拒绝，绝不携带cell内容、公式、relationship target或内部路径。Excel常见`t=n|d|b|e`显式非文本cell作为`IsText=false`进入逐格`text_required`，不再被误判为未知结构；真正结构拒绝以422 `workbook_error`＋request ID返回并写只含request ID/sheet/cell/code的操作日志。preview按每行hire date读取catalog，解析Branch/BG/Division/Department/Job Family/Career Level code，验证固定父链，并返回冻结catalog/graph revision及规范ID。页面明确确认后，每行以稳定key调用扩展OP-ORG-05原子写profile/lifecycle/identifier/employment/education/job assignment且暂不写manager，再以一个冻结key/body复用OP-ORG-10写已确认两端的administrative reporting。partial/unknown不伪装整批事务，离页或session销毁清空文件、PII预览、命令和结果；薪资不进入模板、preview或人员创建body。
 
 DEV-034的`CompensationBatchPage.vue`以批次header和默认3行工作表取代技术字段表单。法分公司来自当天catalog；Staff Code失焦时只用组织目录及个人薪资读取即时填充姓名、组织和当前工资，最终employee/basis解析仍由财务preview完成。手工JSON与XLSX均进入同一`compensation.batch_import.v1` candidate：服务忽略全空行，按全集团唯一Staff Code解析employee、冻结current term/range/任职，返回Special次数及`SALARY_BEFORE_MISMATCH`警告。OP-COMP-09要求逐employee确认全部工资差异后才生成draft/manifest；OP-COMP-10最终重验，并在一个事务先写必要`correction_replacement`、再写adjustment及batch/audit/outbox。页面将Salary Range和已激活批次纠错保留在折叠高级区，宽表仅在自身容器滚动。
 
@@ -370,7 +372,9 @@ DEV-034分配schema v13并同时提供SQLite/PostgreSQL v12→v13 migration。�
 
 DEV-035分配schema v14并提供SQLite/PostgreSQL v13→v14 migration。`session`新增`access_kind=business|mfa_enrollment|mfa_recovery`且旧值为business；新增`local_mfa_account/factor/enrollment/recovery_code/recovery_receipt/reset_receipt`。迁移为每个active本地账号建立`enrollment_required`并撤销其既有session，OIDC session及全部业务事实保持。启动只读preflight接受exact v14或登记的exact v13升级；v12须先按冻结顺序升v13。v1-v11、未知版本、checksum drift、业务表与schema记录不一致或迁移失败均阻塞并保全原库。
 
-DEV-038分配当前schema v15并提供SQLite/PostgreSQL v14→v15 migration。`session.access_kind`扩展`password_change`，`local_account`新增`password_change_required`且既有行固定false；新增immutable `bootstrap_admin_policy`和`local_user_create_receipt`，授权约束加入`identity.manage`及OP-SEC-07/08。仅存在`local_bootstrap_receipt`的local部署补齐`identity.manage`、`access_grant.manage`、`audit.read`的org assignment/direct grant，以及`identity.manage`/`audit.read`的`bootstrap_admin.v1` authority；批准者固定为bootstrap主体自身并撤销其旧session。SQLite迁移重建受约束父表时先暂存并恢复`session_auth`、`oidc_transaction`、grant receipt/approval和audit outbox等子事实，恢复必要parent unique index后再插回，整Tx失败回滚。v1–v14 migration bytes/checksum保持冻结。
+DEV-038分配schema v15并提供SQLite/PostgreSQL v14→v15 migration。`session.access_kind`扩展`password_change`，`local_account`新增`password_change_required`且既有行固定false；新增immutable `bootstrap_admin_policy`和`local_user_create_receipt`，授权约束加入`identity.manage`及OP-SEC-07/08。仅存在`local_bootstrap_receipt`的local部署补齐`identity.manage`、`access_grant.manage`、`audit.read`的org assignment/direct grant，以及`identity.manage`/`audit.read`的`bootstrap_admin.v1` authority；批准者固定为bootstrap主体自身并撤销其旧session。SQLite迁移重建受约束父表时先暂存并恢复`session_auth`、`oidc_transaction`、grant receipt/approval和audit outbox等子事实，恢复必要parent unique index后再插回，整Tx失败回滚。v1–v14 migration bytes/checksum保持冻结。
+
+DEV-041分配当前schema v16并提供SQLite/PostgreSQL v15→v16 migration。`BootstrapLocal`对fresh local安装创建38项org级、`mfa_required=true`、100年期限的`bootstrap_admin.v1` authority；migration只对存在`local_bootstrap_receipt`的主体以完整tuple `NOT EXISTS`补齐v15缺少的36项，保留已有两项及所有非bootstrap authority。v16不新增业务grant/assignment、不撤session、不改OIDC组织，也不把`access_grant.manage`变成可委派能力。v1–v15 migration bytes/checksum冻结。
 
 OP-ORG-10是v12唯一跨员工主数据/组织任职命令：一个1..100项typed set可同时处理identifier、employment、education、job_assignment（含membership/position）及administrative/dotted reporting和employee lifecycle。请求携带graph/catalog及每个affected employee revision；服务端先规划全部owner/endpoints，按§6.1锁org graph/auth→subjects→employee UUID→facts，逐owner重验OrgR/OrgW及PII、全窗口/目录/Staff Code owner/单一assignment/reporting无环，然后在**一个事务**写全部facts、canonical projection、graph/catalog/employee revisions、auth/source epochs、一个command receipt、audit/outbox；任一项失败全部rollback。OP-ORG-03在v12不再是writer，不能把两个HTTP请求拼成“原子”。
 
@@ -467,11 +471,11 @@ R4 v7实际新增aggregate/proposal及immutable revision/approval/event/terms/pa
 | `subject` / `subject_identity` | v12存approved org/subject/active、lookup MAC id/version/digest及`identity.mapping.v1`加密canonical issuer/sub payload ref；不存明文。DEV-006仅HMAC无source是历史证据，不进入v12空库 | lookup唯一；owner永不转移。换MAC前解密全部active/inactive source，验证ID/owner全集与旧index一一对应再CAS；缺一保持blocked，不从email/group推断 |
 | `session` / `session_auth` / `oidc_transaction` | session保存随机token hash、subject/org、absolute/idle/MFA、CSRF hash/version、subject epoch/revoked及`access_kind=business|password_change|mfa_enrollment|mfa_recovery`；session_auth存auth_time/ACR/AMR/identity digest；transaction存OIDC proof | 仅business进入普通session loader和业务授权；三种受限session只由对应identity loader读取。business为8h absolute/30m idle；受限session为10分钟；轮换/revoke与审计原子 |
 | `identity_mode_state` / `local_account` / `local_credential` / `local_login_throttle` / `local_bootstrap_receipt` | mode固定`local|oidc`；account绑定subject、加密username source/lookup及v15 `password_change_required`；credential为Argon2id PHC＋exact pepper；throttle/receipt持久 | fresh bootstrap/新用户flag=true，v14既有账号迁移false；模式不匹配拒绝，username owner不转移，未知账号走fake PHC及同类throttle |
-| `bootstrap_admin_policy` / `local_user_create_receipt` | v15固定bootstrap admin、self-approved `bootstrap_admin.v1`及创建用户命令subject/op/key/digest/result | bootstrap自批例外只适用于固定policy；创建同key/body返回原结果，异body冲突；新subject/account/MFA/receipt/audit同Tx，默认无业务grant |
+| `bootstrap_admin_policy` / `local_user_create_receipt` | v15固定bootstrap admin、self-approved `bootstrap_admin.v1`及创建用户命令subject/op/key/digest/result；v16同一policy固定38项当前可委派authority | bootstrap自批例外只适用于固定policy；创建同key/body返回原结果，异body冲突；新subject/account/MFA/receipt/audit同Tx，默认无业务grant或assignment |
 | `local_mfa_account` / `local_mfa_factor` / `local_mfa_enrollment` | account状态仅`enrollment_required|active`且generation单增；factor保存`identity_mfa` envelope及持久`last_accepted_step`；每账号最多一个10分钟pending，mode为initial/replace/recovery并绑定受限session hash | 首次改密flag必须false才能建立initial enrollment；active账号恰有当前generation factor；TOTP确认最多5次；错AAD/tag/key/version拒绝；同step在登录/step-up/替换/重发之间不能重复接受 |
 | `local_mfa_recovery_code` / `local_mfa_recovery_receipt` / `local_mfa_reset_receipt` | recovery只保存`local_recovery_code` exact key reference＋MAC；恢复开始receipt绑定request/input digest/pending；reset receipt保证离线命令幂等 | 每账号最多一个未消费码；消费与session撤销/pending创建同Tx且并发单赢家；同request同input可恢复响应，异input冲突；原文不可回读 |
 | `capability_assignment` / `access_grant` | subject、有限capability、scope kind为`org`、`department`或`employee`、category/object/purpose/validity；grant另有relation ref/authority/revision | relation ref仅`reporting_line`、`job_assignment`或null；当前关系/assignment及主体/对象/scope资格逐请求核对；结束/替代不跟随successor |
-| `delegation_authority` | 批准者、manager subject、capability/category/purpose、scope kind为`org`、`department`或`employee`、validity/MFA/policy | 与当前management capability/grant取交集；不自授、不从职位推导；v12无team兼容 |
+| `delegation_authority` | 批准者、manager subject、capability/category/purpose、scope kind为`org`、`department`或`employee`、validity/MFA/policy；v16 bootstrap矩阵精确38项 | 与当前management capability/grant及目标assignment取交集；不自授、不从职位推导；`access_grant.manage`不进入authority；v12无team兼容 |
 | `authorization_guard` | org auth/policy epoch，subject auth epoch（global主体需按顺序锁） | 唯一guard；当前授权权威在DB，epoch缓存不是权限真相 |
 | `interview_policy_version` / `interview_policy` / `followup_window` / `assessment_command_receipt` | v9起：employee、revision、显式cadence/anchor/timezone/due/pause/purpose、ai_mode；v10可选standing policy并由API scheduler扫描到期窗口 | employee唯一当前policy＋immutable版本；employee/policy_revision/window_start唯一；无配置不建伪月度窗口；多实例由generation唯一键去重 |
 | `assessment_standing_policy` / `approved_assessment_input` | v10实装：service主体、批准人、audience、expires、provider policy、template；proposed/approved/consumed/invalidated结构输入、generation/source digest、有限facts JSON | 常设策略不授grant；requester不得自批；generation唯一；源/grant变化不复活旧输入 |
@@ -486,7 +490,7 @@ R4 v7实际新增aggregate/proposal及immutable revision/approval/event/terms/pa
 
 ### 4.3.1 独立授权的批准 authority 与资格（DEV-003实装契约）
 
-委派authority是受控批准事实：集团org、manager subject、有限capability/category/purpose、typed org/department/employee scope、validity/MFA及批准provenance。HTTP仅引用已有`authority_id`，不能上传说明创建权利。target必须active且有对应职责capability；management另须`access_grant.manage` capability/grant、security_administration purpose及当前MFA，并与authority求交；不得自授或委派管理能力。
+委派authority是受控批准事实：集团org、manager subject、有限capability/category/purpose、typed org/department/employee scope、validity/MFA及批准provenance。HTTP仅引用已有`authority_id`，不能上传说明创建权利。target必须active且有对应职责capability；management另须`access_grant.manage` capability/grant、security_administration purpose及当前MFA，并与authority求交；不得自授或委派管理能力。v16初始管理员的38项org authority只扩大可批准范围，不给管理员或目标主体自动建立assignment、grant或正文读取权。
 
 Org覆盖本集团；department只覆盖exact department；employee只覆盖exact employee。relation-bound grant只引用exact `reporting_line|job_assignment`，由subject_employee核对actor/scope/当前资格；关系不自动赋权，end/replace后successor或rehire新ID不匹配。金融能力永远不能relation-bound。
 
@@ -502,7 +506,7 @@ DB必须执行 PK/NOT NULL、复合org/employee FK、有限state/kind/category C
 
 ## 5. 唯一 HTTP 操作注册
 
-共**53个稳定OP ID**：ORG10、INT8、COMP11、BONUS8、AI8、SEC8；当前v15中OP-ORG-02/03退休且无路由，因此可调用51项。辅助模板、preview和options端点归入对应稳定OP，不另造操作ID。
+共**53个稳定OP ID**：ORG10、INT8、COMP11、BONUS8、AI8、SEC8；当前v16中OP-ORG-02/03退休且无路由，因此可调用51项。辅助模板、preview和options端点归入对应稳定OP，不另造操作ID。
 
 ### 5.1 权限与输入记号（适用于每一行）
 
@@ -596,7 +600,7 @@ DB必须执行 PK/NOT NULL、复合org/employee FK、有限state/kind/category C
 
 ### 5.5 Supporting协议路由（不是额外业务OP）
 
-身份Supporting协议都以`/api/v1`为前缀，不增加53个业务OP；启动时只启用DB固定mode对应路由，另一模式不fallback。匿名`GET /health/live`只证明进程handler存活；`GET /health/ready`检查当前v15 schema/DB、identity mode、18-domain keyring与DB ack、业务wrapper、审计outbox及receiver heartbeat。missing/false、heartbeat超过15秒、积压超过1000或最老超过5分钟均not-ready；敏感依赖不可用必须fail closed。
+身份Supporting协议都以`/api/v1`为前缀，不增加53个业务OP；启动时只启用DB固定mode对应路由，另一模式不fallback。匿名`GET /health/live`只证明进程handler存活；`GET /health/ready`检查当前v16 schema/DB、identity mode、18-domain keyring与DB ack、业务wrapper、审计outbox及receiver heartbeat。missing/false、heartbeat超过15秒、积压超过1000或最老超过5分钟均not-ready；敏感依赖不可用必须fail closed。
 
 | 方法 / 路由 | 输入与前提 | 成功 / 拒绝边界 |
 | --- | --- | --- |
@@ -1038,7 +1042,7 @@ sequenceDiagram
     participant vue as Vue账号安全页
     participant api as Go identity API
     participant keyd as 本地keyd
-    participant db as SQLite或PostgreSQL v15
+    participant db as SQLite或PostgreSQL v16
     human->>vue: username＋初始password
     vue->>api: POST local/login
     api->>keyd: username MAC＋password pepper MAC
@@ -1299,11 +1303,11 @@ result draft→published/discarded/invalidated；published→invalidated（由so
 
 ### 9.2 迁移与备份
 
-当前v15 binary分四路：①拒绝预检：v1-v11/未知版本/checksum drift只读识别后`SCHEMA_VERSION_UNSUPPORTED`，零DDL/bootstrap/cleanup；②fresh安装：SQLite path必须不存在、PG专用schema/database必须为空，顺序安装至v15；③升级：exact v12顺序执行v13/v14/v15、exact v13执行v14/v15、exact v14执行v15，保留全部业务行/密文/审计子事实；④正常启动：exact v15即使已有业务数据也正常打开。
+当前v16 binary分四路：①拒绝预检：v1-v11/未知版本/checksum drift只读识别后`SCHEMA_VERSION_UNSUPPORTED`，零DDL/bootstrap/cleanup；②fresh安装：SQLite path必须不存在、PG专用schema/database必须为空，顺序安装至v16；③升级：exact v12/v13/v14/v15按冻结顺序前向执行至v16，保留全部业务行/密文/审计子事实；④正常启动：exact v16即使已有业务数据也正常打开。
 
-v1–v15已发布migration bytes/checksum冻结。升级前必须停写并验证绑定源/目标版本的数据库备份和keyring双介质副本。v13→v14仍须完成16→18 domain升级/ack；v14→v15不增加key domain，可在现有18-domain keyring上执行普通database migration。中断、未知source、漂移或缺恢复条件保持阻塞，不能drop/重建、fallback空库或手工重导冒充migration。
+v1–v16已发布migration bytes/checksum冻结。升级前必须停写并验证绑定源/目标版本的数据库备份和keyring双介质副本。v13→v14仍须完成16→18 domain升级/ack；v14→v15及v15→v16不增加key domain，可在现有18-domain keyring上执行普通database migration。中断、未知source、漂移或缺恢复条件保持阻塞，不能drop/重建、fallback空库或手工重导冒充migration。
 
-v15 migration保留v14账号/MFA、session子表、grant receipt/source approval、audit event/outbox及全部业务数据；既有账号不追溯强制改密。仅local bootstrap主体补齐固定管理员政策和三项安全权限，并撤销该主体旧session。SQLite真实v14持久库升级及浏览器登录已运行；PostgreSQL 17已运行v1→v15 migration。永久测试覆盖有audit outbox的v14提交升级，防止父表重建在commit时丢失外键子事实。
+v15 migration保留v14账号/MFA及全部子事实，建立固定管理员三项安全direct grant和两项安全authority；v16只为同一local bootstrap主体补齐36项authority，最终精确38项，保留其他authority且不撤session。SQLite v15→v16与真实TLS PostgreSQL 17 fresh/migration已运行；永久测试覆盖exact矩阵、非bootstrap authority保留和migration ledger。
 
 R3只新增v6，两方言扩有限typed面谈对象/source批准、事件/密文/receipt及OIDC intent；必要SQLite旧表copy/rebuild完整保旧列，PG按真实v5约束名变更，不改v1-v5 bytes/checksum。有数据v5→v6、原KMS/receipt、真实CHECK/FK/schema漂移/回滚/多连接消费者及最新464.45s all/race/vet绿；四最终binary已build，双库compiled migrate/API原DB重启、精确版本head裁剪/导出/撤权成品及175 Vue已验。此前完整身份CLI bind/unbind与有限敏感扫描保持各自证据边界。标准PG并发all+race曾原生out-of-shared-memory，失败不记绿；最终串行`-p 2`，不减native约束、不加应用重试或调PG容量掩盖。
 
@@ -1366,8 +1370,8 @@ PG身份维护窄入口直接以同descriptor已检查的完整PEM CA bytes构�
 | F-COMP-001 / compensation | CNY/JPY scale0规范整数、HALF_UP边界/溢出、同Branch混币；个人显式换币correction完整闭包；range区间唯一；batch header/reference budget、Staff Code preview、工资差异确认及先纠正后调薪；全批increase分币种摘要、无FX/grand total | 双库/API：manual/XLSX同构candidate、Text-cell exact与numeric拒绝、旧term/event保留、纠正不计次数、固定service零部分写、range重叠拒绝；Vue默认3行/警告确认/预算对照/局部横向滚动及真实浏览器smoke |
 | F-BONUS-001 / compensation | target/award/payment分列、crossorg refs、异常事实、reversal累计、永久业务key、extension拒绝 | 双库异常/冲销/幂等/atomic rollback、UI不跨币种假余额 |
 | F-AI-001 / assessment | 日历/DST/unknown/partial、source digest/交集ACL、lease fencing、provider失败、人工publish重验 | 双库真实job竞争；可控provider边界；真实provider/model/合同与人审质量另验，不pin自然文案 |
-| F-SEC-001 / identity/authz/sensitive/audit | 授权先于keyd；本地首次改密/TOTP/recovery受限session；`identity.manage`与grant/audit分离；持久replay；openat2/no-replace/lock；AAD/KWP；18-domain inventory与DB ack；MAC staging | bootstrap固定三项安全权限、用户list/create幂等/分页/拒绝、首次改密直达API隔离；RFC向量、登记/登录/step-up/恢复/离线reset；secret不入DB明文/日志；真实OIDC/介质责任另验 |
-| F-DB-001 / adapters/ops | PK/FK/owner/CAS/失败回滚、每连接FK、busy/死锁、v12/v13/v14/v15 checksum及前向migration | SQLite/PG空schema安装至v15；v1-v11/未知目标拒绝零写入；exact v12顺序升v15、exact v14升v15、exact v15重启；v14 audit outbox/session子事实保留；备份恢复、生产构建API/UI smoke与负载目标 |
+| F-SEC-001 / identity/authz/sensitive/audit | 授权先于keyd；本地首次改密/TOTP/recovery受限session；`identity.manage`与grant/audit分离；38项bootstrap authority精确tuple/object边界；持久replay；openat2/no-replace/lock；AAD/KWP；18-domain inventory与DB ack；MAC staging | bootstrap固定三项安全direct grant＋38项当前可委派authority、用户list/create幂等/分页/拒绝、首次改密直达API隔离；目标assignment仍必需；RFC向量、登记/登录/step-up/恢复/离线reset；secret不入DB明文/日志；真实OIDC/介质责任另验 |
+| F-DB-001 / adapters/ops | PK/FK/owner/CAS/失败回滚、每连接FK、busy/死锁、v12/v13/v14/v15/v16 checksum及前向migration | SQLite/PG空schema安装至v16；v1-v11/未知目标拒绝零写入；exact v12–v15顺序升v16、exact v16重启；v14 audit outbox/session子事实及v15 authority保留；备份恢复、生产构建API/UI smoke与负载目标 |
 
 纵向实施顺序与功能规范一致：安全/双库最小真实读写→组织历史→分区面谈/交接→薪资批准纠错→奖金事实→确定规则/AI人审→生产运行启用门禁；每片已有真实界面/API/存储/授权，不先堆空package再宣称功能。安全与恢复从相关切片落实，末项是上线验收不是此前许可忽略。Go行为table/fuzz/race、双库真实集成、Vue/Vitest和关键浏览器E2E各自证据不互替；分工不跑检查，集成负责人统一验证最终候选，整体task两轮串行实际luna review。
 

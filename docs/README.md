@@ -26,5 +26,8 @@
 - [DEV-039验证摘要](validation/DEV-039.md)
 - [DEV-040明确授权管理可用性修复](plans/DEV-040.md)：bootstrap安全grant读取、identity委派和管理筛选契约。
 - [DEV-040验证摘要](validation/DEV-040.md)
+- [DEV-041初始管理员全量可委派权限](plans/DEV-041.md)：38项当前可委派authority、v15→v16迁移及安全边界。
+- [DEV-041验证摘要](validation/DEV-041.md)
+- [DEV-042人员XLSX逐格错误诊断](validation/DEV-042.md)：最新模板经Excel保存后的类型兼容、sheet/cell错误和安全日志。
 
 历史私有计划、review会话、本机路径和旧文档commit台账不复制到public仓库；它们不是当前产品契约。当前行为以本仓库源码、迁移、永久测试和上述文档为准。
