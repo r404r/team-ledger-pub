@@ -28,6 +28,9 @@ const employee = { id: EMPLOYEE, profile: { local_name: '合成员工', english_
 const created = { id: BATCH, business_code: 'N-2026-0001', name: '2026 Normal 调薪', cycle_year: 2026, adjustment_type: 'normal', legal_entity_id: BRANCH, default_effective_date: '2026-10-01', budget_currency: 'CNY', budget_amount: '1000000', state: 'draft', revision: '1', lines: [], increase_totals_by_currency: [] }
 const stagedLine = { employee_id: EMPLOYEE, staff_code: 'S001', currency: 'CNY', salary_before: '11000', increase_amount: '500', salary_after: '11500', performance_grade: 'A', effective_date: '2026-10-01' }
 const frozen = { ...created, revision: '2', manifest_digest: 'frozen-digest', lines: [{ ...stagedLine, correct_salary_before: true, result: 'changed', adjustment_counts: { current_year: 0, previous_year: 0, count_as_of_date: '2026-10-01' } }], increase_totals_by_currency: [{ currency: 'CNY', amount: '500' }] }
+const baselineCreated = { id: BATCH, business_code: 'B-2026-0001', name: '2026-06 工资基线', cycle_year: 2026, adjustment_type: 'baseline', legal_entity_id: BRANCH, default_effective_date: '2026-06-30', state: 'draft', revision: '1', lines: [], increase_totals_by_currency: [] }
+const baselineLine = { employee_id: EMPLOYEE, staff_code: 'S001', currency: 'CNY', salary_before: '10000', increase_amount: '', salary_after: '9000', result: 'changed' }
+const baselineFrozen = { ...baselineCreated, revision: '2', manifest_digest: 'baseline-digest', lines: [baselineLine], increase_totals_by_currency: [] }
 
 type Seen = { url: URL; init: RequestInit; body?: unknown }
 function response(body: unknown, status = 200) { return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }) }
@@ -35,6 +38,7 @@ async function settle() { await flushPromises(); await flushPromises() }
 function button(page: VueWrapper, text: string) { const found = page.findAll('button').find(item => item.text() === text); if (!found) throw new Error(`missing button ${text}`); return found }
 function installAPI() {
   const seen: Seen[] = []
+  let baselineMode = false
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = new URL(String(input), location.href), method = init.method ?? 'GET'
     let body: unknown
@@ -45,13 +49,19 @@ function installAPI() {
     if (url.pathname.endsWith('/salary-ranges')) return response([])
     if (url.pathname.endsWith('/compensation-adjustment-batches/options')) return response({ special_reasons: [{ code: 'market_adjustment', label: '市场调整' }] })
     if (url.pathname.endsWith('/compensation-adjustment-batches') && method === 'GET') return response({ batches: [] })
-    if (url.pathname.endsWith('/compensation-adjustment-batches') && method === 'POST') return response(created, 201)
+    if (url.pathname.endsWith('/compensation-adjustment-batches') && method === 'POST') {
+      baselineMode = (body as { adjustment_type?: string })?.adjustment_type === 'baseline'
+      return response(baselineMode ? baselineCreated : created, 201)
+    }
+    if (url.pathname.endsWith('/compensation-adjustment-batches/import-template')) return new Response(new Uint8Array([80, 75, 3, 4]), { status: 200, headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' } })
     if (url.pathname.endsWith('/employees/query')) return response({ items: [employee] })
     if (url.pathname.endsWith(`/employees/${EMPLOYEE}/compensation`)) return response({ current_term: { terms: { currency: 'CNY', scale: 0, amount_minor: '10000', unit: 'month', payment_frequency: 'monthly', tax_basis: 'gross' } } })
-    if (url.pathname.endsWith(`/compensation-adjustment-batches/${BATCH}/previews`)) return response({ id: CANDIDATE, batch_id: BATCH, base_revision: '1', state: 'valid', line_count: 1, lines: [stagedLine], warnings: [{ code: 'SALARY_BEFORE_MISMATCH', employee_id: EMPLOYEE, staff_code: 'S001', effective_date: '2026-10-01', entered_salary_before: '11000', current_salary_before: '10000' }], adjustment_counts_by_employee: {}, errors: [], expires_at: '2099-01-01T00:00:00Z' }, 201)
+    if (url.pathname.endsWith(`/compensation-adjustment-batches/${BATCH}/previews`)) return response(baselineMode
+      ? { id: CANDIDATE, batch_id: BATCH, base_revision: '1', state: 'valid', line_count: 1, lines: [baselineLine], warnings: [], adjustment_counts_by_employee: {}, errors: [], expires_at: '2099-01-01T00:00:00Z' }
+      : { id: CANDIDATE, batch_id: BATCH, base_revision: '1', state: 'valid', line_count: 1, lines: [stagedLine], warnings: [{ code: 'SALARY_BEFORE_MISMATCH', employee_id: EMPLOYEE, staff_code: 'S001', effective_date: '2026-10-01', entered_salary_before: '11000', current_salary_before: '10000' }], adjustment_counts_by_employee: {}, errors: [], expires_at: '2099-01-01T00:00:00Z' }, 201)
     if (url.pathname.endsWith(`/compensation-adjustment-batches/${BATCH}/imports`)) return response({ id: CANDIDATE, batch_id: BATCH, base_revision: '1', state: 'valid', line_count: 1, lines: [stagedLine], warnings: [], adjustment_counts_by_employee: {}, errors: [], expires_at: '2099-01-01T00:00:00Z' }, 201)
-    if (url.pathname.endsWith(`/compensation-adjustment-batches/${BATCH}/draft`)) return response(frozen)
-    if (url.pathname.endsWith(`/compensation-adjustment-batches/${BATCH}/transitions`)) return response({ ...frozen, state: 'activated', revision: '3' })
+    if (url.pathname.endsWith(`/compensation-adjustment-batches/${BATCH}/draft`)) return response(baselineMode ? baselineFrozen : frozen)
+    if (url.pathname.endsWith(`/compensation-adjustment-batches/${BATCH}/transitions`)) return response({ ...(baselineMode ? baselineFrozen : frozen), state: 'activated', revision: '3' })
     throw new Error(`unexpected ${method} ${url.pathname}`)
   }))
   return seen
@@ -148,6 +158,49 @@ describe('salary adjustment batch workbench', () => {
       default_effective_date: '2026-10-01', budget_currency: 'CNY', budget_amount: '1000000',
       special_reason_code: 'market_adjustment', special_reason_text: '关键岗位市场调整',
     })
+    page.unmount()
+  })
+
+  it('creates a salary-at-date baseline without a budget, keeps target salary editable, and uses the controlled template and confirmation flow', async () => {
+    history.replaceState({}, '', `/orgs/${ORG}/compensation-adjustments`)
+    const createObjectURL = vi.fn(() => 'blob:baseline-template')
+    const revokeObjectURL = vi.fn()
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL, revokeObjectURL }))
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    const seen = installAPI()
+    const page = mount(CompensationBatchPage, { attachTo: document.body }); await settle()
+    const form = page.get('form[aria-label="创建薪资调整批次"]')
+    await form.get('input[placeholder*="2026-07-08"]').setValue('2026-06 工资基线')
+    await form.findAll('select')[0]!.setValue('baseline')
+    await form.findAll('select')[1]!.setValue(BRANCH)
+    await form.get('input[type="date"]').setValue('2026-06-30')
+    await form.trigger('submit'); await settle()
+
+    expect(seen.find(item => item.url.pathname.endsWith('/compensation-adjustment-batches') && item.init.method === 'POST')!.body).toEqual({
+      name: '2026-06 工资基线', cycle_year: 2026, adjustment_type: 'baseline', legal_entity_id: BRANCH, default_effective_date: '2026-06-30',
+    })
+    expect(page.find('input[aria-label="第1行调整前工资"]').exists()).toBe(false)
+    const staff = page.findAll('input[id^="staff-"]')[0]!
+    await staff.setValue('S001'); await staff.trigger('blur'); await settle()
+    expect(page.get('input[aria-label="第1行指定日工资"]').element).toHaveProperty('value', '')
+    await page.get('input[aria-label="第1行指定日工资"]').setValue('9000')
+    await button(page, '生成确认预览').trigger('click'); await settle()
+    expect(seen.find(item => item.url.pathname.endsWith('/previews'))!.body).toMatchObject({ lines: [{ staff_code: 'S001', currency: 'CNY', salary_before: '', increase_amount: '', salary_after: '9000' }, { staff_code: '', currency: '', salary_after: '' }, { staff_code: '', currency: '', salary_after: '' }] })
+    expect(page.get('[aria-label="调薪预览确认"]').text()).toContain('系统指定日前工资')
+    expect(page.get('[aria-label="调薪预览确认"]').text()).toContain('10000')
+    expect(page.get('[aria-label="调薪预览确认"]').text()).toContain('9000')
+
+    await page.get('details.xlsx-panel').get('summary').trigger('click')
+    await button(page, '下载工资基线模板').trigger('click'); await settle()
+    expect(seen.some(item => item.url.pathname.endsWith('/import-template') && item.url.searchParams.get('adjustment_type') === 'baseline')).toBe(true)
+    expect(createObjectURL).toHaveBeenCalledOnce()
+    expect(click).toHaveBeenCalledOnce()
+    await button(page, '确认并应用为草稿').trigger('click'); await settle()
+    expect(page.text()).toContain('不会计入 Normal / Special 调薪次数')
+    await page.get('.activation-check input[type="checkbox"]').setValue(true)
+    await button(page, '确认整批生效').trigger('click'); await settle()
+    expect(seen.find(item => item.url.pathname.endsWith('/transitions'))!.body).toEqual({ action: 'submit', revision: '2', manifest_digest: 'baseline-digest' })
+
     page.unmount()
   })
 })

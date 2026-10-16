@@ -25,7 +25,7 @@ type Line = {
   original_adjustment_event_id?: string; correction_members?: unknown[]; result?: string; adjustment_counts?: AdjustmentCounts
 }
 type Batch = {
-  id: string; business_code: string; name: string; cycle_year: number; adjustment_type: 'normal' | 'special'; legal_entity_id: string
+  id: string; business_code: string; name: string; cycle_year: number; adjustment_type: 'normal' | 'special' | 'baseline'; legal_entity_id: string
   default_effective_date: string; special_reason_code?: string; special_reason_text?: string; budget_currency?: string; budget_amount?: string
   budget_legacy_unspecified?: boolean; state: string; revision: string; manifest_digest?: string; lines: Line[]
   increase_totals_by_currency: { currency: string; amount: string }[]
@@ -52,7 +52,7 @@ const error = ref('')
 const notice = ref('')
 const confirmed = ref(false)
 const file = shallowRef<File | null>(null)
-const create = reactive({ name: '', cycle_year: String(new Date().getUTCFullYear()), adjustment_type: 'normal' as 'normal' | 'special', legal_entity_id: '', default_effective_date: '', special_reason_code: '', special_reason_text: '', budget_currency: 'CNY', budget_amount: '' })
+const create = reactive({ name: '', cycle_year: String(new Date().getUTCFullYear()), adjustment_type: 'normal' as 'normal' | 'special' | 'baseline', legal_entity_id: '', default_effective_date: '', special_reason_code: '', special_reason_text: '', budget_currency: 'CNY', budget_amount: '' })
 const range = reactive({ legal_entity_id: '', location: 'Shanghai', job_family_id: '', career_level_id: '', currency: 'CNY', valid_from: '', minimum: '', midpoint: '', maximum: '' })
 const rangeChange = reactive({ action: 'end', id: '', revision: '', legal_entity_id: '', location: '', job_family_id: '', career_level_id: '', currency: 'CNY', effective_to: '', minimum: '', midpoint: '', maximum: '' })
 const correction = reactive({ reason: '', lines: '' })
@@ -64,7 +64,7 @@ const draftOpen = computed(() => selected.value && ['draft', 'activation_conflic
 const legalEntities = computed(() => catalogs.value?.legal_entities.filter(item => item.active !== false) ?? [])
 const budgetSummary = computed(() => {
   const batch = selected.value, staged = candidate.value
-  if (!batch || !staged || staged.state !== 'valid') return [] as { currency: string; amount: string; budgetDelta?: string }[]
+  if (!batch || !staged || staged.state !== 'valid' || batch.adjustment_type === 'baseline') return [] as { currency: string; amount: string; budgetDelta?: string }[]
   const totals = new Map<string, bigint>()
   for (const line of staged.lines) totals.set(line.currency, (totals.get(line.currency) ?? 0n) + BigInt(line.increase_amount))
   return [...totals].map(([currency, amount]) => ({ currency, amount: String(amount), budgetDelta: currency === batch.budget_currency && batch.budget_amount ? String(BigInt(batch.budget_amount) - amount) : undefined }))
@@ -76,6 +76,10 @@ function label(entry?: CatalogEntry) { return entry?.display_name || entry?.labe
 function catalogLabel(id?: string) {
   if (!id || !catalogs.value) return '—'
   return label([...catalogs.value.legal_entities, ...catalogs.value.org_units, ...catalogs.value.job_families, ...catalogs.value.career_levels].find(item => item.id === id))
+}
+function batchTypeLabel(type: Batch['adjustment_type']) {
+  if (type === 'baseline') return '工资基线'
+  return type === 'normal' ? 'Normal 年度调薪' : 'Special 特殊调薪'
 }
 function orgUnit(id?: string) { return catalogs.value?.org_units.find(item => item.id === id) }
 function parentUnit(id?: string) {
@@ -124,11 +128,15 @@ async function refreshBatches() {
   try { batches.value = (await request<{ batches: Batch[] }>(`/compensation-adjustment-batches?cycle_year=${encodeURIComponent(create.cycle_year)}`)).batches } catch (cause) { error.value = `批次列表刷新失败（${message(cause)}）。` } finally { busy.value = false }
 }
 async function createBatch() {
-  const valid = create.name.trim() && /^\d{4}$/.test(create.cycle_year) && create.legal_entity_id && /^\d{4}-\d{2}-\d{2}$/.test(create.default_effective_date) && /^(0|[1-9]\d*)$/.test(create.budget_amount) && (create.adjustment_type === 'normal' || create.special_reason_code && create.special_reason_text.trim())
-  if (busy.value || !canPropose.value || !valid) { error.value = '请完整填写批次名、年度、法分公司、生效日和参考预算；Special 还需理由目录与说明。'; return }
+  const baseline = create.adjustment_type === 'baseline'
+  const cycleYear = baseline ? create.default_effective_date.slice(0, 4) : create.cycle_year
+  const valid = create.name.trim() && /^\d{4}$/.test(cycleYear) && create.legal_entity_id && /^\d{4}-\d{2}-\d{2}$/.test(create.default_effective_date) && (baseline || /^(0|[1-9]\d*)$/.test(create.budget_amount)) && (create.adjustment_type !== 'special' || create.special_reason_code && create.special_reason_text.trim())
+  if (busy.value || !canPropose.value || !valid) { error.value = baseline ? '请完整填写批次名、法分公司和工资时点。' : '请完整填写批次名、年度、法分公司、生效日和参考预算；Special 还需理由目录与说明。'; return }
   busy.value = true; error.value = ''; clearSensitive()
   try {
-    const body: Record<string, unknown> = { name: create.name.trim(), cycle_year: Number(create.cycle_year), adjustment_type: create.adjustment_type, legal_entity_id: create.legal_entity_id, default_effective_date: create.default_effective_date, budget_currency: create.budget_currency, budget_amount: create.budget_amount }
+    if (baseline) create.cycle_year = cycleYear
+    const body: Record<string, unknown> = { name: create.name.trim(), cycle_year: Number(cycleYear), adjustment_type: create.adjustment_type, legal_entity_id: create.legal_entity_id, default_effective_date: create.default_effective_date }
+    if (!baseline) Object.assign(body, { budget_currency: create.budget_currency, budget_amount: create.budget_amount })
     if (create.adjustment_type === 'special') Object.assign(body, { special_reason_code: create.special_reason_code, special_reason_text: create.special_reason_text.trim() })
     const batch = await request<Batch>('/compensation-adjustment-batches', { method: 'POST', body: JSON.stringify(body), headers: { 'Idempotency-Key': crypto.randomUUID() } })
     batches.value = [batch, ...batches.value.filter(item => item.id !== batch.id)]; selected.value = batch; resetRows(); notice.value = `已创建 ${batch.name}（${batch.business_code}），请录入员工。`
@@ -143,6 +151,7 @@ function effectiveDate(row: EditorRow) {
   const batch = selected.value
   if (!batch) return ''
   if (batch.adjustment_type === 'normal') return row.effective_date || batch.default_effective_date
+  if (batch.adjustment_type === 'baseline') return batch.default_effective_date
   const month = row.effective_month || batch.default_effective_date.slice(0, 7)
   return /^\d{4}-\d{2}$/.test(month) ? `${month}-01` : ''
 }
@@ -166,8 +175,10 @@ async function resolveRow(row: EditorRow) {
       if (terms?.amount_minor !== null && terms?.amount_minor !== undefined && terms.scale === 0 && terms.unit === 'month' && terms.payment_frequency === 'monthly' && terms.tax_basis === 'gross') {
         display.currentSalary = terms.amount_minor; display.currency = terms.currency
         if (!row.currency) row.currency = terms.currency
-        if (!row.salary_before) row.salary_before = terms.amount_minor
-        recalculate(row)
+        if (selected.value?.adjustment_type !== 'baseline') {
+          if (!row.salary_before) row.salary_before = terms.amount_minor
+          recalculate(row)
+        }
       }
       row.lookupState = 'ready'; row.lookupMessage = display.currentSalary ? '员工与当前月基本工资已读取。' : '员工已读取；系统当前没有可用月基本工资。'
     } catch (cause) {
@@ -182,6 +193,7 @@ function addRow() { if (rows.value.length < 500) rows.value.push(newRow()) }
 function removeRow(index: number) { rows.value.splice(index, 1); if (!rows.value.length) rows.value.push(newRow()) }
 function linePayload(row: EditorRow): Line {
   const batch = selected.value!
+  if (batch.adjustment_type === 'baseline') return { employee_id: '', staff_code: row.staff_code.trim(), currency: row.currency, salary_before: '', increase_amount: '', salary_after: row.salary_after.trim() }
   const line: Line = { employee_id: '', staff_code: row.staff_code.trim(), currency: row.currency, salary_before: row.salary_before.trim(), increase_amount: row.increase_amount.trim(), salary_after: row.salary_after.trim() }
   if (batch.adjustment_type === 'normal') Object.assign(line, { performance_grade: row.performance_grade?.trim() || '', average_merit_increase: row.average_merit_increase?.trim() || '', department_suggested_increase: row.department_suggested_increase?.trim() || '', effective_date: row.effective_date || '' })
   else Object.assign(line, { effective_month: row.effective_month || '', reason_code: row.reason_code?.trim() || '', reason_text: row.reason_text?.trim() || '' })
@@ -205,6 +217,19 @@ async function importWorkbook() {
     candidate.value = await request<ImportCandidate>(`/compensation-adjustment-batches/${batch.id}/imports?revision=${encodeURIComponent(batch.revision)}`, { method: 'POST', body: workbook, headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Idempotency-Key': crypto.randomUUID() } })
     notice.value = 'XLSX 已进入同一预览校验；尚未修改草稿或工资。'
   } catch (cause) { error.value = `导入失败（${message(cause)}）。` } finally { busy.value = false }
+}
+async function downloadBaselineTemplate() {
+  if (busy.value) return
+  busy.value = true; error.value = ''
+  try {
+    const response = await fetch('/api/v1/compensation-adjustment-batches/import-template?adjustment_type=baseline', { credentials: 'same-origin', cache: 'no-store', headers: headers('compensation_management') })
+    if (response.status === 401) emit('session-expired')
+    if (!response.ok) throw new ApiFailure(response.status)
+    const url = URL.createObjectURL(await response.blob())
+    const link = document.createElement('a')
+    link.href = url; link.download = 'teamledger-salary-baseline.xlsx'; link.click()
+    URL.revokeObjectURL(url)
+  } catch (cause) { error.value = `模板下载失败（${message(cause)}）。` } finally { busy.value = false }
 }
 function warningConfirmed(warning: PreviewWarning) { return confirmedCorrections.value.includes(warning.employee_id) }
 async function applyCandidate() {
@@ -262,7 +287,7 @@ onBeforeUnmount(() => { controller?.abort(); clearSensitive(); batches.value = [
     <header class="page-intro">
       <p class="eyebrow">Compensation operations</p>
       <h1>薪资调整批次</h1>
-      <p>按 Staff Code 批量录入 Normal 或 Special 调薪。预览、草稿确认和整批生效相互独立；预算仅作参考，不阻止提交。</p>
+      <p>按 Staff Code 批量录入某个日期的工资基线、Normal 年度调薪或 Special 特殊调薪。预览、草稿确认和整批生效相互独立。</p>
     </header>
 
     <p v-if="error" class="message danger" role="alert">{{ error }}</p>
@@ -272,12 +297,12 @@ onBeforeUnmount(() => { controller?.abort(); clearSensitive(); batches.value = [
       <div class="section-heading"><div><p class="step-label">01 · Batch setup</p><h2 id="create-batch-heading">建立批次</h2></div><p>服务器自动生成唯一业务编号。</p></div>
       <form class="batch-create-form" aria-label="创建薪资调整批次" @submit.prevent="createBatch">
         <label class="span-2">批次名<input v-model="create.name" maxlength="200" placeholder="例如：2026-07-08 特调" required /></label>
-        <label>年度<input v-model="create.cycle_year" inputmode="numeric" maxlength="4" required /></label>
-        <label>类型<select v-model="create.adjustment_type"><option value="normal">Normal 年度调薪</option><option value="special">Special 特殊调薪</option></select></label>
+        <label>年度<input v-model="create.cycle_year" inputmode="numeric" maxlength="4" :disabled="create.adjustment_type === 'baseline'" required /></label>
+        <label>类型<select v-model="create.adjustment_type"><option value="baseline">工资基线（指定日期工资）</option><option value="normal">Normal 年度调薪</option><option value="special">Special 特殊调薪</option></select></label>
         <label class="span-2">法分公司<select v-model="create.legal_entity_id" required><option value="" disabled>请选择</option><option v-for="entity in legalEntities" :key="entity.id" :value="entity.id">{{ label(entity) }}</option></select></label>
-        <label>默认生效日<input v-model="create.default_effective_date" type="date" required /></label>
-        <label>预算币种<select v-model="create.budget_currency"><option>CNY</option><option>JPY</option></select></label>
-        <label>整体参考预算<input v-model="create.budget_amount" inputmode="numeric" placeholder="非负整数" required /></label>
+        <label>{{ create.adjustment_type === 'baseline' ? '工资时点' : '默认生效日' }}<input v-model="create.default_effective_date" type="date" required /></label>
+        <template v-if="create.adjustment_type !== 'baseline'"><label>预算币种<select v-model="create.budget_currency"><option>CNY</option><option>JPY</option></select></label>
+        <label>整体参考预算<input v-model="create.budget_amount" inputmode="numeric" placeholder="非负整数" required /></label></template>
         <template v-if="create.adjustment_type === 'special'">
           <label>Special 理由<select v-model="create.special_reason_code" required><option value="" disabled>请选择</option><option v-for="reason in options.special_reasons" :key="reason.code" :value="reason.code">{{ reason.label }}</option></select></label>
           <label class="span-2">理由说明<input v-model="create.special_reason_text" maxlength="1000" placeholder="说明本批次的业务背景" required /></label>
@@ -290,7 +315,7 @@ onBeforeUnmount(() => { controller?.abort(); clearSensitive(); batches.value = [
       <div class="section-heading"><div><p class="step-label">Existing batches</p><h2 id="batch-list-heading">{{ create.cycle_year }} 年批次</h2></div><p>{{ batches.length }} 个可见批次</p></div>
       <div v-if="batches.length" class="batch-grid">
         <button v-for="batch in batches" :key="batch.id" type="button" class="batch-tile" :class="{ active: selected?.id === batch.id }" :disabled="busy" @click="openBatch(batch.id)">
-          <span class="batch-type">{{ batch.adjustment_type === 'normal' ? 'NORMAL' : 'SPECIAL' }}</span><strong>{{ batch.name || batch.business_code }}</strong><small>{{ batch.business_code }} · {{ catalogLabel(batch.legal_entity_id) }}</small><span><span class="state-dot"></span>{{ batch.state }} · R{{ batch.revision }}</span>
+          <span class="batch-type">{{ batch.adjustment_type.toUpperCase() }}</span><strong>{{ batch.name || batch.business_code }}</strong><small>{{ batch.business_code }} · {{ catalogLabel(batch.legal_entity_id) }}</small><span><span class="state-dot"></span>{{ batch.state }} · R{{ batch.revision }}</span>
         </button>
       </div>
       <div v-else class="empty-state">本年度还没有批次。</div>
@@ -298,27 +323,27 @@ onBeforeUnmount(() => { controller?.abort(); clearSensitive(); batches.value = [
 
     <section v-if="selected" class="workbench" aria-label="调薪批次录入工作台">
       <header class="batch-summary">
-        <div><p class="step-label">02 · Entry workbench</p><h2>{{ selected.name }}</h2><p>{{ selected.business_code }} · {{ selected.adjustment_type === 'normal' ? 'Normal 年度调薪' : 'Special 特殊调薪' }} · R{{ selected.revision }}</p></div>
-        <dl><div><dt>法分公司</dt><dd>{{ catalogLabel(selected.legal_entity_id) }}</dd></div><div><dt>默认生效</dt><dd>{{ selected.default_effective_date }}</dd></div><div><dt>参考预算</dt><dd>{{ selected.budget_legacy_unspecified ? '历史批次未指定' : `${selected.budget_currency} ${selected.budget_amount}` }}</dd></div><div><dt>状态</dt><dd><span class="status-pill">{{ selected.state }}</span></dd></div></dl>
+        <div><p class="step-label">02 · Entry workbench</p><h2>{{ selected.name }}</h2><p>{{ selected.business_code }} · {{ batchTypeLabel(selected.adjustment_type) }} · R{{ selected.revision }}</p></div>
+        <dl><div><dt>法分公司</dt><dd>{{ catalogLabel(selected.legal_entity_id) }}</dd></div><div><dt>{{ selected.adjustment_type === 'baseline' ? '工资时点' : '默认生效' }}</dt><dd>{{ selected.default_effective_date }}</dd></div><div v-if="selected.adjustment_type !== 'baseline'"><dt>参考预算</dt><dd>{{ selected.budget_legacy_unspecified ? '历史批次未指定' : `${selected.budget_currency} ${selected.budget_amount}` }}</dd></div><div><dt>状态</dt><dd><span class="status-pill">{{ selected.state }}</span></dd></div></dl>
       </header>
 
       <div v-if="selected.state === 'activation_conflict'" class="message danger" role="alert">冻结依据已经变化。请重新解析员工、生成预览并应用草稿。</div>
 
       <template v-if="draftOpen">
-        <div class="entry-toolbar"><div><h3>逐人录入</h3><p>默认 3 行；全空行在预览时忽略。调整后工资由调整前工资＋增加额计算。</p></div><button type="button" class="secondary" :disabled="busy || rows.length >= 500" @click="addRow">＋ 追加一行</button></div>
+        <div class="entry-toolbar"><div><h3>逐人录入</h3><p v-if="selected.adjustment_type === 'baseline'">默认 3 行；输入指定日期的税前固定月基本工资，全空行在预览时忽略。</p><p v-else>默认 3 行；全空行在预览时忽略。调整后工资由调整前工资＋增加额计算。</p></div><button type="button" class="secondary" :disabled="busy || rows.length >= 500" @click="addRow">＋ 追加一行</button></div>
         <div class="line-table-wrap">
           <table class="line-table">
             <caption class="sr-only">调薪批次逐人录入</caption>
-            <thead><tr><th>#</th><th>员工 / Staff Code</th><th>员工资料</th><th>币种</th><th>调整前工资</th><th>增加额</th><th>调整后工资</th><th v-if="selected.adjustment_type === 'normal'">绩效等级</th><th v-if="selected.adjustment_type === 'normal'">参考幅度</th><th v-if="selected.adjustment_type === 'normal'">生效日</th><th v-if="selected.adjustment_type === 'special'">生效月份</th><th v-if="selected.adjustment_type === 'special'">逐行理由覆盖</th><th>操作</th></tr></thead>
+            <thead><tr><th>#</th><th>员工 / Staff Code</th><th>员工资料</th><th>币种</th><th v-if="selected.adjustment_type !== 'baseline'">调整前工资</th><th v-if="selected.adjustment_type !== 'baseline'">增加额</th><th>{{ selected.adjustment_type === 'baseline' ? '指定日工资' : '调整后工资' }}</th><th v-if="selected.adjustment_type === 'normal'">绩效等级</th><th v-if="selected.adjustment_type === 'normal'">参考幅度</th><th v-if="selected.adjustment_type === 'normal'">生效日</th><th v-if="selected.adjustment_type === 'special'">生效月份</th><th v-if="selected.adjustment_type === 'special'">逐行理由覆盖</th><th>操作</th></tr></thead>
             <tbody>
               <tr v-for="(row, index) in rows" :key="row.key">
                 <td class="row-number">{{ index + 1 }}</td>
                 <td class="staff-cell"><label :for="`staff-${row.key}`">Staff Code</label><input :id="`staff-${row.key}`" v-model="row.staff_code" autocomplete="off" placeholder="输入后离开以查询" @blur="resolveRow(row)" /><small :class="`lookup-${row.lookupState}`">{{ row.lookupState === 'loading' ? '查询中…' : row.lookupMessage }}</small></td>
                 <td class="employee-cell"><template v-if="row.display"><strong>{{ row.display.name }}</strong><span>{{ row.display.englishName }}</span><small>{{ row.display.location }} · {{ row.display.branch }}</small><small>{{ row.display.businessGroup }} / {{ row.display.division }} / {{ row.display.department }}</small><small>{{ row.display.position }} · {{ row.display.jobFamily }} · {{ row.display.careerLevel }}</small><small v-if="row.display.currentSalary">系统当前：{{ row.display.currency }} {{ row.display.currentSalary }}</small></template><span v-else class="muted">输入 Staff Code 后回填</span></td>
                 <td><select v-model="row.currency" :aria-label="`第${index + 1}行币种`"><option value="">—</option><option>CNY</option><option>JPY</option></select></td>
-                <td><input v-model="row.salary_before" :aria-label="`第${index + 1}行调整前工资`" inputmode="numeric" @input="recalculate(row)" /></td>
-                <td><input v-model="row.increase_amount" :aria-label="`第${index + 1}行增加额`" inputmode="numeric" @input="recalculate(row)" /></td>
-                <td><input v-model="row.salary_after" :aria-label="`第${index + 1}行调整后工资`" inputmode="numeric" readonly /></td>
+                <td v-if="selected.adjustment_type !== 'baseline'"><input v-model="row.salary_before" :aria-label="`第${index + 1}行调整前工资`" inputmode="numeric" @input="recalculate(row)" /></td>
+                <td v-if="selected.adjustment_type !== 'baseline'"><input v-model="row.increase_amount" :aria-label="`第${index + 1}行增加额`" inputmode="numeric" @input="recalculate(row)" /></td>
+                <td><input v-model="row.salary_after" :aria-label="selected.adjustment_type === 'baseline' ? `第${index + 1}行指定日工资` : `第${index + 1}行调整后工资`" inputmode="numeric" :readonly="selected.adjustment_type !== 'baseline'" /></td>
                 <td v-if="selected.adjustment_type === 'normal'"><input v-model="row.performance_grade" :aria-label="`第${index + 1}行绩效等级`" placeholder="手工输入" /></td>
                 <td v-if="selected.adjustment_type === 'normal'" class="reference-cell"><input v-model="row.average_merit_increase" :aria-label="`第${index + 1}行平均调薪幅度`" placeholder="平均，如 6%" /><input v-model="row.department_suggested_increase" :aria-label="`第${index + 1}行部门建议幅度`" placeholder="部门建议" /></td>
                 <td v-if="selected.adjustment_type === 'normal'"><input v-model="row.effective_date" :aria-label="`第${index + 1}行生效日`" type="date" @change="resolveRow(row)" /><small>空值继承 {{ selected.default_effective_date }}</small></td>
@@ -331,13 +356,13 @@ onBeforeUnmount(() => { controller?.abort(); clearSensitive(); batches.value = [
         </div>
         <div class="entry-actions"><p>{{ rows.length }} 行录入区 · 最多 500 名唯一员工</p><button type="button" :disabled="busy" @click="previewRows">生成确认预览</button></div>
 
-        <details class="xlsx-panel"><summary>从 XLSX 导入（使用同一预览规则）</summary><div><label>XLSX 文件<input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" @change="chooseFile" /></label><button type="button" class="secondary" :disabled="busy || !file" @click="importWorkbook">解析 XLSX</button><p>文件不会直接修改草稿或工资；解析后仍需完成下方确认。</p></div></details>
+        <details class="xlsx-panel"><summary>从 XLSX 导入（使用同一预览规则）</summary><div><button v-if="selected.adjustment_type === 'baseline'" type="button" class="secondary" :disabled="busy" @click="downloadBaselineTemplate">下载工资基线模板</button><label>XLSX 文件<input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" @change="chooseFile" /></label><button type="button" class="secondary" :disabled="busy || !file" @click="importWorkbook">解析 XLSX</button><p>文件不会直接修改草稿或工资；解析后仍需完成下方确认。</p></div></details>
 
         <section v-if="candidate" class="preview-panel" aria-label="调薪预览确认">
           <div class="section-heading"><div><p class="step-label">03 · Review</p><h3>预览与确认</h3></div><p>{{ candidate.line_count }} 名员工 · 有效期至 {{ candidate.expires_at }}</p></div>
           <div v-if="candidate.errors.length" class="message danger"><strong>预览未通过</strong><ul><li v-for="messageText in candidate.errors" :key="messageText">{{ messageText }}</li></ul></div>
           <div v-if="candidate.warnings.length" class="warning-list"><h4>调整前工资不一致</h4><p>仅勾选后才能继续；最终生效时先追加历史纠正，再追加本次调薪，原历史不会覆盖。</p><label v-for="warning in candidate.warnings" :key="warning.employee_id"><input v-model="confirmedCorrections" type="checkbox" :value="warning.employee_id" /><span><strong>{{ warning.staff_code }}</strong> · {{ warning.effective_date }}：录入 {{ warning.entered_salary_before }}，系统 {{ warning.current_salary_before }}。确认先纠正系统当前工资。</span></label></div>
-          <div v-if="candidate.lines.length" class="preview-table-wrap"><table><thead><tr><th>工号</th><th>姓名</th><th>币种</th><th>调整前</th><th>增加</th><th>调整后</th><th>生效日/月</th><th v-if="selected.adjustment_type === 'special'">本年/上年次数</th><th>理由</th></tr></thead><tbody><tr v-for="(line, index) in candidate.lines" :key="`${line.employee_id}-${index}`"><td><strong>{{ line.staff_code }}</strong></td><td>{{ rows.find(row => row.staff_code === line.staff_code)?.display?.name || '受限' }}</td><td>{{ line.currency }}</td><td>{{ line.salary_before }}</td><td>{{ line.increase_amount }}</td><td>{{ line.salary_after }}</td><td>{{ line.effective_date || line.effective_month }}</td><td v-if="selected.adjustment_type === 'special'">{{ candidate.adjustment_counts_by_employee[line.employee_id]?.current_year ?? 0 }} / {{ candidate.adjustment_counts_by_employee[line.employee_id]?.previous_year ?? 0 }}</td><td>{{ [line.reason_code, line.reason_text].filter(Boolean).join(' · ') || '—' }}</td></tr></tbody></table></div>
+          <div v-if="candidate.lines.length" class="preview-table-wrap"><table><thead><tr><th>工号</th><th>姓名</th><th>币种</th><th>{{ selected.adjustment_type === 'baseline' ? '系统指定日前工资' : '调整前' }}</th><th v-if="selected.adjustment_type !== 'baseline'">增加</th><th>{{ selected.adjustment_type === 'baseline' ? '指定日工资' : '调整后' }}</th><th>生效日/月</th><th v-if="selected.adjustment_type === 'special'">本年/上年次数</th><th v-if="selected.adjustment_type !== 'baseline'">理由</th></tr></thead><tbody><tr v-for="(line, index) in candidate.lines" :key="`${line.employee_id}-${index}`"><td><strong>{{ line.staff_code }}</strong></td><td>{{ rows.find(row => row.staff_code === line.staff_code)?.display?.name || '受限' }}</td><td>{{ line.currency }}</td><td>{{ line.salary_before || '未登记' }}</td><td v-if="selected.adjustment_type !== 'baseline'">{{ line.increase_amount }}</td><td>{{ line.salary_after }}</td><td>{{ line.effective_date || line.effective_month || selected.default_effective_date }}</td><td v-if="selected.adjustment_type === 'special'">{{ candidate.adjustment_counts_by_employee[line.employee_id]?.current_year ?? 0 }} / {{ candidate.adjustment_counts_by_employee[line.employee_id]?.previous_year ?? 0 }}</td><td v-if="selected.adjustment_type !== 'baseline'">{{ [line.reason_code, line.reason_text].filter(Boolean).join(' · ') || '—' }}</td></tr></tbody></table></div>
           <div v-if="budgetSummary.length" class="budget-review"><article v-for="total in budgetSummary" :key="total.currency"><span>{{ total.currency }} 增加额合计</span><strong>{{ total.amount }}</strong><small v-if="total.budgetDelta !== undefined">参考预算差额 {{ total.budgetDelta }}（不阻断）</small><small v-else>与 {{ selected.budget_currency }} 预算不可合并；不进行 FX 换算</small></article></div>
           <div class="preview-actions"><button type="button" class="secondary" :disabled="busy" @click="clearCandidate">返回修改</button><button type="button" :disabled="busy || candidate.state !== 'valid' || candidate.warnings.some(warning => !warningConfirmed(warning))" @click="applyCandidate">确认并应用为草稿</button></div>
         </section>
@@ -345,11 +370,11 @@ onBeforeUnmount(() => { controller?.abort(); clearSensitive(); batches.value = [
 
       <section v-if="selected.lines.length" class="frozen-panel" aria-label="已冻结调薪清单">
         <div class="section-heading"><div><p class="step-label">Frozen draft</p><h3>已冻结清单</h3></div><p>{{ selected.lines.length }} 名员工</p></div>
-        <div class="preview-table-wrap"><table><thead><tr><th>工号</th><th>币种</th><th>调整前</th><th>增加</th><th>调整后</th><th>结果</th><th>工资纠正</th><th>本年/上年次数</th></tr></thead><tbody><tr v-for="line in selected.lines" :key="line.employee_id"><td><strong>{{ line.staff_code }}</strong></td><td>{{ line.currency }}</td><td>{{ line.salary_before }}</td><td>{{ line.increase_amount }}</td><td>{{ line.salary_after }}</td><td>{{ line.result }}</td><td>{{ line.correct_salary_before ? '生效时先追加纠正' : '不需要' }}</td><td>{{ line.adjustment_counts?.current_year ?? 0 }} / {{ line.adjustment_counts?.previous_year ?? 0 }}</td></tr></tbody></table></div>
-        <div class="frozen-footer"><p>增加额合计：<strong v-for="total in selected.increase_totals_by_currency" :key="total.currency">{{ total.currency }} {{ total.amount }}　</strong></p><template v-if="['draft', 'activation_blocked'].includes(selected.state)"><label class="activation-check"><input v-model="confirmed" type="checkbox" /> 已核对逐人结果、工资纠正标记、币种合计及参考预算</label><button type="button" class="danger-button" :disabled="busy || !confirmed" @click="activate">{{ selected.state === 'activation_blocked' ? '重试整批生效' : '确认整批生效' }}</button></template></div>
+        <div class="preview-table-wrap"><table><thead><tr><th>工号</th><th>币种</th><th>{{ selected.adjustment_type === 'baseline' ? '指定日前工资' : '调整前' }}</th><th v-if="selected.adjustment_type !== 'baseline'">增加</th><th>{{ selected.adjustment_type === 'baseline' ? '指定日工资' : '调整后' }}</th><th>结果</th><th v-if="selected.adjustment_type !== 'baseline'">工资纠正</th><th v-if="selected.adjustment_type !== 'baseline'">本年/上年次数</th></tr></thead><tbody><tr v-for="line in selected.lines" :key="line.employee_id"><td><strong>{{ line.staff_code }}</strong></td><td>{{ line.currency }}</td><td>{{ line.salary_before || '未登记' }}</td><td v-if="selected.adjustment_type !== 'baseline'">{{ line.increase_amount }}</td><td>{{ line.salary_after }}</td><td>{{ line.result }}</td><td v-if="selected.adjustment_type !== 'baseline'">{{ line.correct_salary_before ? '生效时先追加纠正' : '不需要' }}</td><td v-if="selected.adjustment_type !== 'baseline'">{{ line.adjustment_counts?.current_year ?? 0 }} / {{ line.adjustment_counts?.previous_year ?? 0 }}</td></tr></tbody></table></div>
+        <div class="frozen-footer"><p v-if="selected.adjustment_type !== 'baseline'">增加额合计：<strong v-for="total in selected.increase_totals_by_currency" :key="total.currency">{{ total.currency }} {{ total.amount }}　</strong></p><p v-else>工资基线生效时按指定日期追加不可变工资历史；不会计入 Normal / Special 调薪次数。</p><template v-if="['draft', 'activation_blocked'].includes(selected.state)"><label class="activation-check"><input v-model="confirmed" type="checkbox" /> {{ selected.adjustment_type === 'baseline' ? '已核对 Staff Code、币种、指定日前工资及指定日工资' : '已核对逐人结果、工资纠正标记、币种合计及参考预算' }}</label><button type="button" class="danger-button" :disabled="busy || !confirmed" @click="activate">{{ selected.state === 'activation_blocked' ? '重试整批生效' : '确认整批生效' }}</button></template></div>
       </section>
 
-      <details v-if="selected.state === 'activated'" class="correction-panel"><summary>已生效批次的高级更正</summary><form aria-label="更正已生效批次" @submit.prevent="correctBatch"><p>仅用于 append-only 反转/替换，不修改原始事件。</p><label>更正原因<input v-model="correction.reason" /></label><button type="button" class="secondary" :disabled="busy || !selected.lines.some(line => line.original_adjustment_event_id)" @click="generateCorrectionTemplate">生成受控 JSON 模板</button><label class="span-all">更正成员 JSON<textarea v-model="correction.lines" rows="8" spellcheck="false"></textarea></label><button :disabled="busy || !correction.reason || !correction.lines">原子生效更正</button></form></details>
+      <details v-if="selected.state === 'activated' && selected.adjustment_type !== 'baseline'" class="correction-panel"><summary>已生效批次的高级更正</summary><form aria-label="更正已生效批次" @submit.prevent="correctBatch"><p>仅用于 append-only 反转/替换，不修改原始事件。</p><label>更正原因<input v-model="correction.reason" /></label><button type="button" class="secondary" :disabled="busy || !selected.lines.some(line => line.original_adjustment_event_id)" @click="generateCorrectionTemplate">生成受控 JSON 模板</button><label class="span-all">更正成员 JSON<textarea v-model="correction.lines" rows="8" spellcheck="false"></textarea></label><button :disabled="busy || !correction.reason || !correction.lines">原子生效更正</button></form></details>
     </section>
 
     <details class="range-panel">
