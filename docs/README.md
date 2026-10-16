@@ -33,5 +33,7 @@
 - [DEV-043验证摘要](validation/DEV-043.md)
 - [DEV-044明确授权筛选界面重构](plans/DEV-044.md)：常用与高级条件分层、成对字段归组及桌面/移动端响应式布局。
 - [DEV-044验证摘要](validation/DEV-044.md)
+- [DEV-045人员XLSX日期兼容与错误透传](plans/DEV-045.md)：常见文本日期规范化、逐格错误preview及服务端request ID诊断。
+- [DEV-045验证摘要](validation/DEV-045.md)
 
 历史私有计划、review会话、本机路径和旧文档commit台账不复制到public仓库；它们不是当前产品契约。当前行为以本仓库源码、迁移、永久测试和上述文档为准。

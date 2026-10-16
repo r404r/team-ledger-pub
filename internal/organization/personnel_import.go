@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/value"
@@ -45,7 +46,7 @@ var personnelImportFields = []string{
 	"career_level_code", "manager_staff_code", "departure_date", "email", "phone", "profile_summary",
 }
 
-var personnelImportFieldLimits = []int{64, 256, 256, 16, 64, 64, 64, 64, 16, 10, 1024, 32, 32, 64, 10, 320, 64, 16 << 10}
+var personnelImportFieldLimits = []int{64, 256, 256, 16, 64, 64, 64, 64, 16, 32, 1024, 32, 32, 64, 32, 320, 64, 16 << 10}
 
 type PersonnelImportRow struct {
 	RowNumber         int     `json:"row_number"`
@@ -272,11 +273,77 @@ func rowEmpty(row xlsx.Row) bool {
 	}
 	return true
 }
+func normalizePersonnelImportDate(raw string) (string, bool) {
+	var yearText, monthText, dayText string
+	if strings.HasSuffix(raw, "日") {
+		withoutDay := strings.TrimSuffix(raw, "日")
+		var remainder string
+		var ok bool
+		yearText, remainder, ok = strings.Cut(withoutDay, "年")
+		if !ok || strings.Contains(remainder, "年") {
+			return "", false
+		}
+		monthText, dayText, ok = strings.Cut(remainder, "月")
+		if !ok || strings.Contains(dayText, "月") {
+			return "", false
+		}
+	} else {
+		separator := ""
+		for _, candidate := range []string{"-", "/", "."} {
+			count := strings.Count(raw, candidate)
+			if count == 0 {
+				continue
+			}
+			if count != 2 || separator != "" {
+				return "", false
+			}
+			separator = candidate
+		}
+		if separator == "" {
+			return "", false
+		}
+		parts := strings.Split(raw, separator)
+		if len(parts) != 3 {
+			return "", false
+		}
+		switch {
+		case len(parts[0]) == 4:
+			yearText, monthText, dayText = parts[0], parts[1], parts[2]
+		case len(parts[2]) == 4:
+			monthText, dayText, yearText = parts[0], parts[1], parts[2]
+		default:
+			return "", false
+		}
+	}
+	if len(yearText) != 4 || len(monthText) < 1 || len(monthText) > 2 || len(dayText) < 1 || len(dayText) > 2 {
+		return "", false
+	}
+	year, yearErr := strconv.Atoi(yearText)
+	month, monthErr := strconv.Atoi(monthText)
+	day, dayErr := strconv.Atoi(dayText)
+	if yearErr != nil || monthErr != nil || dayErr != nil || year == 0 {
+		return "", false
+	}
+	parsed := time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC)
+	if parsed.Year() != year || int(parsed.Month()) != month || parsed.Day() != day {
+		return "", false
+	}
+	canonical := parsed.Format("2006-01-02")
+	return canonical, value.ValidDate(canonical)
+}
 
 func validatePersonnelRow(source xlsx.Row, preview *PersonnelImportPreview, index int) {
 	row := &preview.Rows[index]
 	issue := func(field, code string) {
 		preview.Errors = append(preview.Errors, personnelImportIssue(row.RowNumber, field, code))
+	}
+	hasIssue := func(field string) bool {
+		for _, existing := range preview.Errors {
+			if existing.RowNumber == row.RowNumber && existing.Field == field {
+				return true
+			}
+		}
+		return false
 	}
 	for column, cell := range source.Cells {
 		if column > len(personnelImportHeaders) && cell.Text != "" {
@@ -298,9 +365,28 @@ func validatePersonnelRow(source xlsx.Row, preview *PersonnelImportPreview, inde
 	if !validProfile(profile) {
 		issue("profile", "invalid_profile")
 	}
-	lifecycle := Lifecycle{ValidFrom: row.HireDate, ValidTo: row.DepartureDate}
-	if !validLifecycle(lifecycle) {
-		issue("hire_date", "invalid_employment_dates")
+	hireValid := !hasIssue("hire_date")
+	if hireValid {
+		normalized, ok := normalizePersonnelImportDate(row.HireDate)
+		if !ok {
+			issue("hire_date", "invalid_date")
+			hireValid = false
+		} else {
+			row.HireDate = normalized
+		}
+	}
+	departureValid := !hasIssue("departure_date")
+	if departureValid && row.DepartureDate != nil {
+		normalized, ok := normalizePersonnelImportDate(*row.DepartureDate)
+		if !ok {
+			issue("departure_date", "invalid_date")
+			departureValid = false
+		} else {
+			row.DepartureDate = &normalized
+		}
+	}
+	if hireValid && departureValid && !validLifecycle(Lifecycle{ValidFrom: row.HireDate, ValidTo: row.DepartureDate}) {
+		issue("departure_date", "departure_not_after_hire")
 	}
 	if !validLocation(row.Location) {
 		issue("location", "invalid_location")

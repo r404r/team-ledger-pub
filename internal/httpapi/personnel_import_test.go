@@ -34,16 +34,27 @@ func TestAPIPersonnelImportTemplateAndPreviewAreAuthorizedAndReadOnly(t *testing
 			apiSend(t, f, apiRequest(t, f, f.Observer, http.MethodGet, templatePath, "", ""), http.StatusForbidden, nil)
 
 			headers := []string{"工号 Staff Code", "姓名 Staff Name", "姓名 English Name", "地点 Location", "所在公司 Branch Code", "业务单元 Business Group Code", "目前事业部 Division Code", "目前部门 Department Code", "学历 Latest Education", "雇佣起始日 Date of Employment", "职位 Position", "职系 Job Family Code", "职级 Career Level Code", "直属主管 HOD Staff Code", "退职日 Departure Date", "业务邮箱 Work Email", "业务电话 Work Phone", "资料摘要 Profile Summary"}
-			row := []string{"EMP-IMPORT-001", "合成导入员工", "", "Shanghai", "BR", "BG", "DIV", "DEP", "Master", "2026-10-16", "Consultant", "CONSULTING", "P1", "", "", "", "", ""}
+			row := []string{"EMP-IMPORT-001", "合成导入员工", "", "Shanghai", "BR", "BG", "DIV", "DEP", "Master", "10/16/2026", "Consultant", "CONSULTING", "P1", "", "", "", "", ""}
 			workbook := batchWorkbook(t, headers, row)
 			previewPath := "/api/v1/orgs/" + f.OrgID + "/employees/import-preview"
 			request := apiRequest(t, f, f.Owner, http.MethodPost, previewPath, string(workbook), "")
 			request.Header.Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 			var preview organization.PersonnelImportPreview
 			apiSend(t, f, request, http.StatusOK, &preview)
-			if preview.RowCount != 1 || len(preview.Rows) != 1 || len(preview.Errors) != 0 || preview.CatalogRevision != "3" || preview.GraphRevision != "3" || preview.Rows[0].StaffCode != "EMP-IMPORT-001" || preview.Rows[0].BranchID != catalogs.Items[0].ID || preview.Rows[0].DepartmentID != catalogs.Items[3].ID || preview.Rows[0].JobFamilyID != catalogs.Items[4].ID || preview.Rows[0].CareerLevelID != catalogs.Items[5].ID || f.Count(t, "employee") != 0 {
+			if preview.RowCount != 1 || len(preview.Rows) != 1 || len(preview.Errors) != 0 || preview.CatalogRevision != "3" || preview.GraphRevision != "3" || preview.Rows[0].StaffCode != "EMP-IMPORT-001" || preview.Rows[0].HireDate != "2026-10-16" || preview.Rows[0].BranchID != catalogs.Items[0].ID || preview.Rows[0].DepartmentID != catalogs.Items[3].ID || preview.Rows[0].JobFamilyID != catalogs.Items[4].ID || preview.Rows[0].CareerLevelID != catalogs.Items[5].ID || f.Count(t, "employee") != 0 {
 				t.Fatalf("read-only preview = %#v employees=%d", preview, f.Count(t, "employee"))
 			}
+
+			row[9] = "31/12/2026"
+			dateWorkbook := batchWorkbook(t, headers, row)
+			dateRequest := apiRequest(t, f, f.Owner, http.MethodPost, previewPath, string(dateWorkbook), "")
+			dateRequest.Header.Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+			var datePreview organization.PersonnelImportPreview
+			apiSend(t, f, dateRequest, http.StatusOK, &datePreview)
+			if datePreview.RowCount != 1 || len(datePreview.Errors) != 1 || datePreview.Errors[0].Sheet != "Employees" || datePreview.Errors[0].Cell != "J2" || datePreview.Errors[0].Code != "invalid_date" || datePreview.CatalogRevision != "" || datePreview.GraphRevision != "" {
+				t.Fatalf("date diagnostic preview = %#v", datePreview)
+			}
+			row[9] = "10/16/2026"
 
 			headers[0] = "旧版工号表头"
 			invalidWorkbook := batchWorkbook(t, headers, row)

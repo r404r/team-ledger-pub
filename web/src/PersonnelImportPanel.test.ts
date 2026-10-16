@@ -76,9 +76,9 @@ describe('personnel batch import panel', () => {
         workbook_error: { sheet: 'Employees', cell: 'A1', code: 'header_mismatch' },
       })
       return json(200, {
-        row_count: 1, catalog_revision: '4', graph_revision: '9',
-        errors: [{ row_number: 2, sheet: 'Employees', cell: 'J2', field: 'hire_date', code: 'text_required' }],
-        rows: [{ ...workforce, row_number: 2, staff_code: 'AUTO-001', local_name: '自动预览员工', hire_date: '', departure_date: null }],
+        row_count: 1,
+        errors: [{ row_number: 2, sheet: 'Employees', cell: 'J2', field: 'hire_date', code: 'invalid_date' }],
+        rows: [{ ...workforce, row_number: 2, staff_code: 'AUTO-001', local_name: '自动预览员工', hire_date: '31/12/2026', departure_date: null }],
       })
     })
     const page = mount(PersonnelImportPanel, { props: { session: SESSION, asOf: AS_OF } })
@@ -88,8 +88,18 @@ describe('personnel batch import panel', () => {
 
     await page.findAll('button').find(button => button.text() === '校验并预览')!.trigger('click')
     await flushPromises()
-    expect(page.text()).toContain('Employees!J2 · hire_date：必须使用文本单元格')
+    expect(page.text()).toContain('Employees!J2 · hire_date：日期格式无法识别')
     expect(page.text()).toContain('请按工作表和单元格定位修正')
+    expect(page.text()).not.toContain('服务端暂时无法完成预览')
+    page.unmount()
+  })
+
+  it('keeps a request ID visible when the server cannot produce a cell diagnostic', async () => {
+    vi.stubGlobal('fetch', async () => json(503, { code: 'INTERNAL', request_id: ORG }))
+    const page = mount(PersonnelImportPanel, { props: { session: SESSION, asOf: AS_OF } })
+    await selectAndPreview(page)
+    expect(page.get('[role=alert]').text()).toContain('服务端暂时无法完成预览')
+    expect(page.get('[role=alert]').text()).toContain(`请求 ID：${ORG}`)
     page.unmount()
   })
 

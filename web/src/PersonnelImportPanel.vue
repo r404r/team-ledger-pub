@@ -87,8 +87,11 @@ const summary = computed(() => executions.value.reduce((result, row) => {
 const issueMessages: Record<string, string> = {
   text_required: '必须使用文本单元格',
   invalid_staff_code: 'Staff Code 格式不正确',
+  duplicate_staff_code: '同一工作簿内的 Staff Code 重复',
   invalid_profile: '姓名或资料字段不符合规则',
   invalid_employment_dates: '入职日/退职日必须为 YYYY-MM-DD，且退职日晚于入职日',
+  invalid_date: '日期格式无法识别；可使用 YYYY-MM-DD、YYYY/M/D、M/D/YYYY、YYYY.M.D 或 YYYY年M月D日',
+  departure_not_after_hire: '退职日必须晚于入职日',
   field_too_large: '字段超过允许长度，预览未回传其内容',
   manager_cycle: '同一文件内的直属主管关系形成自引用或闭环',
   unexpected_column: '存在模板以外的非空列',
@@ -126,22 +129,30 @@ const workbookErrorMessages: Record<string, string> = {
   unexpected_column: '模板范围外存在非空列',
   row_limit: '单次最多导入 100 名员工',
 }
+const importIssueFields = new Set(['staff_code', 'local_name', 'english_name', 'location', 'branch_code', 'business_group_code', 'division_code', 'department_code', 'education_level', 'hire_date', 'position', 'job_family_code', 'career_level_code', 'manager_staff_code', 'departure_date', 'email', 'phone', 'profile_summary', 'profile', 'workbook'])
+function validImportIssue(value: unknown): value is ImportIssue {
+  if (!value || typeof value !== 'object') return false
+  const issue = value as ImportIssue
+  return Number.isInteger(issue.row_number) && issue.row_number >= 2 && issue.row_number <= 1_048_576 &&
+    issue.sheet === 'Employees' && (issue.cell === undefined || /^[A-Z]{1,3}[1-9]\d{0,6}$/.test(issue.cell)) &&
+    importIssueFields.has(issue.field) && /^[a-z][a-z0-9_]{0,63}$/.test(issue.code)
+}
 function workbookFailure(error: unknown): string {
   const failure = error as WorkbookFailure
   const diagnostic = failure.diagnostic
+  const request = typeof failure.requestID === 'string' && /^[0-9a-f-]{36}$/.test(failure.requestID) ? `（请求 ID：${failure.requestID}）` : ''
   if (diagnostic && workbookErrorMessages[diagnostic.code]) {
     const sheet = diagnostic.sheet === 'Employees' ? diagnostic.sheet : ''
     const cell = typeof diagnostic.cell === 'string' && /^[A-Z]{1,3}[1-9]\d{0,6}$/.test(diagnostic.cell) ? diagnostic.cell : ''
     const location = sheet && cell ? `${sheet}!${cell}` : sheet || cell
-    const request = typeof failure.requestID === 'string' && /^[0-9a-f-]{36}$/.test(failure.requestID) ? `（请求 ID：${failure.requestID}）` : ''
     return `${location ? `${location}：` : ''}${workbookErrorMessages[diagnostic.code]}${request}`
   }
-  if (failure.status === 401) return '会话已失效，请重新登录后再上传。'
-  if (failure.status === 403) return '当前账号没有批量创建人员的权限。'
-  if (failure.status === 413) return '工作簿超过 5 MiB 上传上限。'
-  if (failure.status === 409) return '组织目录版本已变化，请重新上传并校验。'
-  if (failure.status >= 500) return '服务暂时不可用；文件仍保留，可稍后点击“重新校验”。'
-  return '工作簿无法校验。请下载最新模板；错误仍存在时请提供请求 ID 给管理员。'
+  if (failure.status === 401) return `会话已失效，请重新登录后再上传。${request}`
+  if (failure.status === 403) return `当前账号没有批量创建人员的权限。${request}`
+  if (failure.status === 413) return `工作簿超过 5 MiB 上传上限。${request}`
+  if (failure.status === 409) return `组织目录版本已变化，请重新上传并校验。${request}`
+  if (failure.status >= 500) return `服务端暂时无法完成预览；文件仍保留，可稍后点击“重新校验”。${request}`
+  return `工作簿无法校验。请下载最新模板并按提示修正。${request}`
 }
 const statusLabels: Record<RowStatus, string> = {
   pending: '未处理',
@@ -255,10 +266,16 @@ async function previewWorkbook() {
       throw { status: response.status, requestID, diagnostic } satisfies WorkbookFailure
     }
     const parsed = await response.json() as Preview
-    if (!parsed || !Array.isArray(parsed.rows) || !Array.isArray(parsed.errors) || parsed.row_count !== parsed.rows.length || parsed.row_count < 1 || parsed.row_count > 100 || !/^[1-9]\d*$/.test(parsed.catalog_revision) || !/^[1-9]\d*$/.test(parsed.graph_revision)) throw { status: 503 } satisfies WorkbookFailure
-    preview.value = parsed
-    executions.value = parsed.rows.map(row => ({ ...row, status: 'pending', message: '' }))
-    notice.value = parsed.errors.length ? `${file.name} 预览发现错误；请按工作表和单元格定位修正后重新上传。` : `${file.name} 已校验 ${parsed.row_count} 行，尚未创建人员。`
+    if (!parsed || !Array.isArray(parsed.rows) || !Array.isArray(parsed.errors) || !parsed.errors.every(validImportIssue) || parsed.row_count !== parsed.rows.length || parsed.row_count < 1 || parsed.row_count > 100) throw { status: 503 } satisfies WorkbookFailure
+    const catalogRevision = typeof parsed.catalog_revision === 'string' ? parsed.catalog_revision : ''
+    const graphRevision = typeof parsed.graph_revision === 'string' ? parsed.graph_revision : ''
+    const revisionsReady = /^[1-9]\d*$/.test(catalogRevision) && /^[1-9]\d*$/.test(graphRevision)
+    const revisionsDeferredByErrors = parsed.errors.length > 0 && catalogRevision === '' && graphRevision === ''
+    if (!revisionsReady && !revisionsDeferredByErrors) throw { status: 503 } satisfies WorkbookFailure
+    const safePreview = { ...parsed, catalog_revision: catalogRevision, graph_revision: graphRevision }
+    preview.value = safePreview
+    executions.value = safePreview.rows.map(row => ({ ...row, status: 'pending', message: '' }))
+    notice.value = safePreview.errors.length ? `${file.name} 预览发现错误；请按工作表和单元格定位修正后重新上传。` : `${file.name} 已校验 ${safePreview.row_count} 行，尚未创建人员。`
   } catch (error) {
     if ((error as Error).name !== 'AbortError') {
       notice.value = ''
@@ -519,7 +536,7 @@ onBeforeUnmount(() => stopOperation())
       <div class="import-intro">
         <div>
           <h2>批量创建人员</h2>
-          <p>最多 100 人。一次校验并创建完整员工主数据：身份、雇佣关系、组织任职、学历及直属主管；薪资不在此功能导入。</p>
+          <p>最多 100 人。一次校验并创建完整员工主数据：身份、雇佣关系、组织任职、学历及直属主管；薪资不在此功能导入。日期保持文本，可填写 YYYY-MM-DD、YYYY/M/D、M/D/YYYY、YYYY.M.D 或 YYYY年M月D日。</p>
         </div>
         <button type="button" class="secondary" :disabled="busy" @click="downloadTemplate">下载 XLSX 模板</button>
       </div>

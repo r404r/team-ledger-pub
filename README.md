@@ -410,7 +410,7 @@ docker compose --env-file .env.docker logs --tail=200 \
 | TOTP设备遗失，但恢复码仍在 | 在登录页选择“使用恢复码”，输入username、当前密码和一次性恢复码，只进入受限恢复页；设置新验证器并保存新的恢复码。恢复码不能直接进入业务页面。 |
 | TOTP设备和恢复码都遗失 | 不能从网页关闭MFA或绕过第二因素；由有权维护者按下述“离线MFA重置”操作。 |
 | 审计页或用户管理提示缺少权限 | fresh/bootstrap `admin.user`从v15起固定拥有`audit.read`、`access_grant.manage`和`identity.manage` direct grant；先确认已升级到当前v17、已重新登录且近期MFA有效。v16另给该管理员38项当前可委派authority，但不自动创建目标用户的职责assignment或业务grant。v17 Staff关联账号只取得本人/当前一层直属下属的窄默认读取与面谈创建资格；非关联账号仍默认零业务/安全权限。其他访问须按批准职责显式配置对应assignment＋grant，不能靠TOTP、账号名称或直接改库获得。 |
-| 最新人员模板上传后仍提示无法解析 | 展开 **批量上传人员** 查看具体`Employees!单元格`和原因；公式必须转为纯文本，日期必须按`YYYY-MM-DD`文本填写。结构错误会同时显示请求ID，管理员可在API日志中按`PERSONNEL_IMPORT_REJECTED request_id=...`定位同一固定错误码；日志不会记录单元格内容。 |
+| 最新人员模板上传后仍提示无法解析 | 展开 **批量上传人员** 查看具体`Employees!单元格`、字段和原因。日期单元格必须是文本，可填写`YYYY-MM-DD`、`YYYY/M/D`、`M/D/YYYY`、`YYYY.M.D`或`YYYY年M月D日`；年在后固定按月/日/年解析。公式和Excel数值日期必须转为纯文本。结构错误或服务端故障会显示请求ID；管理员可在API日志中按`PERSONNEL_IMPORT_REJECTED`（工作簿结构）或`PERSONNEL_IMPORT_ROW_REJECTED`（逐行字段）及`request_id=...`定位，日志不记录单元格内容。 |
 
 只有在**确认是全新测试安装且所有数据都可以永久删除**时，才能彻底重置：
 

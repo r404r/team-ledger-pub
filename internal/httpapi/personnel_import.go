@@ -77,6 +77,9 @@ func (h *handler) personnelImportRoute(w http.ResponseWriter, r *http.Request, r
 		h.fail(w, err, request.RequestID)
 		return true
 	}
+	for _, issue := range preview.Errors {
+		log.Printf("PERSONNEL_IMPORT_ROW_REJECTED request_id=%s sheet=%q cell=%q row=%d field=%s code=%s", request.RequestID, issue.Sheet, issue.Cell, issue.RowNumber, issue.Field, issue.Code)
+	}
 	h.reply(w, http.StatusOK, preview)
 	return true
 }

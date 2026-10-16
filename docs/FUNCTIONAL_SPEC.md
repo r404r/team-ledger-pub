@@ -376,12 +376,14 @@ DEV-028 T3将创建人员收敛为一次原子业务动作：创建页必填全�
 
 DEV-032在P-ORG-03人员资料创建页增加可折叠批量入口及安全XLSX解析/逐行恢复机制；DEV-033在不增加第二套employee字段的前提下，把同一入口升级为完整员工主数据创建。唯一`Employees`工作表固定18个双语表头，覆盖Staff Code、中英文姓名、Location、Branch Code、BG/Division/Department Code、学历、入职/退职日、职位、Job Family/Career Level Code、HOD Staff Code及可选联系/摘要；明确不包含薪资。选择合法XLSX后页面立即显示文件名并调用preview，不要求再点击第二个按钮；失败时保留明确的“重新校验”，preview成功且错误为零后仍须人工确认才创建。Excel明确标记的numeric/date/boolean/error cell会进入逐格`text_required`错误而不再使整份工作簿落入无细节失败；结构拒绝和逐行错误均显示`Employees!单元格`，结构拒绝同时显示request ID，服务端只记录request ID、固定错误码和安全sheet/cell，不记录单元格内容或公式。preview按每行入职日把受控code解析为ID并验证固定三层父链，返回冻结catalog/graph revision；确认后每行OP-ORG-05原子创建profile、lifecycle、identifier、employment、education及job assignment，所有两端均确认的直属主管关系最后以一次OP-ORG-10写入。文件安全边界、≤100行、逐行状态、原key/body结果确认和不自动认领重复Staff Code的规则保持不变。
 
+DEV-045修复“服务端已解析出rows，但页面显示服务暂时不可用”的客户端契约错误：当全部行在目录解析前已发现字段错误时，preview允许暂不返回catalog/graph revision；页面必须保留并显示`Employees!单元格`、字段和固定原因，错误清零后的下一次preview才要求两个正revision并允许创建。入职日和退职日仍只接受文本，不转换Excel date serial；导入边界接受四位年份的`YYYY-M-D`、`YYYY/M/D`、`YYYY.M.D`、`YYYY年M月D日`以及固定按月/日/年解释的`M/D/YYYY`、`M-D-YYYY`、`M.D.YYYY`，进入业务校验前统一为`YYYY-MM-DD`。不存在日期固定报实际J/O列，退职日不晚于入职日固定报O列；服务日志仅含request ID、sheet/cell/row/field/code。
+
 ```mermaid
 flowchart LR
     operator["组织/人员维护者"]
     template["下载空白XLSX模板<br/>固定18个双语字段；无租户数据"]
     workbook["本地填写≤100人<br/>身份＋雇佣＋三层组织code<br/>学历＋任职＋HOD；不含薪资"]
-    preview["选择文件即显示文件名并自动preview<br/>按入职日解析目录与父链<br/>有界安全解析；不执行公式；不写数据库"]
+    preview["选择文件即显示文件名并自动preview<br/>文本日期先规范为YYYY-MM-DD<br/>错误显示Employees!单元格；不写数据库"]
     confirm{"错误为0且明确确认？"}
     create["逐行OP-ORG-05原子创建<br/>profile＋lifecycle＋identifier<br/>employment＋education＋assignment"]
     createResult{"单行提交结果"}

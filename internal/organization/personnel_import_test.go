@@ -22,6 +22,70 @@ func TestParsePersonnelWorkbookReturnsCanonicalPreviewWithoutPersistence(t *test
 		t.Fatalf("canonical row = %#v", got)
 	}
 }
+func TestParsePersonnelWorkbookCanonicalizesSupportedTextDates(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"2026-1-2", "2026-01-02"},
+		{"2026/3/4", "2026-03-04"},
+		{"2026.5.6", "2026-05-06"},
+		{"7/3/2023", "2023-07-03"},
+		{"8-9-2024", "2024-08-09"},
+		{"10.11.2025", "2025-10-11"},
+		{"2028年2月29日", "2028-02-29"},
+	}
+	rows := make([][]string, 0, len(cases))
+	for index, dateCase := range cases {
+		row := personnelRow(fmt.Sprintf("DATE-%03d", index+1), "日期兼容员工", "")
+		row[9] = dateCase.input
+		rows = append(rows, row)
+	}
+	rows[0][14] = "2/3/2026"
+	preview, err := parsePersonnelWorkbook(personnelWorkbook(t, rows, -1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Errors) != 0 || len(preview.Rows) != len(cases) {
+		t.Fatalf("preview = %#v", preview)
+	}
+	for index, dateCase := range cases {
+		if preview.Rows[index].HireDate != dateCase.want {
+			t.Fatalf("row %d hire_date = %q, want %q", index+2, preview.Rows[index].HireDate, dateCase.want)
+		}
+	}
+	if preview.Rows[0].DepartureDate == nil || *preview.Rows[0].DepartureDate != "2026-02-03" {
+		t.Fatalf("departure_date = %#v, want 2026-02-03", preview.Rows[0].DepartureDate)
+	}
+}
+
+func TestParsePersonnelWorkbookPinsDateErrorsToTheirCells(t *testing.T) {
+	rows := [][]string{
+		personnelRow("DATE-INVALID-1", "日期错误员工甲", ""),
+		personnelRow("DATE-INVALID-2", "日期错误员工乙", ""),
+		personnelRow("DATE-INVALID-3", "日期错误员工丙", ""),
+	}
+	rows[0][9] = "2026-02-30"
+	rows[1][9] = "31/12/2025"
+	rows[2][14] = "2026-10-16"
+	preview, err := parsePersonnelWorkbook(personnelWorkbook(t, rows, -1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, issue := range preview.Errors {
+		got[issue.Cell] = issue.Code
+	}
+	want := map[string]string{"J2": "invalid_date", "J3": "invalid_date", "O4": "departure_not_after_hire"}
+	if len(got) != len(want) {
+		t.Fatalf("date issues = %#v, want %#v", got, want)
+	}
+	for cell, code := range want {
+		if got[cell] != code {
+			t.Fatalf("date issues = %#v, want %#v", got, want)
+		}
+	}
+}
 
 func TestParsePersonnelWorkbookReportsDuplicateCycleAndTypedDate(t *testing.T) {
 	rows := [][]string{
@@ -41,7 +105,7 @@ func TestParsePersonnelWorkbookReportsDuplicateCycleAndTypedDate(t *testing.T) {
 		codes[issue.Code]++
 		typedCell = typedCell || issue.Code == "text_required" && issue.Sheet == "Employees" && issue.Cell == "J5" && issue.Field == "hire_date"
 	}
-	if codes["duplicate_staff_code"] != 2 || codes["manager_cycle"] != 2 || codes["text_required"] != 1 || codes["invalid_employment_dates"] != 1 || !typedCell {
+	if codes["duplicate_staff_code"] != 2 || codes["manager_cycle"] != 2 || codes["text_required"] != 1 || codes["invalid_date"] != 0 || !typedCell {
 		t.Fatalf("issues = %#v", preview.Errors)
 	}
 }
