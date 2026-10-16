@@ -47,6 +47,14 @@ type BatchHeader struct {
 	BudgetAmount         string `json:"budget_amount,omitempty"`
 	LegacyUnspecified    bool   `json:"legacy_unspecified,omitempty"`
 }
+type BatchReasonOption struct {
+	Code  string `json:"code"`
+	Label string `json:"label"`
+}
+
+type BatchOptionsView struct {
+	SpecialReasons []BatchReasonOption `json:"special_reasons"`
+}
 
 type BatchWorkforceBasis struct {
 	EmployeeID                                                                                    string

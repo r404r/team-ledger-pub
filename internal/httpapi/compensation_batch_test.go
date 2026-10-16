@@ -176,6 +176,11 @@ func TestAdjustmentBatchSpecialUsesControlledReasonAndReportsYearCounts(t *testi
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			f := testsupport.NewHarness(t, backend)
+			var options compensation.BatchOptionsView
+			apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodGet, "/api/v1/compensation-adjustment-batches/options", "", ""), http.StatusOK, &options)
+			if len(options.SpecialReasons) != 1 || options.SpecialReasons[0].Code != "market_adjustment" || options.SpecialReasons[0].Label != "Market adjustment" {
+				t.Fatalf("special reason options = %#v", options)
+			}
 			var employee organization.Result
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/employees", createJSON, value.NewID()), http.StatusCreated, &employee)
 			legalEntity := prepareBatchEmployee(t, f, employee.ID, "T-001", "Tokyo", "JPY")

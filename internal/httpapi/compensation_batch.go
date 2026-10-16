@@ -75,6 +75,15 @@ func (h *handler) compensationBatchRoute(w http.ResponseWriter, r *http.Request,
 		}
 		return true
 	}
+	if len(parts) == 2 && parts[1] == "options" && r.Method == http.MethodGet && r.URL.RawQuery == "" {
+		view, err := h.compensation.AdjustmentBatchOptions(r.Context(), req, org)
+		if err != nil {
+			h.fail(w, err, req.RequestID)
+		} else {
+			h.reply(w, http.StatusOK, view)
+		}
+		return true
+	}
 	if len(parts) < 2 || !value.ValidID(parts[1]) {
 		h.fail(w, fault.Invalid, req.RequestID)
 		return true

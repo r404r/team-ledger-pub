@@ -37,6 +37,22 @@ func (s *Service) batchSession(ctx context.Context, req Request, org string, wri
 	return a, nil
 }
 
+func (s *Service) AdjustmentBatchOptions(ctx context.Context, req Request, org string) (BatchOptionsView, error) {
+	if _, err := s.batchSession(ctx, req, org, false); err != nil {
+		return BatchOptionsView{}, err
+	}
+	codes := make([]string, 0, len(s.Policy.SpecialReasonCatalog))
+	for code := range s.Policy.SpecialReasonCatalog {
+		codes = append(codes, code)
+	}
+	sort.Strings(codes)
+	options := make([]BatchReasonOption, 0, len(codes))
+	for _, code := range codes {
+		options = append(options, BatchReasonOption{Code: code, Label: s.Policy.SpecialReasonCatalog[code]})
+	}
+	return BatchOptionsView{SpecialReasons: options}, nil
+}
+
 func (s *Service) financialDigest(domain string, raw []byte) ([]byte, error) {
 	if domain == "" {
 		return nil, fault.Unavailable
