@@ -389,21 +389,71 @@ onBeforeUnmount(() => {
           <ul><li v-for="scope in authority.delegable_scopes" :key="`${scope.kind}:${scope.id}`">当前可委派交集：{{ scope.kind }} {{ scope.id }}</li></ul>
         </li></ul>
       </section>
-      <form aria-label="授权筛选" @submit.prevent="applyFilters">
-        <h2>筛选当前可管理授权</h2>
-        <fieldset :disabled="busy || uncertain">
-          <label for="grant-filter-subject">筛选主体 ID</label><input id="grant-filter-subject" v-model="filters.subject" />
-          <label for="grant-filter-scope-kind">筛选 scope 类型</label><select id="grant-filter-scope-kind" v-model="filters.scopeKind"><option value="">全部</option><option value="org">org</option><option value="department">department</option><option value="employee">employee</option></select>
-          <label for="grant-filter-scope-id">筛选 scope ID</label><input id="grant-filter-scope-id" v-model="filters.scopeID" />
-          <label for="grant-filter-category">筛选类别</label><select id="grant-filter-category" v-model="filters.category"><option value="">全部</option><option v-for="category in ['metadata', 'pii', 'audit', 'shared', 'manager_private', 'hr_confidential', 'financial']" :key="category" :value="category">{{ category }}</option></select>
-          <label for="grant-filter-purpose">筛选目的</label><select id="grant-filter-purpose" v-model="filters.purpose"><option value="">全部</option><option value="organization_management">organization_management</option><option value="security_administration">security_administration</option><option value="interview_followup">interview_followup</option><option value="compensation_management">compensation_management</option></select>
-          <label for="grant-filter-state">筛选状态</label><select id="grant-filter-state" v-model="filters.state"><option value="">全部</option><option value="current">current</option><option value="future">future</option><option value="expired">expired</option><option value="revoked">revoked</option></select>
-          <label for="grant-filter-id">筛选授权 ID</label><input id="grant-filter-id" v-model="filters.grantID" />
-          <label for="grant-filter-capability">筛选能力</label><select id="grant-filter-capability" v-model="filters.capability"><option value="">全部</option><option v-for="capability in readableGrantCapabilities" :key="capability" :value="capability">{{ capability }}</option></select>
-          <label for="grant-filter-object-kind">筛选对象类型（须与 ID 成对）</label><select id="grant-filter-object-kind" v-model="filters.objectKind"><option value="">全部</option><option v-for="kind in grantObjectKinds" :key="kind" :value="kind">{{ kind }}</option></select>
-          <label for="grant-filter-object-id">筛选具体对象 ID</label><input id="grant-filter-object-id" v-model="filters.objectID" />
-          <label for="grant-filter-limit">每页条数</label><input id="grant-filter-limit" v-model="filters.limit" type="number" min="1" max="100" />
-          <button type="submit">应用筛选</button>
+      <form class="grant-filter-form" aria-label="授权筛选" @submit.prevent="applyFilters">
+        <header class="grant-filter-heading">
+          <div>
+            <p class="eyebrow">授权检索</p>
+            <h2>筛选当前可管理授权</h2>
+            <p>先用常用条件定位授权；作用范围、授权 ID 和具体对象收纳在高级筛选中。</p>
+          </div>
+          <span class="grant-filter-scope-note">仅返回当前可管理范围</span>
+        </header>
+        <fieldset class="grant-filter-shell" :disabled="busy || uncertain">
+          <legend class="sr-only">授权筛选条件</legend>
+          <div class="grant-filter-primary">
+            <label class="grant-filter-field grant-filter-subject" for="grant-filter-subject">
+              <span>主体 ID</span><small>被授予权限的用户 UUID</small>
+              <input id="grant-filter-subject" v-model="filters.subject" autocomplete="off" placeholder="输入完整 UUID" />
+            </label>
+            <label class="grant-filter-field" for="grant-filter-state">
+              <span>授权状态</span><small>按当前业务日判断</small>
+              <select id="grant-filter-state" v-model="filters.state"><option value="">全部状态</option><option value="current">当前有效</option><option value="future">尚未生效</option><option value="expired">已过期</option><option value="revoked">已撤销</option></select>
+            </label>
+            <label class="grant-filter-field" for="grant-filter-capability">
+              <span>能力</span><small>授权允许执行的操作</small>
+              <select id="grant-filter-capability" v-model="filters.capability"><option value="">全部能力</option><option v-for="capability in readableGrantCapabilities" :key="capability" :value="capability">{{ capability }}</option></select>
+            </label>
+            <label class="grant-filter-field" for="grant-filter-category">
+              <span>数据类别</span><small>授权保护的数据分区</small>
+              <select id="grant-filter-category" v-model="filters.category"><option value="">全部类别</option><option value="metadata">metadata · 基础资料</option><option value="pii">pii · 个人敏感资料</option><option value="audit">audit · 安全审计</option><option value="shared">shared · 面谈共享</option><option value="manager_private">manager_private · 主管私有</option><option value="hr_confidential">hr_confidential · HR 机密</option><option value="financial">financial · 财务</option></select>
+            </label>
+            <label class="grant-filter-field" for="grant-filter-purpose">
+              <span>使用目的</span><small>访问时声明的业务目的</small>
+              <select id="grant-filter-purpose" v-model="filters.purpose"><option value="">全部目的</option><option value="organization_management">organization_management · 人员与组织</option><option value="security_administration">security_administration · 安全管理</option><option value="interview_followup">interview_followup · 面谈跟进</option><option value="compensation_management">compensation_management · 薪酬管理</option></select>
+            </label>
+          </div>
+          <details class="grant-filter-advanced">
+            <summary><span>高级筛选</span><small>作用范围、授权 ID 与具体对象</small></summary>
+            <div class="grant-filter-advanced-grid">
+              <label class="grant-filter-field" for="grant-filter-scope-kind">
+                <span>作用范围类型</span><small>须与范围 ID 成对填写</small>
+                <select id="grant-filter-scope-kind" v-model="filters.scopeKind"><option value="">全部范围</option><option value="org">org · 全集团</option><option value="department">department · 部门</option><option value="employee">employee · 员工</option></select>
+              </label>
+              <label class="grant-filter-field" for="grant-filter-scope-id">
+                <span>作用范围 ID</span><small>组织、部门或员工 UUID</small>
+                <input id="grant-filter-scope-id" v-model="filters.scopeID" autocomplete="off" placeholder="与范围类型一起使用" />
+              </label>
+              <label class="grant-filter-field grant-filter-full" for="grant-filter-id">
+                <span>授权 ID</span><small>精确定位一条授权记录</small>
+                <input id="grant-filter-id" v-model="filters.grantID" autocomplete="off" placeholder="输入完整 UUID" />
+              </label>
+              <label class="grant-filter-field" for="grant-filter-object-kind">
+                <span>具体对象类型</span><small>须与对象 ID 成对填写</small>
+                <select id="grant-filter-object-kind" v-model="filters.objectKind"><option value="">全部对象</option><option v-for="kind in grantObjectKinds" :key="kind" :value="kind">{{ kind }}</option></select>
+              </label>
+              <label class="grant-filter-field" for="grant-filter-object-id">
+                <span>具体对象 ID</span><small>限定到单个受保护对象</small>
+                <input id="grant-filter-object-id" v-model="filters.objectID" autocomplete="off" placeholder="与对象类型一起使用" />
+              </label>
+            </div>
+          </details>
+          <footer class="grant-filter-footer">
+            <p>所有 ID 必须使用完整 UUID；未填写的条件不会加入查询。</p>
+            <div class="grant-filter-actions">
+              <label class="grant-filter-limit" for="grant-filter-limit"><span>每页条数</span><input id="grant-filter-limit" v-model="filters.limit" type="number" min="1" max="100" /></label>
+              <button type="submit">应用筛选</button>
+            </div>
+          </footer>
         </fieldset>
       </form>
       <section aria-label="授权列表">
@@ -497,4 +547,126 @@ button:disabled { cursor: not-allowed; }
 li { margin-bottom: .8rem; overflow-wrap: anywhere; }
 dt { font-weight: 600; margin-top: .7rem; } dd { margin-left: 0; overflow-wrap: anywhere; }
 [role="alert"] { color: #8a1717; } [role="status"] { color: #165129; }
+
+#app .grant-filter-form { display: block; padding: 0; overflow: hidden; }
+#app .grant-filter-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 2rem;
+  padding: 1.35rem 1.5rem 1.2rem;
+  border-bottom: 1px solid var(--line-soft);
+  background: linear-gradient(135deg, var(--surface) 55%, var(--brand-50));
+}
+#app .grant-filter-heading h2,
+#app .grant-filter-heading p { margin: 0; }
+#app .grant-filter-heading h2 { font-size: 1.35rem; }
+#app .grant-filter-heading > div > p:last-child { max-width: 48rem; margin-top: .35rem; color: var(--ink-600); }
+#app .grant-filter-scope-note {
+  flex: 0 0 auto;
+  border: 1px solid var(--brand-100);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--brand-800);
+  padding: .42rem .7rem;
+  font-size: .75rem;
+  font-weight: 750;
+  white-space: nowrap;
+}
+#app .grant-filter-shell {
+  display: block;
+  border: 0;
+  border-radius: 0;
+  background: var(--surface);
+  padding: 1.4rem 1.5rem 1.5rem;
+}
+#app .grant-filter-primary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.05rem 1.2rem;
+}
+#app .grant-filter-subject { grid-column: span 2; }
+#app .grant-filter-field { align-content: start; }
+#app .grant-filter-field > span,
+#app .grant-filter-limit > span { color: var(--ink-800); font-weight: 760; }
+#app .grant-filter-field > small {
+  min-height: 1.25rem;
+  margin-top: -.2rem;
+  font-size: .72rem;
+  font-weight: 560;
+  line-height: 1.35;
+}
+#app .grant-filter-advanced {
+  margin-top: 1.25rem;
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+}
+#app .grant-filter-advanced > summary {
+  display: flex;
+  align-items: center;
+  width: fit-content;
+  gap: .7rem;
+  padding: .85rem 0;
+  color: var(--brand-800);
+  cursor: pointer;
+  list-style: none;
+}
+#app .grant-filter-advanced > summary::-webkit-details-marker { display: none; }
+#app .grant-filter-advanced > summary::before {
+  display: inline-grid;
+  width: 1.35rem;
+  height: 1.35rem;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--brand-50);
+  content: "›";
+  font-size: 1rem;
+  font-weight: 800;
+  line-height: 1;
+  transition: transform 140ms ease;
+}
+#app .grant-filter-advanced[open] > summary::before { transform: rotate(90deg); }
+#app .grant-filter-advanced > summary > span { font-weight: 780; }
+#app .grant-filter-advanced > summary > small { color: var(--ink-600); font-weight: 560; }
+#app .grant-filter-advanced-grid {
+  display: grid;
+  grid-template-columns: minmax(12rem, .42fr) minmax(18rem, 1fr);
+  gap: 1.05rem 1.2rem;
+  padding: .25rem 0 1.25rem;
+}
+#app .grant-filter-full { grid-column: 1 / -1; }
+#app .grant-filter-footer {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding-top: 1.2rem;
+}
+#app .grant-filter-footer > p {
+  max-width: 44rem;
+  margin: 0;
+  color: var(--ink-600);
+  font-size: .78rem;
+}
+#app .grant-filter-actions { display: flex; align-items: end; gap: .75rem; }
+#app .grant-filter-limit { width: 7.5rem; }
+#app .grant-filter-actions > button { min-width: 7rem; }
+
+@media (max-width: 900px) {
+  #app .grant-filter-heading { gap: 1rem; }
+  #app .grant-filter-primary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #app .grant-filter-subject { grid-column: 1 / -1; }
+}
+@media (max-width: 640px) {
+  #app .grant-filter-heading { display: block; padding: 1.1rem; }
+  #app .grant-filter-scope-note { display: inline-block; margin-top: .8rem; }
+  #app .grant-filter-shell { padding: 1.1rem; }
+  #app .grant-filter-primary,
+  #app .grant-filter-advanced-grid { grid-template-columns: minmax(0, 1fr); }
+  #app .grant-filter-subject,
+  #app .grant-filter-full { grid-column: auto; }
+  #app .grant-filter-advanced > summary { display: grid; gap: .12rem; }
+  #app .grant-filter-footer { display: grid; align-items: stretch; gap: 1rem; }
+  #app .grant-filter-actions { justify-content: space-between; }
+}
 </style>

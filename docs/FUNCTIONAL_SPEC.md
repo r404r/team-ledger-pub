@@ -419,7 +419,7 @@ flowchart LR
 | P-COMP-01 / F-COMP-001 | `/employees/:employee_id/compensation`提供个人as_of/from/to四栏；`/orgs/:org_id/compensation-adjustments`提供批次列表、业务header及逐人录入工作台 | 个人5 OP/完整纠错保持；批次页从有效目录选择法分公司，默认3空行，以Staff Code回填员工/当前工资，支持增删、Normal/Special专属字段、手工或XLSX同构预览、工资不一致逐人确认、参考预算/混币摘要、冻结草稿和显式整批生效。Salary Range及已激活批次更正收进折叠高级区；页面级无横向溢出，宽表只在自身容器滚动 |
 | P-BONUS-01 / F-BONUS-001 | DEV-010固定代码路由`/employees/:employee_id/bonuses`；目标、奖励、支付/冲销、余额/异常、扩展分离（F，OP-BONUS-01），日期/状态（M） | 目标 OP-BONUS-02/07、奖励 OP-BONUS-03/04/05、支付 OP-BONUS-06、有限扩展 OP-BONUS-08；能力分别检查，命令前重验会话并按bonus/comp revision CAS，不放一个“财务编辑”总开关 |
 | P-AI-01 / F-AI-001 | `/employees/:employee_id/followup`；确定规则、standing policy、最小输入请求/独立批准、持久任务、草稿打开/编辑/发布/丢弃（M，OP-AI-01-05/08） | 表单不预填业务默认；明确cadence/anchor/IANA timezone/due/pause/purpose/AI模式。请求与批准主体分离；worker凭据不进入浏览器。规则与AI状态分栏，draft不冒充published；生产provider许可缺失时不外传 |
-| P-SEC-01 / F-SEC-001 | 主导航“授权”；当前会话、delegated grant列表/详情及全typed对象类别；PII/面谈/金融/AI结果有限导出由各业务入口显式选择对象 | OP-SEC-02/03独立预览/确认/真实revision撤销；canonical owner/独立能力/有限类别校验、敏感导出强制近期MFA。管理权不授正文；全部导出≤100对象/8MiB、prepare及逐批release重验，不落明文temp |
+| P-SEC-01 / F-SEC-001 | 主导航“授权”；当前会话、delegated grant列表/详情及全typed对象类别；筛选卡固定显示主体、状态、能力、类别、目的，scope/grant/object技术条件默认收进高级筛选；PII/面谈/金融/AI结果有限导出由各业务入口显式选择对象 | OP-SEC-02/03独立预览/确认/真实revision撤销；canonical owner/独立能力/有限类别校验、敏感导出强制近期MFA。筛选字段按完整label/control单元排列，scope与object类型/ID成对；桌面三列、中宽两列、手机单列。管理权不授正文；全部导出≤100对象/8MiB、prepare及逐批release重验，不落明文temp |
 | P-SEC-02 / F-SEC-001 | 主导航`/security/audit`；独立`audit.read`＋audit类别＋`security_administration`目的及MFA，按时间、actor/object/action/purpose/结果/request ID查询（U，OP-SEC-04） | 签名cursor绑定caller/query/epoch；只返回脱敏事实，无正文/金额/prompt。MFA过期、缺少独立grant、在途撤权和服务错误分别反馈；拒绝时不挂载筛选工作台且不调用查询，离页/拒绝清旧结果；查看审计不获得关联业务对象读取权 |
 | P-SEC-03 / F-SEC-001 | 主导航`/security/users`；独立`identity.manage`＋audit类别＋`security_administration`目的及近期MFA，显示本地账号类型、可选关联employee、登录状态、首次改密/MFA状态和创建时间（U，OP-SEC-08） | OP-SEC-07显式选择standalone或Staff关联；Staff另填精确Staff Code并原子建立固定最小政策，standalone默认零业务权限。密码和Staff Code提交成功后立即从页面清除。无权时导航隐藏但直接URL/API仍拒绝；列表签名cursor分页，不返回password、Staff Code、digest、envelope或factor |
 
@@ -447,7 +447,7 @@ flowchart LR
 | P-COMP-01 | 单employee必选as_of现状；future单列；变更历史按有效期/录入事实/提案状态查看，口径/币种不相加，无全组织工资排序/全文原因检索 |
 | P-BONUS-01 | 单employee、期间/目标或奖励状态；payments按支付日及异常类别查看，分币种/scale；只有明确匹配才能显示同币种余额 |
 | P-AI-01 | 单获准employee、明确配置窗口；事实/当前有效结果与旧失效历史分离；全局导航只作员工选择入口，不暗增全员评估排序 |
-| P-SEC-01 | OP-SEC-06 仅 delegated scope 内按主体/对象/类别/purpose/有效、未来、撤销、过期状态查看授权列表与详情；cursor绑定范围/条件，详情不含业务正文、不自动打开PII/审计；授予后刷新列表，撤销从列表选定真实 grant ID |
+| P-SEC-01 | OP-SEC-06 仅 delegated scope 内按主体/对象/类别/purpose/有效、未来、撤销、过期状态查看授权列表与详情；常用条件固定显示，scope/grant/object置于默认收起的高级筛选，每页1..100；cursor绑定范围/条件，详情不含业务正文、不自动打开PII/审计；授予后刷新列表，撤销从列表选定真实 grant ID |
 | P-SEC-02 | 独立审计scope，时间窗口、actor/object/action/purpose/结果；受限cursor分页，不出现业务正文或模型prompt |
 | P-SEC-03 | 本集团local账号，limit 1..100及签名keyset cursor；仅安全metadata，不提供用户名全文搜索、员工资料或隐藏业务权限数量 |
 

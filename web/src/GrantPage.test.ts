@@ -210,7 +210,7 @@ describe('P-SEC-01 current independent grant management', () => {
   })
   it('filters and pages current safe results, then discards the cursor on a new filter', async () => {
     const page = await open()
-    await field(page, /筛选状态/).setValue('future')
+    await field(page, /授权状态/).setValue('future')
     api.reply('GET', '/api/v1/access-grants', 200, list([grant(GRANT, 'future')], EPOCH, 'opaque-page'))
     await action(page, /^应用筛选$/).trigger('click'); await settle()
     expect(page.find('[aria-label="授权列表"]').text()).toContain('future')
@@ -218,13 +218,27 @@ describe('P-SEC-01 current independent grant management', () => {
     await action(page, /^下一页$/).trigger('click'); await settle()
     expect(page.find('[aria-label="授权列表"]').text()).toContain(OTHER)
     expect(page.find('[aria-label="授权列表"]').text()).not.toContain(GRANT)
-    await field(page, /筛选状态/).setValue('revoked')
+    await field(page, /授权状态/).setValue('revoked')
     api.reply('GET', '/api/v1/access-grants', 200, list([grant(GRANT, 'revoked')]))
     await action(page, /^应用筛选$/).trigger('click'); await settle()
     const gets = api.requests.filter((request) => request.url.pathname === '/api/v1/access-grants')
     expect(gets.at(-2)!.url.searchParams.get('cursor')).toBe('opaque-page')
     expect(gets.at(-1)!.url.searchParams.has('cursor')).toBe(false)
     expect(page.text()).toContain('revoked')
+  })
+  it('keeps technical filters behind a disclosure and preserves paired field ownership', async () => {
+    const page = await open()
+    const advanced = page.get('details.grant-filter-advanced')
+    expect((advanced.element as HTMLDetailsElement).open).toBe(false)
+    expect(page.get('#grant-filter-scope-kind').isVisible()).toBe(false)
+    expect(page.get('#grant-filter-subject').element.closest('label')?.textContent).toContain('主体 ID')
+
+    await advanced.get('summary').trigger('click')
+
+    expect((advanced.element as HTMLDetailsElement).open).toBe(true)
+    expect(page.get('#grant-filter-scope-kind').isVisible()).toBe(true)
+    expect(page.get('#grant-filter-scope-id').element.closest('label')?.textContent).toContain('作用范围 ID')
+    expect(page.get('#grant-filter-object-id').element.closest('label')?.textContent).toContain('具体对象 ID')
   })
   it('409 discards confirmation and requires manual refresh plus a new preview rather than auto-resubmitting', async () => {
     const page = await open(); await draft(page)
