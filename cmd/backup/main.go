@@ -27,6 +27,8 @@ func protected(path string, limit int) ([]byte, error) { return configfile.Read(
 
 var keyEnvelopeMagic = [8]byte{'T', 'L', 'B', 'K', 'E', 'Y', 'D', 1}
 
+const supportedSchemaVersion = 16
+
 func writeArchiveKey(out io.Writer, key sensitive.WrappedKey) error {
 	if len(key.Data) != 150 {
 		return errors.New("invalid archive key")
@@ -367,7 +369,7 @@ func restore(ctx context.Context, archivePath, target string, keyd *sensitive.Ke
 	if closeErr != nil {
 		return closeErr
 	}
-	if manifest.Backend != "sqlite" || manifest.SchemaVersion != 15 {
+	if manifest.Backend != "sqlite" || manifest.SchemaVersion != supportedSchemaVersion {
 		return errors.New("incompatible backup")
 	}
 	repo, e := store.Open(ctx, "sqlite", tempPath)
@@ -491,7 +493,7 @@ func restorePostgres(ctx context.Context, archivePath, targetDSN, caPath string,
 	if closeErr != nil {
 		return closeErr
 	}
-	if manifest.Backend != "postgres" || manifest.SchemaVersion != 15 {
+	if manifest.Backend != "postgres" || manifest.SchemaVersion != supportedSchemaVersion {
 		return errors.New("incompatible backup")
 	}
 	restoreList, e := postgresRestoreList(ctx, dumpPath, work)

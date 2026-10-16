@@ -10,7 +10,7 @@ import (
 	"github.com/r404r/team-ledger/internal/fault"
 )
 
-func TestV15MigratesPersistedV12BatchWithoutClearingData(t *testing.T) {
+func TestV16MigratesPersistedV12BatchWithoutClearingData(t *testing.T) {
 	ctx := context.Background()
 	repo, err := Open(ctx, "sqlite", filepath.Join(t.TempDir(), "persisted-v12.sqlite"))
 	if err != nil {
@@ -78,7 +78,7 @@ func TestV15MigratesPersistedV12BatchWithoutClearingData(t *testing.T) {
 	}
 }
 
-func TestV15MigrationRequiresLocalMFAEnrollmentAndPreservesOIDCSession(t *testing.T) {
+func TestV16MigrationRequiresLocalMFAEnrollmentAndPreservesOIDCSession(t *testing.T) {
 	ctx := context.Background()
 	repo, err := Open(ctx, "sqlite", filepath.Join(t.TempDir(), "persisted-v13.sqlite"))
 	if err != nil {
@@ -155,7 +155,7 @@ func TestV15MigrationRequiresLocalMFAEnrollmentAndPreservesOIDCSession(t *testin
 	}
 }
 
-func TestV15RefusesV11WithoutWriting(t *testing.T) {
+func TestV16RefusesV11WithoutWriting(t *testing.T) {
 	ctx := context.Background()
 	repo, err := Open(ctx, "sqlite", filepath.Join(t.TempDir(), "legacy-v11.sqlite"))
 	if err != nil {
@@ -194,7 +194,7 @@ func TestV15RefusesV11WithoutWriting(t *testing.T) {
 	}
 }
 
-func TestV15MigratesPersistedV14AuditOutboxWithoutClearingData(t *testing.T) {
+func TestV16MigratesPersistedV14AuditOutboxWithoutClearingData(t *testing.T) {
 	ctx := context.Background()
 	repo, err := Open(ctx, "sqlite", filepath.Join(t.TempDir(), "persisted-v14.sqlite"))
 	if err != nil {
@@ -247,7 +247,7 @@ func TestV15MigratesPersistedV14AuditOutboxWithoutClearingData(t *testing.T) {
 	if err = repo.DB.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM audit_event WHERE id=?),(SELECT count(*) FROM audit_outbox WHERE event_id=?),(SELECT max(version) FROM schema_version)", event, event).Scan(&events, &outbox, &versions); err != nil {
 		t.Fatal(err)
 	}
-	if events != 1 || outbox != 1 || versions != 15 {
+	if events != 1 || outbox != 1 || versions != 16 {
 		t.Fatalf("migrated audit event=%d outbox=%d schema=%d", events, outbox, versions)
 	}
 	if err = repo.CheckSchema(ctx); err != nil {
