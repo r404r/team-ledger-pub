@@ -40,6 +40,28 @@ func TestV18MigratesEducationCatalogPerOrganization(t *testing.T) {
 	if _, err = tx.ExecContext(ctx, "INSERT INTO organization(id,timezone) VALUES(?,'UTC'),(?,'UTC')", orgA, orgB); err != nil {
 		t.Fatal(err)
 	}
+	subject := "10000000-0000-4000-8000-000000000084"
+	employee := "10000000-0000-4000-8000-000000000085"
+	profile := "10000000-0000-4000-8000-000000000086"
+	change := "10000000-0000-4000-8000-000000000087"
+	education := "10000000-0000-4000-8000-000000000088"
+	educationPayload := "10000000-0000-4000-8000-000000000089"
+	for _, statement := range []struct {
+		sql  string
+		args []any
+	}{
+		{"INSERT INTO subject(org_id,id,active,auth_epoch) VALUES(?,?,1,1)", []any{orgA, subject}},
+		{"INSERT INTO employee(org_id,id,profile_head_id,profile_revision,valid_from) VALUES(?,?,?,1,'2020-01-01')", []any{orgA, employee, profile}},
+		{"INSERT INTO encrypted_payload(org_id,employee_id,id,record_id,version_id,object_kind,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes,created_at) VALUES(?,?,?,?,?,'employee_profile','pii','pii.profile.v2',1,1,'A256GCM-RANDOMNONCE','profile-dek','pii-key',1,?,?,1)", []any{orgA, employee, profile, employee, profile, []byte{1}, make([]byte, 28)}},
+		{"INSERT INTO employee_profile_version(org_id,employee_id,id,version_no,payload_id,recorded_at) VALUES(?,?,?,1,?,1)", []any{orgA, employee, profile, profile}},
+		{"INSERT INTO structure_change(org_id,id,subject_id,recorded_at,graph_before,graph_after,catalog_before,catalog_after) VALUES(?,?,?,1,1,1,1,1)", []any{orgA, change, subject}},
+		{"INSERT INTO workforce_payload(org_id,id,owner_kind,owner_id,employee_id,record_id,version_id,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes,created_at) VALUES(?,?,'education_record',?,?,?,?, 'pii','pii.education.v1',1,1,'A256GCM-RANDOMNONCE','education-dek','pii-key',1,?,?,1)", []any{orgA, educationPayload, education, employee, education, educationPayload, []byte{1}, make([]byte, 28)}},
+		{"INSERT INTO education_record(org_id,id,employee_id,level_code,payload_id,valid_from,recorded_at,change_id,revision) VALUES(?,?,?,'Master',?,'2020-01-01',1,?,1)", []any{orgA, education, employee, educationPayload, change}},
+	} {
+		if _, err = tx.ExecContext(ctx, statement.sql, statement.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
@@ -49,6 +71,10 @@ func TestV18MigratesEducationCatalogPerOrganization(t *testing.T) {
 	var count int
 	if err = repo.DB.QueryRowContext(ctx, "SELECT count(*) FROM education_level WHERE org_id IN(?,?)", orgA, orgB).Scan(&count); err != nil || count != 6 {
 		t.Fatalf("migrated education levels=%d err=%v", count, err)
+	}
+	var migratedLevel, migratedPayload string
+	if err = repo.DB.QueryRowContext(ctx, "SELECT level_code,payload_id FROM education_record WHERE org_id=? AND id=?", orgA, education).Scan(&migratedLevel, &migratedPayload); err != nil || migratedLevel != "Master" || migratedPayload != educationPayload {
+		t.Fatalf("migrated education record level=%q payload=%q err=%v", migratedLevel, migratedPayload, err)
 	}
 	if _, err = repo.DB.ExecContext(ctx, "INSERT INTO education_level(org_id,code,rank) VALUES(?,'Doctor',4)", orgA); err != nil {
 		t.Fatal(err)
