@@ -91,7 +91,7 @@ func (r *Repository) BootstrapLocal(ctx context.Context, input LocalBootstrap) (
 		return empty, err
 	}
 	e := input.UsernameEnvelope
-	if err = exec("INSERT INTO local_account(id,org_id,subject_id,username_digest,username_key_id,username_key_version,active,record_id,version_id,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes,created_at) VALUES(?,?,?,?,?,?,1,?,?,'identity','identity.local_username.v1',1,1,?,?,?,?,?,?,?)", "INSERT INTO local_account(id,org_id,subject_id,username_digest,username_key_id,username_key_version,active,record_id,version_id,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes,created_at) VALUES($1,$2,$3,$4,$5,$6,true,$7,$8,'identity','identity.local_username.v1',1,1,$9,$10,$11,$12,$13,$14,$15)", input.AccountID, input.OrgID, input.SubjectID, input.UsernameDigest, input.UsernameKey.KeyID, input.UsernameKey.Version, input.AccountID, input.AccountID, e.Algorithm, e.DEKID, e.Key.KEKID, e.Key.Version, e.Key.Data, e.SealedBytes, at); err != nil {
+	if err = exec("INSERT INTO local_account(id,org_id,subject_id,username_digest,username_key_id,username_key_version,active,password_change_required,record_id,version_id,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes,created_at) VALUES(?,?,?,?,?,?,1,1,?,?,'identity','identity.local_username.v1',1,1,?,?,?,?,?,?,?)", "INSERT INTO local_account(id,org_id,subject_id,username_digest,username_key_id,username_key_version,active,password_change_required,record_id,version_id,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes,created_at) VALUES($1,$2,$3,$4,$5,$6,true,true,$7,$8,'identity','identity.local_username.v1',1,1,$9,$10,$11,$12,$13,$14,$15)", input.AccountID, input.OrgID, input.SubjectID, input.UsernameDigest, input.UsernameKey.KeyID, input.UsernameKey.Version, input.AccountID, input.AccountID, e.Algorithm, e.DEKID, e.Key.KEKID, e.Key.Version, e.Key.Data, e.SealedBytes, at); err != nil {
 		return empty, err
 	}
 	if err = exec("INSERT INTO local_credential(account_id,pepper_key_id,pepper_version,password_phc,revision,updated_at) VALUES(?,?,?,?,1,?)", "INSERT INTO local_credential(account_id,pepper_key_id,pepper_version,password_phc,revision,updated_at) VALUES($1,$2,$3,$4,1,$5)", input.AccountID, input.PepperKey.KeyID, input.PepperKey.Version, input.PasswordPHC, at); err != nil {
@@ -113,6 +113,22 @@ func (r *Repository) BootstrapLocal(ctx context.Context, input LocalBootstrap) (
 			return empty, err
 		}
 		if err = exec("INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required) VALUES(?,?,?,?,?,'org',?,'organization_management',?,?,0,0,0)", "INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required) VALUES($1,$2,$3,$4,$5,'org',$6,'organization_management',$7,$8,false,false,false)", value.NewID(), input.OrgID, input.SubjectID, capability, category, input.OrgID, at, expires); err != nil {
+			return empty, err
+		}
+	}
+	if err = exec("INSERT INTO bootstrap_admin_policy(org_id,admin_subject_id,approved_by,approved_at,policy_version) VALUES(?,?,?,?,'bootstrap_admin.v1')", "INSERT INTO bootstrap_admin_policy(org_id,admin_subject_id,approved_by,approved_at,policy_version) VALUES($1,$2,$3,$4,'bootstrap_admin.v1')", input.OrgID, input.SubjectID, input.SubjectID, at); err != nil {
+		return empty, err
+	}
+	for _, capability := range []string{"access_grant.manage", "audit.read", "identity.manage"} {
+		if err = exec("INSERT INTO capability_assignment(org_id,subject_id,capability,scope_kind,scope_id) VALUES(?,?,?,'org',?)", "INSERT INTO capability_assignment(org_id,subject_id,capability,scope_kind,scope_id) VALUES($1,$2,$3,'org',$4)", input.OrgID, input.SubjectID, capability, input.OrgID); err != nil {
+			return empty, err
+		}
+		if err = exec("INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required) VALUES(?,?,?,?,'audit','org',?,'security_administration',?,?,0,0,1)", "INSERT INTO access_grant(id,org_id,subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,revoked,relation_bound,mfa_required) VALUES($1,$2,$3,$4,'audit','org',$5,'security_administration',$6,$7,false,false,true)", value.NewID(), input.OrgID, input.SubjectID, capability, input.OrgID, at, expires); err != nil {
+			return empty, err
+		}
+	}
+	for _, capability := range []string{"audit.read", "identity.manage"} {
+		if err = exec("INSERT INTO delegation_authority(id,org_id,manager_subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,mfa_required,approved_by,approved_at,policy_version) VALUES(?,?,?,?,'audit','org',?,'security_administration',?,?,1,?,?,'bootstrap_admin.v1')", "INSERT INTO delegation_authority(id,org_id,manager_subject_id,capability,category,scope_kind,scope_id,purpose,valid_from,expires_at,mfa_required,approved_by,approved_at,policy_version) VALUES($1,$2,$3,$4,'audit','org',$5,'security_administration',$6,$7,true,$8,$9,'bootstrap_admin.v1')", value.NewID(), input.OrgID, input.SubjectID, capability, input.OrgID, at, expires, input.SubjectID, at); err != nil {
 			return empty, err
 		}
 	}

@@ -335,12 +335,13 @@ func (h *handler) authenticatedIdentityRoute(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *handler) preAuthorizationIdentityRoute(w http.ResponseWriter, r *http.Request, raw, hash []byte, requestID string) bool {
+	initialPassword := r.URL.Path == "/api/v1/auth/local/initial-password"
 	enrollment := r.URL.Path == "/api/v1/auth/local/mfa/enrollment"
 	pending := r.URL.Path == "/api/v1/auth/local/mfa/pending"
 	confirm := r.URL.Path == "/api/v1/auth/local/mfa/confirm"
 	cancel := r.URL.Path == "/api/v1/auth/local/mfa/cancel"
 	logout := r.URL.Path == "/api/v1/auth/logout"
-	if !enrollment && !pending && !confirm && !cancel && !logout {
+	if !initialPassword && !enrollment && !pending && !confirm && !cancel && !logout {
 		return false
 	}
 	session, err := h.identities.CurrentSession(r.Context(), hash)
@@ -351,7 +352,12 @@ func (h *handler) preAuthorizationIdentityRoute(w http.ResponseWriter, r *http.R
 	if session.AccessKind == "business" {
 		return false
 	}
-	if session.AccessKind != "mfa_enrollment" && session.AccessKind != "mfa_recovery" {
+	if session.AccessKind == "password_change" {
+		if !initialPassword && !logout {
+			h.fail(w, fault.Unauthenticated, requestID)
+			return true
+		}
+	} else if session.AccessKind != "mfa_enrollment" && session.AccessKind != "mfa_recovery" || initialPassword {
 		h.fail(w, fault.Unauthenticated, requestID)
 		return true
 	}
@@ -379,6 +385,18 @@ func (h *handler) preAuthorizationIdentityRoute(w http.ResponseWriter, r *http.R
 		return true
 	}
 	switch {
+	case initialPassword:
+		var command authPasswordChangeCommand
+		if e := strictBody(w, r, &command); e != nil {
+			h.fail(w, e, requestID)
+			return true
+		}
+		if e := h.identities.ChangeLocalPassword(r.Context(), identity.LocalPasswordChangeRequest{SessionHash: hash, CurrentPassword: command.CurrentPassword, NewPassword: command.NewPassword, RequestID: requestID}); e != nil {
+			h.fail(w, e, requestID)
+			return true
+		}
+		clearProtectedCookie(w, "__Host-teamledger_session")
+		w.WriteHeader(http.StatusNoContent)
 	case pending:
 		result, e := h.identities.LocalMFAPending(r.Context(), hash)
 		if e != nil {

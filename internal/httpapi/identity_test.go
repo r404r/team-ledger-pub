@@ -325,9 +325,17 @@ func TestLocalMFAHTTPEnrollmentCreatesBusinessSession(t *testing.T) {
 		response.Body.Close()
 		return response, payload
 	}
-	loginResponse, login := send("/api/v1/auth/local/login", `{"username":"mfa.http.admin","password":"correct horse battery staple","return_to":"/","totp_code":""}`, "", nil)
+	initialResponse, initial := send("/api/v1/auth/local/login", `{"username":"mfa.http.admin","password":"correct horse battery staple","return_to":"/","totp_code":""}`, "", nil)
+	if initialResponse.StatusCode != http.StatusAccepted || initial["next"] != "change_password" || initial["csrf_token"] == "" || len(initialResponse.Cookies()) != 1 {
+		t.Fatal("initial local login did not require password change", initialResponse.StatusCode, initial)
+	}
+	passwordResponse, _ := send("/api/v1/auth/local/initial-password", `{"current_password":"correct horse battery staple","new_password":"updated horse battery staple"}`, initial["csrf_token"].(string), initialResponse.Cookies()[0])
+	if passwordResponse.StatusCode != http.StatusNoContent {
+		t.Fatal("initial password change failed", passwordResponse.StatusCode)
+	}
+	loginResponse, login := send("/api/v1/auth/local/login", `{"username":"mfa.http.admin","password":"updated horse battery staple","return_to":"/","totp_code":""}`, "", nil)
 	if loginResponse.StatusCode != http.StatusAccepted || login["next"] != "enroll" || login["csrf_token"] == "" || len(loginResponse.Cookies()) != 1 {
-		t.Fatal("initial local login did not enter enrollment", loginResponse.StatusCode, login)
+		t.Fatal("updated local login did not enter enrollment", loginResponse.StatusCode, login)
 	}
 	restrictedCookie := loginResponse.Cookies()[0]
 	csrf := login["csrf_token"].(string)
@@ -361,7 +369,7 @@ func TestLocalMFAHTTPEnrollmentCreatesBusinessSession(t *testing.T) {
 		t.Fatal("local TOTP was not exposed as an available step-up facility", businessSession)
 	}
 	f.Now = f.Now.Add(31 * time.Second)
-	stepUpBody := `{"action":"audit.read","return_to":"/security/audit","current_password":"correct horse battery staple","totp_code":"` + httpTOTP(t, pending["secret"].(string), f.Now) + `"}`
+	stepUpBody := `{"action":"audit.read","return_to":"/security/audit","current_password":"updated horse battery staple","totp_code":"` + httpTOTP(t, pending["secret"].(string), f.Now) + `"}`
 	stepUpResponse, stepped := send("/api/v1/auth/step-up", stepUpBody, confirmed["csrf_token"].(string), confirmResponse.Cookies()[0])
 	if stepUpResponse.StatusCode != http.StatusOK || stepped["return_to"] != "/security/audit" || stepped["csrf_token"] == "" || len(stepUpResponse.Cookies()) != 1 {
 		t.Fatal("local audit MFA step-up did not rotate the business session", stepUpResponse.StatusCode, stepped)

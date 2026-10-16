@@ -41,7 +41,7 @@ func (r *Repository) CreateLocalAccount(ctx context.Context, input LocalAccountP
 		return fault.Forbidden
 	}
 	e, at := input.UsernameEnvelope, r.BindTime(input.Now)
-	if _, err = tx.ExecContext(ctx, q.sql("INSERT INTO local_account(id,org_id,subject_id,username_digest,username_key_id,username_key_version,active,record_id,version_id,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes,created_at) VALUES(?,?,?,?,?,?,1,?,?,'identity','identity.local_username.v1',1,1,?,?,?,?,?,?,?)", "INSERT INTO local_account(id,org_id,subject_id,username_digest,username_key_id,username_key_version,active,record_id,version_id,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes,created_at) VALUES($1,$2,$3,$4,$5,$6,true,$7,$8,'identity','identity.local_username.v1',1,1,$9,$10,$11,$12,$13,$14,$15)"), input.AccountID, input.OrgID, input.SubjectID, input.UsernameDigest, input.UsernameKey.KeyID, input.UsernameKey.Version, input.AccountID, input.AccountID, e.Algorithm, e.DEKID, e.Key.KEKID, e.Key.Version, e.Key.Data, e.SealedBytes, at); err != nil {
+	if _, err = tx.ExecContext(ctx, q.sql("INSERT INTO local_account(id,org_id,subject_id,username_digest,username_key_id,username_key_version,active,password_change_required,record_id,version_id,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes,created_at) VALUES(?,?,?,?,?,?,1,1,?,?,'identity','identity.local_username.v1',1,1,?,?,?,?,?,?,?)", "INSERT INTO local_account(id,org_id,subject_id,username_digest,username_key_id,username_key_version,active,password_change_required,record_id,version_id,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes,created_at) VALUES($1,$2,$3,$4,$5,$6,true,true,$7,$8,'identity','identity.local_username.v1',1,1,$9,$10,$11,$12,$13,$14,$15)"), input.AccountID, input.OrgID, input.SubjectID, input.UsernameDigest, input.UsernameKey.KeyID, input.UsernameKey.Version, input.AccountID, input.AccountID, e.Algorithm, e.DEKID, e.Key.KEKID, e.Key.Version, e.Key.Data, e.SealedBytes, at); err != nil {
 		return safeError(err)
 	}
 	if _, err = tx.ExecContext(ctx, q.sql("INSERT INTO local_credential(account_id,pepper_key_id,pepper_version,password_phc,revision,updated_at) VALUES(?,?,?,?,1,?)", "INSERT INTO local_credential(account_id,pepper_key_id,pepper_version,password_phc,revision,updated_at) VALUES($1,$2,$3,$4,1,$5)"), input.AccountID, input.PepperKey.KeyID, input.PepperKey.Version, input.PasswordPHC, at); err != nil {
@@ -82,6 +82,9 @@ func (r *Repository) ResetLocalAccount(ctx context.Context, orgID, subjectID str
 		return fault.NotFound
 	}
 	if _, err = tx.ExecContext(ctx, q.sql("UPDATE local_credential SET pepper_key_id=?,pepper_version=?,password_phc=?,revision=revision+1,updated_at=? WHERE account_id=?", "UPDATE local_credential SET pepper_key_id=$1,pepper_version=$2,password_phc=$3,revision=revision+1,updated_at=$4 WHERE account_id=$5"), pepper.KeyID, pepper.Version, phc, r.BindTime(now), accountID); err != nil {
+		return safeError(err)
+	}
+	if _, err = tx.ExecContext(ctx, q.sql("UPDATE local_account SET password_change_required=1 WHERE id=?", "UPDATE local_account SET password_change_required=true WHERE id=$1"), accountID); err != nil {
 		return safeError(err)
 	}
 	return r.finishLocalAccountRevocation(ctx, tx, q, orgID, subjectID, digest, requestID, now, "AUTH-ACCOUNT-RESET")

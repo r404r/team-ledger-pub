@@ -268,7 +268,7 @@ func (r reader) sql(s, p string) string {
 }
 func (r *Repository) read() reader { return reader{r.DB, r.Backend} }
 
-const currentSchemaVersion = 14
+const currentSchemaVersion = 15
 
 func (r *Repository) migration(version int) (string, string, error) {
 	if (r.Backend != "sqlite" && r.Backend != "postgres") || version < 1 || version > currentSchemaVersion {
@@ -307,7 +307,7 @@ func (r *Repository) Migrate(ctx context.Context) error {
 			return err
 		}
 		// v12 is the first persisted deployment baseline. Older development
-		// schemas remain unsupported; exact v12 through v14 schemas are upgraded
+		// schemas remain unsupported; exact v12 through v15 schemas are upgraded
 		// or accepted without clearing operator data.
 		if version < 12 || version > currentSchemaVersion {
 			return fault.Unavailable
@@ -414,6 +414,21 @@ func (r *Repository) checkSchemaVersion(ctx context.Context, db queryer, expecte
 		}
 	}
 	return nil
+}
+
+func conflictError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var sqliteError *sqlite.Error
+	if errors.As(err, &sqliteError) && (sqliteError.Code() == 1555 || sqliteError.Code() == 2067) {
+		return fault.Conflict
+	}
+	var postgresError *pgconn.PgError
+	if errors.As(err, &postgresError) && postgresError.Code == "23505" {
+		return fault.Conflict
+	}
+	return safeError(err)
 }
 
 func safeError(err error) error {

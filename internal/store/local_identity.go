@@ -64,8 +64,8 @@ func (r *Repository) LookupLocalCredential(ctx context.Context, digest []byte) (
 	var accountActive, subjectActive bool
 	var usernameVersion, pepperVersion, revision int64
 	err := r.DB.QueryRowContext(ctx, reader{r.DB, r.Backend}.sql(
-		"SELECT a.id,a.org_id,a.subject_id,a.username_digest,a.username_key_id,a.username_key_version,a.active,s.active,c.pepper_key_id,c.pepper_version,c.password_phc,c.revision,COALESCE(t.failures,0),COALESCE(t.retry_after,0) FROM local_account a JOIN subject s ON s.org_id=a.org_id AND s.id=a.subject_id JOIN local_credential c ON c.account_id=a.id LEFT JOIN local_login_throttle t ON t.username_digest=a.username_digest WHERE a.username_digest=?",
-		"SELECT a.id,a.org_id,a.subject_id,a.username_digest,a.username_key_id,a.username_key_version,a.active,s.active,c.pepper_key_id,c.pepper_version,c.password_phc,c.revision,COALESCE(t.failures,0),COALESCE(t.retry_after,TIMESTAMPTZ 'epoch') FROM local_account a JOIN subject s ON s.org_id=a.org_id AND s.id=a.subject_id JOIN local_credential c ON c.account_id=a.id LEFT JOIN local_login_throttle t ON t.username_digest=a.username_digest WHERE a.username_digest=$1"), digest).Scan(&result.AccountID, &result.OrgID, &result.SubjectID, &result.UsernameDigest, &result.UsernameKeyID, &usernameVersion, &accountActive, &subjectActive, &result.PepperKeyID, &pepperVersion, &result.PHC, &revision, &result.Failures, &retry)
+		"SELECT a.id,a.org_id,a.subject_id,a.username_digest,a.username_key_id,a.username_key_version,a.active,a.password_change_required,s.active,c.pepper_key_id,c.pepper_version,c.password_phc,c.revision,COALESCE(t.failures,0),COALESCE(t.retry_after,0) FROM local_account a JOIN subject s ON s.org_id=a.org_id AND s.id=a.subject_id JOIN local_credential c ON c.account_id=a.id LEFT JOIN local_login_throttle t ON t.username_digest=a.username_digest WHERE a.username_digest=?",
+		"SELECT a.id,a.org_id,a.subject_id,a.username_digest,a.username_key_id,a.username_key_version,a.active,a.password_change_required,s.active,c.pepper_key_id,c.pepper_version,c.password_phc,c.revision,COALESCE(t.failures,0),COALESCE(t.retry_after,TIMESTAMPTZ 'epoch') FROM local_account a JOIN subject s ON s.org_id=a.org_id AND s.id=a.subject_id JOIN local_credential c ON c.account_id=a.id LEFT JOIN local_login_throttle t ON t.username_digest=a.username_digest WHERE a.username_digest=$1"), digest).Scan(&result.AccountID, &result.OrgID, &result.SubjectID, &result.UsernameDigest, &result.UsernameKeyID, &usernameVersion, &accountActive, &result.PasswordChangeRequired, &subjectActive, &result.PepperKeyID, &pepperVersion, &result.PHC, &revision, &result.Failures, &retry)
 	if errors.Is(err, sql.ErrNoRows) {
 		return result, fault.Unauthenticated
 	}
@@ -167,8 +167,8 @@ func (r *Repository) RecordLocalFailure(ctx context.Context, digest []byte, requ
 
 func (r *Repository) IssueLocalSession(ctx context.Context, issue identity.LocalSessionIssue) error {
 	validBusiness := issue.AccessKind == "business" && issue.ExpiresAt.Equal(issue.Now.Add(8*time.Hour)) && issue.IdleExpiresAt.Equal(issue.Now.Add(30*time.Minute)) && issue.MFAUntil.Equal(issue.Now.Add(10*time.Minute)) && issue.FactorGeneration > 0 && issue.AcceptedStep > 0
-	validEnrollment := issue.AccessKind == "mfa_enrollment" && issue.ExpiresAt.Equal(issue.Now.Add(10*time.Minute)) && issue.IdleExpiresAt.Equal(issue.ExpiresAt) && issue.MFAUntil.Equal(time.Unix(0, 0).UTC()) && issue.AcceptedStep == 0
-	if len(issue.UsernameDigest) != 32 || issue.UsernameKeyID == "" || issue.UsernameKeyVersion == 0 || len(issue.TokenHash) != 32 || len(issue.CSRFHash) != 32 || issue.CSRFKeyID == "" || issue.CSRFVersion == 0 || issue.CredentialRevision <= 0 || !value.ValidID(issue.RequestID) || !validBusiness && !validEnrollment {
+	validRestricted := (issue.AccessKind == "mfa_enrollment" || issue.AccessKind == "password_change") && issue.ExpiresAt.Equal(issue.Now.Add(10*time.Minute)) && issue.IdleExpiresAt.Equal(issue.ExpiresAt) && issue.MFAUntil.Equal(time.Unix(0, 0).UTC()) && issue.AcceptedStep == 0
+	if len(issue.UsernameDigest) != 32 || issue.UsernameKeyID == "" || issue.UsernameKeyVersion == 0 || len(issue.TokenHash) != 32 || len(issue.CSRFHash) != 32 || issue.CSRFKeyID == "" || issue.CSRFVersion == 0 || issue.CredentialRevision <= 0 || !value.ValidID(issue.RequestID) || !validBusiness && !validRestricted {
 		return fault.Invalid
 	}
 	tx, err := r.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
@@ -181,14 +181,20 @@ func (r *Repository) IssueLocalSession(ctx context.Context, issue identity.Local
 	if err = tx.QueryRowContext(ctx, q.sql("SELECT mode FROM identity_mode_state WHERE id=1", "SELECT mode FROM identity_mode_state WHERE id=1 FOR UPDATE")).Scan(&mode); err != nil || mode != "local" {
 		return fault.Unauthenticated
 	}
-	query := q.sql("SELECT a.id,a.org_id,a.subject_id,a.active,s.active,s.auth_epoch,c.revision,m.status,m.generation FROM local_account a JOIN subject s ON s.org_id=a.org_id AND s.id=a.subject_id JOIN local_credential c ON c.account_id=a.id JOIN local_mfa_account m ON m.account_id=a.id WHERE a.username_digest=?", "SELECT a.id,a.org_id,a.subject_id,a.active,s.active,s.auth_epoch,c.revision,m.status,m.generation FROM local_account a JOIN subject s ON s.org_id=a.org_id AND s.id=a.subject_id JOIN local_credential c ON c.account_id=a.id JOIN local_mfa_account m ON m.account_id=a.id WHERE a.username_digest=$1 FOR UPDATE")
+	query := q.sql("SELECT a.id,a.org_id,a.subject_id,a.active,a.password_change_required,s.active,s.auth_epoch,c.revision,m.status,m.generation FROM local_account a JOIN subject s ON s.org_id=a.org_id AND s.id=a.subject_id JOIN local_credential c ON c.account_id=a.id JOIN local_mfa_account m ON m.account_id=a.id WHERE a.username_digest=?", "SELECT a.id,a.org_id,a.subject_id,a.active,a.password_change_required,s.active,s.auth_epoch,c.revision,m.status,m.generation FROM local_account a JOIN subject s ON s.org_id=a.org_id AND s.id=a.subject_id JOIN local_credential c ON c.account_id=a.id JOIN local_mfa_account m ON m.account_id=a.id WHERE a.username_digest=$1 FOR UPDATE")
 	var accountID, orgID, subjectID, status string
-	var accountActive, subjectActive bool
+	var accountActive, passwordChangeRequired, subjectActive bool
 	var epoch, revision, generation int64
-	if err = tx.QueryRowContext(ctx, query, issue.UsernameDigest).Scan(&accountID, &orgID, &subjectID, &accountActive, &subjectActive, &epoch, &revision, &status, &generation); err != nil || !accountActive || !subjectActive || revision != issue.CredentialRevision {
+	if err = tx.QueryRowContext(ctx, query, issue.UsernameDigest).Scan(&accountID, &orgID, &subjectID, &accountActive, &passwordChangeRequired, &subjectActive, &epoch, &revision, &status, &generation); err != nil || !accountActive || !subjectActive || revision != issue.CredentialRevision {
 		return fault.Unauthenticated
 	}
-	if issue.AccessKind == "business" {
+	if issue.AccessKind == "password_change" {
+		if !passwordChangeRequired || generation != issue.FactorGeneration {
+			return fault.Unauthenticated
+		}
+	} else if passwordChangeRequired {
+		return fault.Unauthenticated
+	} else if issue.AccessKind == "business" {
 		if status != "active" || generation != issue.FactorGeneration {
 			return fault.Unauthenticated
 		}
@@ -253,11 +259,14 @@ func (r *Repository) ChangeLocalPassword(ctx context.Context, sessionHash []byte
 	q := reader{tx, r.Backend}
 	var orgID, subjectID, accountID string
 	var epoch, revision int64
-	query := q.sql("SELECT s.org_id,s.subject_id,a.id,u.auth_epoch,c.revision FROM session s JOIN session_auth sa ON sa.token_hash=s.token_hash JOIN local_account a ON a.username_digest=sa.identity_digest AND a.org_id=s.org_id AND a.subject_id=s.subject_id JOIN subject u ON u.org_id=s.org_id AND u.id=s.subject_id JOIN local_credential c ON c.account_id=a.id WHERE s.token_hash=? AND s.revoked=0 AND a.active=1 AND u.active=1", "SELECT s.org_id,s.subject_id,a.id,u.auth_epoch,c.revision FROM session s JOIN session_auth sa ON sa.token_hash=s.token_hash JOIN local_account a ON a.username_digest=sa.identity_digest AND a.org_id=s.org_id AND a.subject_id=s.subject_id JOIN subject u ON u.org_id=s.org_id AND u.id=s.subject_id JOIN local_credential c ON c.account_id=a.id WHERE s.token_hash=$1 AND s.revoked=false AND a.active=true AND u.active=true FOR UPDATE")
-	if err = tx.QueryRowContext(ctx, query, sessionHash).Scan(&orgID, &subjectID, &accountID, &epoch, &revision); err != nil || revision != credentialRevision || epoch == math.MaxInt64 {
+	query := q.sql("SELECT s.org_id,s.subject_id,a.id,u.auth_epoch,c.revision FROM session s JOIN session_auth sa ON sa.token_hash=s.token_hash JOIN local_account a ON a.username_digest=sa.identity_digest AND a.org_id=s.org_id AND a.subject_id=s.subject_id JOIN subject u ON u.org_id=s.org_id AND u.id=s.subject_id JOIN local_credential c ON c.account_id=a.id WHERE s.token_hash=? AND s.revoked=0 AND s.subject_epoch=u.auth_epoch AND s.expires_at>? AND s.idle_expires_at>? AND (s.access_kind='business' OR (s.access_kind='password_change' AND a.password_change_required=1)) AND a.active=1 AND u.active=1", "SELECT s.org_id,s.subject_id,a.id,u.auth_epoch,c.revision FROM session s JOIN session_auth sa ON sa.token_hash=s.token_hash JOIN local_account a ON a.username_digest=sa.identity_digest AND a.org_id=s.org_id AND a.subject_id=s.subject_id JOIN subject u ON u.org_id=s.org_id AND u.id=s.subject_id JOIN local_credential c ON c.account_id=a.id WHERE s.token_hash=$1 AND s.revoked=false AND s.subject_epoch=u.auth_epoch AND s.expires_at>$2 AND s.idle_expires_at>$3 AND (s.access_kind='business' OR (s.access_kind='password_change' AND a.password_change_required=true)) AND a.active=true AND u.active=true FOR UPDATE")
+	if err = tx.QueryRowContext(ctx, query, sessionHash, r.BindTime(now), r.BindTime(now)).Scan(&orgID, &subjectID, &accountID, &epoch, &revision); err != nil || revision != credentialRevision || epoch == math.MaxInt64 {
 		return fault.Unauthenticated
 	}
 	if _, err = tx.ExecContext(ctx, q.sql("UPDATE local_credential SET pepper_key_id=?,pepper_version=?,password_phc=?,revision=revision+1,updated_at=? WHERE account_id=? AND revision=?", "UPDATE local_credential SET pepper_key_id=$1,pepper_version=$2,password_phc=$3,revision=revision+1,updated_at=$4 WHERE account_id=$5 AND revision=$6"), pepper.KeyID, pepper.Version, phc, r.BindTime(now), accountID, credentialRevision); err != nil {
+		return safeError(err)
+	}
+	if _, err = tx.ExecContext(ctx, q.sql("UPDATE local_account SET password_change_required=0 WHERE id=?", "UPDATE local_account SET password_change_required=false WHERE id=$1"), accountID); err != nil {
 		return safeError(err)
 	}
 	if _, err = tx.ExecContext(ctx, q.sql("UPDATE session SET revoked=1 WHERE org_id=? AND subject_id=?", "UPDATE session SET revoked=true WHERE org_id=$1 AND subject_id=$2"), orgID, subjectID); err != nil {

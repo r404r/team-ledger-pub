@@ -342,7 +342,7 @@ func (s *Service) LocalMFARecover(ctx context.Context, request LocalMFARecoveryR
 	defer clear(username.Digest)
 	credential, lookupErr := s.local.store.LookupLocalCredential(ctx, username.Digest)
 	now := s.now()
-	valid := lookupErr == nil && credential.Active && credential.MFAStatus == "active" && credential.RetryAfter.Before(now) && verifyPHC(ctx, s.local.keys, credential.PHC, request.Password, sensitive.KeyReference{KeyID: credential.PepperKeyID, Version: credential.PepperVersion})
+	valid := lookupErr == nil && credential.Active && !credential.PasswordChangeRequired && credential.MFAStatus == "active" && credential.RetryAfter.Before(now) && verifyPHC(ctx, s.local.keys, credential.PHC, request.Password, sensitive.KeyReference{KeyID: credential.PepperKeyID, Version: credential.PepperVersion})
 	if !valid {
 		_ = s.local.store.RecordLocalFailure(ctx, username.Digest, request.RequestID, now)
 		return LoginResult{}, fault.Unauthenticated

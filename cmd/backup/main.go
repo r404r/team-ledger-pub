@@ -367,7 +367,7 @@ func restore(ctx context.Context, archivePath, target string, keyd *sensitive.Ke
 	if closeErr != nil {
 		return closeErr
 	}
-	if manifest.Backend != "sqlite" || manifest.SchemaVersion != 14 {
+	if manifest.Backend != "sqlite" || manifest.SchemaVersion != 15 {
 		return errors.New("incompatible backup")
 	}
 	repo, e := store.Open(ctx, "sqlite", tempPath)
@@ -491,7 +491,7 @@ func restorePostgres(ctx context.Context, archivePath, targetDSN, caPath string,
 	if closeErr != nil {
 		return closeErr
 	}
-	if manifest.Backend != "postgres" || manifest.SchemaVersion != 14 {
+	if manifest.Backend != "postgres" || manifest.SchemaVersion != 15 {
 		return errors.New("incompatible backup")
 	}
 	restoreList, e := postgresRestoreList(ctx, dumpPath, work)

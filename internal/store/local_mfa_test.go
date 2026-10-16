@@ -75,9 +75,16 @@ func TestLocalMFAEnrollmentLoginStepUpAndRecovery(t *testing.T) {
 	}
 	now := start.Add(time.Minute)
 	service.Now = func() time.Time { return now }
-	login, err := service.LocalLogin(ctx, identity.LocalLoginRequest{Username: "mfa.admin", Password: "correct horse battery staple", ReturnTo: "/", RequestID: value.NewID()})
+	initial, err := service.LocalLogin(ctx, identity.LocalLoginRequest{Username: "mfa.admin", Password: "correct horse battery staple", ReturnTo: "/", RequestID: value.NewID()})
+	if err != nil || initial.Next != "change_password" {
+		t.Fatal("initial password did not create password-change session", initial, err)
+	}
+	if err = service.ChangeLocalPassword(ctx, identity.LocalPasswordChangeRequest{SessionHash: cookieHash(t, initial.SessionCookie), CurrentPassword: "correct horse battery staple", NewPassword: "updated horse battery staple", RequestID: value.NewID()}); err != nil {
+		t.Fatal("initial password change failed", err)
+	}
+	login, err := service.LocalLogin(ctx, identity.LocalLoginRequest{Username: "mfa.admin", Password: "updated horse battery staple", ReturnTo: "/", RequestID: value.NewID()})
 	if err != nil || login.Next != "enroll" {
-		t.Fatal("password did not create restricted enrollment", login, err)
+		t.Fatal("updated password did not create restricted enrollment", login, err)
 	}
 	restricted := cookieHash(t, login.SessionCookie)
 	if _, err = repo.Security(ctx, restricted, "", ""); err != fault.Unauthenticated {
@@ -114,7 +121,7 @@ func TestLocalMFAEnrollmentLoginStepUpAndRecovery(t *testing.T) {
 	if _, err = repo.Security(ctx, business, "", ""); err != nil {
 		t.Fatal("confirmed business session unavailable", err)
 	}
-	if _, err = service.LocalLogin(ctx, identity.LocalLoginRequest{Username: "mfa.admin", Password: "correct horse battery staple", TOTPCode: testTOTP(t, pending.Secret, now), ReturnTo: "/", RequestID: value.NewID()}); err != fault.Unauthenticated {
+	if _, err = service.LocalLogin(ctx, identity.LocalLoginRequest{Username: "mfa.admin", Password: "updated horse battery staple", TOTPCode: testTOTP(t, pending.Secret, now), ReturnTo: "/", RequestID: value.NewID()}); err != fault.Unauthenticated {
 		t.Fatal("same TOTP step was replayed", err)
 	}
 	now = now.Add(31 * time.Second)
@@ -127,7 +134,7 @@ func TestLocalMFAEnrollmentLoginStepUpAndRecovery(t *testing.T) {
 	for range 2 {
 		go func() {
 			<-startLogin
-			result, loginErr := service.LocalLogin(ctx, identity.LocalLoginRequest{Username: "mfa.admin", Password: "correct horse battery staple", TOTPCode: testTOTP(t, pending.Secret, now), ReturnTo: "/", RequestID: value.NewID()})
+			result, loginErr := service.LocalLogin(ctx, identity.LocalLoginRequest{Username: "mfa.admin", Password: "updated horse battery staple", TOTPCode: testTOTP(t, pending.Secret, now), ReturnTo: "/", RequestID: value.NewID()})
 			attempts <- loginAttempt{result, loginErr}
 		}()
 	}
@@ -145,13 +152,13 @@ func TestLocalMFAEnrollmentLoginStepUpAndRecovery(t *testing.T) {
 		t.Fatalf("concurrent TOTP replay produced %d successful sessions", successes)
 	}
 	now = now.Add(31 * time.Second)
-	stepped, err := service.LocalStepUp(ctx, identity.LocalMFAStepUpRequest{SessionHash: cookieHash(t, freshLogin.SessionCookie), Password: "correct horse battery staple", TOTPCode: testTOTP(t, pending.Secret, now), Action: "access_grant.manage", ReturnTo: "/security/grants", RequestID: value.NewID()})
+	stepped, err := service.LocalStepUp(ctx, identity.LocalMFAStepUpRequest{SessionHash: cookieHash(t, freshLogin.SessionCookie), Password: "updated horse battery staple", TOTPCode: testTOTP(t, pending.Secret, now), Action: "access_grant.manage", ReturnTo: "/security/grants", RequestID: value.NewID()})
 	if err != nil || stepped.SessionCookie == freshLogin.SessionCookie {
 		t.Fatal("local step-up did not rotate session", err)
 	}
 	now = now.Add(31 * time.Second)
 	recoveryRequestID := value.NewID()
-	recoveryRequest := identity.LocalMFARecoveryRequest{Username: "mfa.admin", Password: "correct horse battery staple", RecoveryCode: confirmed.RecoveryCode, ReturnTo: "/", RequestID: recoveryRequestID}
+	recoveryRequest := identity.LocalMFARecoveryRequest{Username: "mfa.admin", Password: "updated horse battery staple", RecoveryCode: confirmed.RecoveryCode, ReturnTo: "/", RequestID: recoveryRequestID}
 	recovered, err := service.LocalMFARecover(ctx, recoveryRequest)
 	if err != nil || recovered.Next != "recover" {
 		t.Fatal("recovery code did not create restricted recovery", err)
@@ -179,11 +186,11 @@ func TestLocalMFAEnrollmentLoginStepUpAndRecovery(t *testing.T) {
 		t.Fatal("recovery factor confirmation failed", err)
 	}
 	now = now.Add(31 * time.Second)
-	if _, err = service.LocalLogin(ctx, identity.LocalLoginRequest{Username: "mfa.admin", Password: "correct horse battery staple", TOTPCode: testTOTP(t, pending.Secret, now), ReturnTo: "/", RequestID: value.NewID()}); err != fault.Unauthenticated {
+	if _, err = service.LocalLogin(ctx, identity.LocalLoginRequest{Username: "mfa.admin", Password: "updated horse battery staple", TOTPCode: testTOTP(t, pending.Secret, now), ReturnTo: "/", RequestID: value.NewID()}); err != fault.Unauthenticated {
 		t.Fatal("old factor survived recovery", err)
 	}
 	now = now.Add(2 * time.Second)
-	if _, err = service.LocalLogin(ctx, identity.LocalLoginRequest{Username: "mfa.admin", Password: "correct horse battery staple", TOTPCode: testTOTP(t, recoveryPending.Secret, now), ReturnTo: "/", RequestID: value.NewID()}); err != nil {
+	if _, err = service.LocalLogin(ctx, identity.LocalLoginRequest{Username: "mfa.admin", Password: "updated horse battery staple", TOTPCode: testTOTP(t, recoveryPending.Secret, now), ReturnTo: "/", RequestID: value.NewID()}); err != nil {
 		t.Fatal("new factor could not login", err)
 	}
 	resetRequestID := value.NewID()
@@ -201,7 +208,7 @@ func TestLocalMFAEnrollmentLoginStepUpAndRecovery(t *testing.T) {
 	if err = repo.DB.QueryRowContext(ctx, "SELECT generation FROM local_mfa_account WHERE account_id=?", accountID).Scan(&retriedGeneration); err != nil || retriedGeneration != resetGeneration {
 		t.Fatal("offline MFA reset retry changed generation", resetGeneration, retriedGeneration, err)
 	}
-	resetLogin, err := service.LocalLogin(ctx, identity.LocalLoginRequest{Username: "mfa.admin", Password: "correct horse battery staple", ReturnTo: "/", RequestID: value.NewID()})
+	resetLogin, err := service.LocalLogin(ctx, identity.LocalLoginRequest{Username: "mfa.admin", Password: "updated horse battery staple", ReturnTo: "/", RequestID: value.NewID()})
 	if err != nil || resetLogin.Next != "enroll" {
 		t.Fatal("offline MFA reset did not require fresh enrollment", resetLogin, err)
 	}

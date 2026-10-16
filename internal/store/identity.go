@@ -232,7 +232,7 @@ func (q reader) currentIdentitySession(ctx context.Context, hash []byte, now tim
 		return identity.Session{}, safeError(err)
 	}
 	s.ExpiresAt, s.IdleExpiresAt = expires.Time, idle.Time
-	if !active || revoked || s.Epoch != epoch || !s.ExpiresAt.After(now) || !s.IdleExpiresAt.After(now) || s.AccessKind != "business" && s.AccessKind != "mfa_enrollment" && s.AccessKind != "mfa_recovery" || len(s.IdentityDigest) != 0 && (!mappingActive.Valid || !mappingActive.Bool || !authVersion.Valid || !mappingVersion.Valid || authVersion.Int64 != mappingVersion.Int64 || !authKeyID.Valid || !mappingKeyID.Valid || authKeyID.String != mappingKeyID.String) {
+	if !active || revoked || s.Epoch != epoch || !s.ExpiresAt.After(now) || !s.IdleExpiresAt.After(now) || s.AccessKind != "business" && s.AccessKind != "mfa_enrollment" && s.AccessKind != "mfa_recovery" && s.AccessKind != "password_change" || len(s.IdentityDigest) != 0 && (!mappingActive.Valid || !mappingActive.Bool || !authVersion.Valid || !mappingVersion.Valid || authVersion.Int64 != mappingVersion.Int64 || !authKeyID.Valid || !mappingKeyID.Valid || authKeyID.String != mappingKeyID.String) {
 		return identity.Session{}, fault.Unauthenticated
 	}
 	return s, nil

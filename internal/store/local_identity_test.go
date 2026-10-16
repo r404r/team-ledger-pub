@@ -87,6 +87,14 @@ func TestLocalBootstrapLoginThrottleAndSession(t *testing.T) {
 	if err = repo.DB.QueryRowContext(ctx, "SELECT policy_version FROM local_bootstrap_receipt WHERE request_id=?", bootstrap.RequestID).Scan(&policy); err != nil || policy != "bootstrap_policy.v1" {
 		t.Fatal("bootstrap policy version was not fixed", policy, err)
 	}
+	var approvedBy string
+	if err = repo.DB.QueryRowContext(ctx, "SELECT approved_by FROM bootstrap_admin_policy WHERE org_id=?", orgID).Scan(&approvedBy); err != nil || approvedBy != subjectID {
+		t.Fatal("bootstrap admin policy did not preserve the original self-approval", approvedBy, err)
+	}
+	var securityCapabilities int
+	if err = repo.DB.QueryRowContext(ctx, "SELECT count(*) FROM access_grant WHERE org_id=? AND subject_id=? AND capability IN('access_grant.manage','audit.read','identity.manage') AND category='audit' AND purpose='security_administration' AND mfa_required=1", orgID, subjectID).Scan(&securityCapabilities); err != nil || securityCapabilities != 3 {
+		t.Fatal("bootstrap admin security capabilities missing", securityCapabilities, err)
+	}
 	service, err := identity.NewLocal(ctx, repo, repo, keys, sensitive.Cipher{Wrapper: localWrapper{}})
 	if err != nil {
 		t.Fatal(err)
@@ -104,13 +112,16 @@ func TestLocalBootstrapLoginThrottleAndSession(t *testing.T) {
 	if err != nil {
 		t.Fatal("correct password did not login", err)
 	}
+	if login.Next != "change_password" {
+		t.Fatal("bootstrap password did not require first-login change", login.Next)
+	}
 	raw, err := base64.RawURLEncoding.DecodeString(login.SessionCookie)
 	if err != nil {
 		t.Fatal(err)
 	}
 	hash := sha256.Sum256(raw)
 	session, err := repo.IdentitySession(ctx, hash[:], now.Add(63*time.Second))
-	if err != nil || session.OrgID != orgID || session.SubjectID != subjectID {
+	if err != nil || session.OrgID != orgID || session.SubjectID != subjectID || session.AccessKind != "password_change" {
 		t.Fatal("local session was not usable", session, err)
 	}
 	if err = repo.DB.QueryRowContext(ctx, "SELECT count(*) FROM local_login_throttle WHERE username_digest=?", username.Digest).Scan(&failures); err != nil || failures != 0 {

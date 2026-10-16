@@ -218,6 +218,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if snap.Allows("audit.read", "audit", employeeScope, authz.ManagementPurpose, now) {
 			caps = append(caps, "audit.read")
 		}
+		if snap.Allows("identity.manage", "audit", "", authz.ManagementPurpose, now) {
+			caps = append(caps, "identity.manage")
+		}
 		sensitivityUntil, e := sensitivityDeadline(snap, now)
 		if e != nil {
 			h.fail(w, e, requestID)
@@ -281,6 +284,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/api/v1/access-grants" || strings.HasPrefix(r.URL.Path, "/api/v1/access-grants/") {
 		h.grantRoute(w, r, authz.Request{TokenHash: req.TokenHash, RequestID: req.RequestID, Purpose: req.Purpose, Key: req.Key})
+		return
+	}
+	if h.localUserRoute(w, r, req.TokenHash, req.RequestID, req.Purpose, req.Key) {
 		return
 	}
 	if h.auditRoute(w, r, audit.Request{TokenHash: req.TokenHash, RequestID: req.RequestID, Purpose: req.Purpose}) {
@@ -446,6 +452,8 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 		root = "local_password_change"
 	case *authLocalRecoveryCommand, *authLocalMFACommand, *authLocalMFAConfirmCommand:
 		root = "local_mfa"
+	case *localUserCreateCommand:
+		root = "local_user"
 	default:
 		return fault.Invalid
 	}
@@ -453,7 +461,7 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 	d.UseNumber()
 	if strings.HasPrefix(root, "finance_") {
 		e = walkFinancialJSON(d, 0, root, false)
-	} else if root == "local_login" || root == "local_password_change" || root == "local_mfa" || root == "bonus_command" || root == "batch_command" || root == "assessment_command" || root == "assessment_worker" || root == "catalog_command" || root == "workforce_command" {
+	} else if root == "local_login" || root == "local_password_change" || root == "local_mfa" || root == "local_user" || root == "bonus_command" || root == "batch_command" || root == "assessment_command" || root == "assessment_worker" || root == "catalog_command" || root == "workforce_command" {
 		e = walkUniqueJSON(d, 0)
 	} else {
 		e = walkJSON(d, 0, root)

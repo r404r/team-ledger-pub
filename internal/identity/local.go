@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/r404r/team-ledger/internal/authz"
 	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/sensitive"
 	"github.com/r404r/team-ledger/internal/value"
@@ -43,7 +44,7 @@ type LocalCredential struct {
 	RecoveryKeyID                                                string
 	RecoveryKeyVersion                                           uint32
 	RecoveryDigest                                               []byte
-	Active                                                       bool
+	Active, PasswordChangeRequired                               bool
 	Failures                                                     int64
 	RetryAfter                                                   time.Time
 }
@@ -60,12 +61,15 @@ type LocalSessionIssue struct {
 
 type LocalStore interface {
 	LocalMFAStore
+	authz.Reader
 	IdentityMode(context.Context) (string, error)
 	LookupLocalCredential(context.Context, []byte) (LocalCredential, error)
 	RecordLocalFailure(context.Context, []byte, string, time.Time) error
 	IssueLocalSession(context.Context, LocalSessionIssue) error
 	UpgradeLocalCredential(context.Context, []byte, int64, string, sensitive.KeyReference, time.Time) error
 	ChangeLocalPassword(context.Context, []byte, int64, string, sensitive.KeyReference, string, time.Time) error
+	ListLocalUsers(context.Context, LocalUserStoreQuery) ([]LocalUserRecord, error)
+	CreateLocalUser(context.Context, LocalUserProvision) (LocalUserResult, error)
 }
 
 type LocalLoginRequest struct {
@@ -227,7 +231,7 @@ func NewLocal(ctx context.Context, store Store, local LocalStore, keys LocalKeyS
 }
 
 func (s *Service) localSessionIssue(ctx context.Context, _ []byte, accessKind string, recentMFA bool, requestID string) (string, LocalSessionIssue, error) {
-	if s == nil || s.local == nil || !value.ValidID(requestID) || accessKind != "business" && accessKind != "mfa_enrollment" && accessKind != "mfa_recovery" {
+	if s == nil || s.local == nil || !value.ValidID(requestID) || accessKind != "business" && accessKind != "mfa_enrollment" && accessKind != "mfa_recovery" && accessKind != "password_change" {
 		return "", LocalSessionIssue{}, fault.Invalid
 	}
 	cookie, raw, err := randomToken()
@@ -300,7 +304,9 @@ func (s *Service) LocalLogin(ctx context.Context, request LocalLoginRequest) (Lo
 	}
 	acceptedStep := int64(0)
 	accessKind, recentMFA := "mfa_enrollment", false
-	if credential.MFAStatus == "active" {
+	if credential.PasswordChangeRequired {
+		accessKind = "password_change"
+	} else if credential.MFAStatus == "active" {
 		if credential.Factor == nil {
 			return LoginResult{}, fault.Unavailable
 		}
@@ -337,6 +343,8 @@ func (s *Service) LocalLogin(ctx context.Context, request LocalLoginRequest) (Lo
 	next := ""
 	if accessKind == "mfa_enrollment" {
 		next = "enroll"
+	} else if accessKind == "password_change" {
+		next = "change_password"
 	}
 	return LoginResult{SessionCookie: cookie, CSRFToken: issue.CSRFToken, ReturnTo: request.ReturnTo, Next: next, ExpiresAt: issue.ExpiresAt}, nil
 }
@@ -349,6 +357,9 @@ func (s *Service) ChangeLocalPassword(ctx context.Context, request LocalPassword
 	if err != nil {
 		return err
 	}
+	if session.AccessKind != "business" && session.AccessKind != "password_change" {
+		return fault.Unauthenticated
+	}
 	credential, err := s.local.store.LookupLocalCredential(ctx, session.IdentityDigest)
 	if err != nil || !credential.Active {
 		return fault.Unauthenticated
@@ -356,6 +367,9 @@ func (s *Service) ChangeLocalPassword(ctx context.Context, request LocalPassword
 	valid := verifyPHC(ctx, s.local.keys, credential.PHC, request.CurrentPassword, sensitive.KeyReference{KeyID: credential.PepperKeyID, Version: credential.PepperVersion})
 	if !valid {
 		return fault.Unauthenticated
+	}
+	if request.NewPassword == request.CurrentPassword {
+		return fault.Invalid
 	}
 	phc, key, err := NewPasswordCredential(ctx, s.local.keys, request.NewPassword)
 	if err != nil {

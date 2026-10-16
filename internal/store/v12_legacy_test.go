@@ -10,7 +10,7 @@ import (
 	"github.com/r404r/team-ledger/internal/fault"
 )
 
-func TestV14MigratesPersistedV12BatchWithoutClearingData(t *testing.T) {
+func TestV15MigratesPersistedV12BatchWithoutClearingData(t *testing.T) {
 	ctx := context.Background()
 	repo, err := Open(ctx, "sqlite", filepath.Join(t.TempDir(), "persisted-v12.sqlite"))
 	if err != nil {
@@ -62,7 +62,7 @@ func TestV14MigratesPersistedV12BatchWithoutClearingData(t *testing.T) {
 		t.Fatal(err)
 	}
 	var version, rows int
-	if err = repo.DB.QueryRowContext(ctx, "SELECT max(version),count(*) FROM schema_version").Scan(&version, &rows); err != nil || version != 14 || rows != 14 {
+	if err = repo.DB.QueryRowContext(ctx, "SELECT max(version),count(*) FROM schema_version").Scan(&version, &rows); err != nil || version != 15 || rows != 15 {
 		t.Fatalf("ledger version=%d rows=%d err=%v", version, rows, err)
 	}
 	var code, state string
@@ -78,7 +78,7 @@ func TestV14MigratesPersistedV12BatchWithoutClearingData(t *testing.T) {
 	}
 }
 
-func TestV14MigrationRequiresLocalMFAEnrollmentAndPreservesOIDCSession(t *testing.T) {
+func TestV15MigrationRequiresLocalMFAEnrollmentAndPreservesOIDCSession(t *testing.T) {
 	ctx := context.Background()
 	repo, err := Open(ctx, "sqlite", filepath.Join(t.TempDir(), "persisted-v13.sqlite"))
 	if err != nil {
@@ -155,7 +155,7 @@ func TestV14MigrationRequiresLocalMFAEnrollmentAndPreservesOIDCSession(t *testin
 	}
 }
 
-func TestV14RefusesV11WithoutWriting(t *testing.T) {
+func TestV15RefusesV11WithoutWriting(t *testing.T) {
 	ctx := context.Background()
 	repo, err := Open(ctx, "sqlite", filepath.Join(t.TempDir(), "legacy-v11.sqlite"))
 	if err != nil {

@@ -165,7 +165,7 @@ func SupportedPair(capability, category, purpose string) bool {
 		return category == "metadata" && purpose == "organization_management"
 	case "pii.read", "pii.write":
 		return category == "pii" && purpose == "organization_management"
-	case "access_grant.manage", "audit.read":
+	case "access_grant.manage", "audit.read", "identity.manage":
 		return category == "audit" && purpose == ManagementPurpose
 	case "interview.read", "interview.write", "interview_policy.manage":
 		return category == "metadata" && purpose == "interview_followup"

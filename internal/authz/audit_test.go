@@ -24,3 +24,20 @@ func TestAuditReadIsIndependentAndRequiresRecentMFA(t *testing.T) {
 		t.Fatal("audit read remained usable after the recent-MFA boundary")
 	}
 }
+
+func TestIdentityManagementRequiresDedicatedGrantAndRecentMFA(t *testing.T) {
+	now := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
+	org := "10000000-0000-4000-8000-000000000001"
+	grant := authz.Grant{Capability: "identity.manage", Category: "audit", ScopeKind: "org", ScopeID: org, Purpose: authz.ManagementPurpose, ValidFrom: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour), MFARequired: true}
+	snapshot := authz.Snapshot{OrgID: org, Active: true, Timezone: "UTC", ExpiresAt: now.Add(time.Hour), IdleExpiresAt: now.Add(time.Hour), MFAUntil: now.Add(time.Minute), Assignments: []authz.Assignment{{Capability: "identity.manage", ScopeKind: "org", ScopeID: org}}, Grants: []authz.Grant{grant}}
+	if !authz.SupportedPair("identity.manage", "audit", authz.ManagementPurpose) || !snapshot.Allows("identity.manage", "audit", "", authz.ManagementPurpose, now) {
+		t.Fatal("dedicated identity administration grant was not usable")
+	}
+	if snapshot.Allows("access_grant.manage", "audit", "", authz.ManagementPurpose, now) || snapshot.Allows("audit.read", "audit", "", authz.ManagementPurpose, now) {
+		t.Fatal("identity administration implied an independent security capability")
+	}
+	snapshot.MFAUntil = now
+	if snapshot.Allows("identity.manage", "audit", "", authz.ManagementPurpose, now) {
+		t.Fatal("identity administration remained usable after the recent-MFA boundary")
+	}
+}
