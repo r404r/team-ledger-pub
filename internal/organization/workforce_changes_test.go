@@ -76,6 +76,31 @@ func TestWorkforceChangesRejectHODSecondaryUnknownEmployeeAndPartialSets(t *test
 	}
 }
 
+func TestInitialWorkforceCommandBuildsCompleteEmployeeFacts(t *testing.T) {
+	staff, catalog, graph := "S001", "3", "3"
+	command := CreateCommand{
+		Lifecycle:               Lifecycle{ValidFrom: "2026-10-11"},
+		StaffCode:               &staff,
+		Employment:              &InitialEmployment{LegalEntityID: workforceEntity, LocationCode: LocationShanghai},
+		Education:               &InitialEducation{Level: EducationMaster},
+		JobAssignment:           &InitialJobAssignment{DepartmentID: workforceDept, JobFamilyID: workforceFamily, CareerLevelID: workforceLevel, Position: PositionPayload{Title: "Consultant"}},
+		ExpectedCatalogRevision: &catalog,
+		ExpectedGraphRevision:   &graph,
+	}
+	workforce, ok := initialWorkforceCommand(command, workforceEmployee)
+	if !ok || len(workforce.Changes) != 4 {
+		t.Fatalf("complete initial workforce = %#v has=%v", workforce, ok)
+	}
+	for _, item := range workforce.Changes {
+		if !validWorkforceChangeItem(item) {
+			t.Fatalf("invalid initial workforce item: %#v", item)
+		}
+	}
+	if !validWorkforceChange(workforce) {
+		t.Fatalf("invalid complete workforce command: %#v", workforce)
+	}
+}
+
 func TestCatalogChangesRequireCASBoundedTypedItems(t *testing.T) {
 	date := "2026-10-13"
 	code, label := "BG-01", "Business Group 01"

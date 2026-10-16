@@ -536,7 +536,7 @@ func walkJSON(d *json.Decoder, depth int, object string) error {
 		return nil
 	}
 	switch object {
-	case "subject_id", "capability", "category", "kind", "id", "purpose", "expires_at", "authority_id", "expected_revision", "expected_auth_epoch", "reason", "code", "label", "expected_catalog_revision", "expected_graph_revision", "staff_code", "action", "ref", "employee_id", "department_id", "manager_employee_id", "reporting_kind", "end_date", "title", "position_code", "description", "as_of", "q", "cursor", "scheduled_at", "expected_head_revision", "text", "edit_reason", "expected_version", "minimal_shared_text", "safe_blocker_text", "format", "return_to":
+	case "subject_id", "capability", "category", "kind", "id", "purpose", "expires_at", "authority_id", "expected_revision", "expected_auth_epoch", "reason", "code", "label", "expected_catalog_revision", "expected_graph_revision", "staff_code", "action", "ref", "employee_id", "department_id", "manager_employee_id", "reporting_kind", "end_date", "title", "position_code", "description", "legal_entity_id", "location_code", "level", "job_family_id", "career_level_id", "as_of", "q", "cursor", "scheduled_at", "expected_head_revision", "text", "edit_reason", "expected_version", "minimal_shared_text", "safe_blocker_text", "format", "return_to":
 		if _, ok := t.(string); !ok {
 			return fault.Invalid
 		}
@@ -593,7 +593,7 @@ func walkJSON(d *json.Decoder, depth int, object string) error {
 		}
 		return nil
 	}
-	if object == "issue" || object == "revoke" || object == "scope" || object == "relation_ref" || object == "object_ref" || object == "create_team" || object == "structure_command" || object == "directory_query" || object == "change_item" || object == "position" || strings.HasPrefix(object, "interview_") || object == "note_command" || object == "action_command" || object == "action_transition" || object == "export_command" || object == "export_object" || object == "owner" || object == "party" || object == "source_ref" {
+	if object == "issue" || object == "revoke" || object == "scope" || object == "relation_ref" || object == "object_ref" || object == "create_team" || object == "structure_command" || object == "directory_query" || object == "change_item" || object == "position" || object == "employment" || object == "education" || object == "job_assignment" || strings.HasPrefix(object, "interview_") || object == "note_command" || object == "action_command" || object == "action_transition" || object == "export_command" || object == "export_object" || object == "owner" || object == "party" || object == "source_ref" {
 		if t != json.Delim('{') {
 			return fault.Invalid
 		}
@@ -657,7 +657,7 @@ func allowedField(object, key string) bool {
 	case "export_object":
 		return key == "kind" || key == "id" || key == "expected_revision"
 	case "create":
-		return key == "profile" || key == "lifecycle" || key == "staff_code" || key == "manager_employee_id" || key == "expected_catalog_revision" || key == "expected_graph_revision"
+		return key == "profile" || key == "lifecycle" || key == "staff_code" || key == "employment" || key == "education" || key == "job_assignment" || key == "manager_employee_id" || key == "expected_catalog_revision" || key == "expected_graph_revision"
 	case "update":
 		return key == "expected_profile_revision" || key == "profile" || key == "edit_reason"
 	case "create_team":
@@ -672,6 +672,12 @@ func allowedField(object, key string) bool {
 		return false
 	case "position":
 		return key == "title" || key == "position_code" || key == "description"
+	case "employment":
+		return key == "legal_entity_id" || key == "location_code"
+	case "education":
+		return key == "level"
+	case "job_assignment":
+		return key == "department_id" || key == "job_family_id" || key == "career_level_id" || key == "position"
 	case "directory_query":
 		switch key {
 		case "as_of", "department_id", "employee_id", "lifecycle", "q", "cursor", "limit", "include_profile":

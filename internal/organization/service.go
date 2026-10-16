@@ -152,7 +152,7 @@ func (s *Service) Create(ctx context.Context, request Request, org string, comma
 }
 
 func initialWorkforceCommand(command CreateCommand, employeeID string) (WorkforceChangeCommand, bool) {
-	hasWorkforce := command.StaffCode != nil || command.ManagerEmployeeID != nil
+	hasWorkforce := command.StaffCode != nil || command.Employment != nil || command.Education != nil || command.JobAssignment != nil || command.ManagerEmployeeID != nil
 	if !hasWorkforce || command.ExpectedCatalogRevision == nil || command.ExpectedGraphRevision == nil {
 		return WorkforceChangeCommand{}, hasWorkforce
 	}
@@ -164,6 +164,16 @@ func initialWorkforceCommand(command CreateCommand, employeeID string) (Workforc
 	}
 	if command.StaffCode != nil {
 		workforce.Changes = append(workforce.Changes, WorkforceChangeItem{Action: "add", Kind: "identifier", EmployeeID: employeeID, StaffCode: command.StaffCode, ValidFrom: &validFrom, ValidTo: command.Lifecycle.ValidTo})
+	}
+	if command.Employment != nil {
+		kind := "hire"
+		workforce.Changes = append(workforce.Changes, WorkforceChangeItem{Action: "add", Kind: "employment", EmployeeID: employeeID, LegalEntityID: &command.Employment.LegalEntityID, LocationCode: &command.Employment.LocationCode, EmploymentKind: &kind, ValidFrom: &validFrom, ValidTo: command.Lifecycle.ValidTo})
+	}
+	if command.Education != nil {
+		workforce.Changes = append(workforce.Changes, WorkforceChangeItem{Action: "add", Kind: "education", EmployeeID: employeeID, EducationLevel: &command.Education.Level, ValidFrom: &validFrom, ValidTo: command.Lifecycle.ValidTo})
+	}
+	if command.JobAssignment != nil {
+		workforce.Changes = append(workforce.Changes, WorkforceChangeItem{Action: "add", Kind: "job_assignment", EmployeeID: employeeID, DepartmentID: &command.JobAssignment.DepartmentID, JobFamilyID: &command.JobAssignment.JobFamilyID, CareerLevelID: &command.JobAssignment.CareerLevelID, Position: &command.JobAssignment.Position, ValidFrom: &validFrom, ValidTo: command.Lifecycle.ValidTo})
 	}
 	if command.ManagerEmployeeID != nil {
 		reportingKind := "administrative"

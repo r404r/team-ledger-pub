@@ -9,7 +9,7 @@ import (
 )
 
 func TestParsePersonnelWorkbookReturnsCanonicalPreviewWithoutPersistence(t *testing.T) {
-	row := []string{"EMP-001", "合成员工", "Synthetic Employee", "employee@example.invalid", "+86-000", "Synthetic summary", "MGR-001", "2026-10-16", ""}
+	row := personnelRow("EMP-001", "合成员工", "MGR-001")
 	preview, err := parsePersonnelWorkbook(personnelWorkbook(t, [][]string{row}, -1))
 	if err != nil {
 		t.Fatal(err)
@@ -18,19 +18,20 @@ func TestParsePersonnelWorkbookReturnsCanonicalPreviewWithoutPersistence(t *test
 		t.Fatalf("preview = %#v", preview)
 	}
 	got := preview.Rows[0]
-	if got.RowNumber != 2 || got.StaffCode != "EMP-001" || got.ManagerStaffCode != "MGR-001" || got.HireDate != "2026-10-16" || got.DepartureDate != nil {
+	if got.RowNumber != 2 || got.StaffCode != "EMP-001" || got.ManagerStaffCode != "MGR-001" || got.HireDate != "2026-10-16" || got.Location != "Shanghai" || got.DepartmentCode != "DEP" || got.DepartureDate != nil {
 		t.Fatalf("canonical row = %#v", got)
 	}
 }
 
 func TestParsePersonnelWorkbookReportsDuplicateCycleAndTypedDate(t *testing.T) {
 	rows := [][]string{
-		{"EMP-001", "员工甲", "", "", "", "", "EMP-002", "2026-10-16", ""},
-		{"EMP-002", "员工乙", "", "", "", "", "EMP-001", "2026-10-16", ""},
-		{"DUP-001", "员工丙", "", "", "", "", "", "2026-10-16", ""},
-		{"DUP-001", "员工丁", "", "", "", "", "", "46000", ""},
+		personnelRow("EMP-001", "员工甲", "EMP-002"),
+		personnelRow("EMP-002", "员工乙", "EMP-001"),
+		personnelRow("DUP-001", "员工丙", ""),
+		personnelRow("DUP-001", "员工丁", ""),
 	}
-	preview, err := parsePersonnelWorkbook(personnelWorkbook(t, rows, 7))
+	rows[3][9] = "46000"
+	preview, err := parsePersonnelWorkbook(personnelWorkbook(t, rows, 9))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +45,8 @@ func TestParsePersonnelWorkbookReportsDuplicateCycleAndTypedDate(t *testing.T) {
 }
 
 func TestParsePersonnelWorkbookOmitsOversizedValuesFromPreview(t *testing.T) {
-	row := []string{"EMP-003", "合成员工", "", "", "", strings.Repeat("x", (16<<10)+1), "", "2026-10-16", ""}
+	row := personnelRow("EMP-003", "合成员工", "")
+	row[17] = strings.Repeat("x", (16<<10)+1)
 	preview, err := parsePersonnelWorkbook(personnelWorkbook(t, [][]string{row}, -1))
 	if err != nil {
 		t.Fatal(err)
@@ -58,6 +60,13 @@ func TestParsePersonnelWorkbookOmitsOversizedValuesFromPreview(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("missing bounded preview issue: %#v", preview.Errors)
+	}
+}
+
+func personnelRow(staffCode, name, manager string) []string {
+	return []string{
+		staffCode, name, "Synthetic Employee", "Shanghai", "BR", "BG", "DIV", "DEP", "Master",
+		"2026-10-16", "Consultant", "CONSULTING", "P1", manager, "", "employee@example.invalid", "+86-000", "Synthetic summary",
 	}
 }
 

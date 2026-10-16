@@ -158,6 +158,34 @@ func TestAPIEmployeeCreateAtomicallyAddsStaffCodeAndDirectManager(t *testing.T) 
 	}
 }
 
+func TestAPIEmployeeCreateAtomicallyAddsCompleteMasterData(t *testing.T) {
+	for _, backend := range []string{"sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) {
+			f := testsupport.NewHarness(t, backend)
+			catalogs := seedCompleteEmployeeCatalogs(t, f)
+			body := `{"profile":{"local_name":"SYNTHETIC_COMPLETE_EMPLOYEE","english_name":"Synthetic Complete Employee"},"lifecycle":{"valid_from":"2026-10-11","valid_to":null},"staff_code":"COMPLETE-0007","employment":{"legal_entity_id":"` + catalogs.Items[0].ID + `","location_code":"Shanghai"},"education":{"level":"Master"},"job_assignment":{"department_id":"` + catalogs.Items[3].ID + `","job_family_id":"` + catalogs.Items[4].ID + `","career_level_id":"` + catalogs.Items[5].ID + `","position":{"title":"Consultant"}},"expected_catalog_revision":"3","expected_graph_revision":"3"}`
+			var made map[string]string
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/employees", body, value.NewID()), http.StatusCreated, &made)
+			if made["profile_revision"] != "1" || made["workforce_revision"] != "2" || made["graph_revision"] != "3" {
+				t.Fatalf("complete employee receipt = %#v", made)
+			}
+			if f.Count(t, "employee") != 1 || f.Count(t, "employee_business_identifier") != 1 || f.Count(t, "employment_spell") != 1 || f.Count(t, "education_record") != 1 || f.Count(t, "job_assignment") != 1 || f.Count(t, "structure_change") != 3 {
+				t.Fatal("complete employee facts were not one committed unit")
+			}
+			var view organization.View
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodGet, "/api/v1/employees/"+made["id"]+"?as_of=2026-10-11&include_profile=true", "", ""), http.StatusOK, &view)
+			if len(view.Identifiers) != 1 || len(view.Employment) != 1 || len(view.Education) != 1 || len(view.JobAssignments) != 1 ||
+				view.Employment[0].LegalEntityID != catalogs.Items[0].ID || view.Employment[0].LocationCode != "Shanghai" ||
+				view.Education[0].Level != "Master" || view.JobAssignments[0].DepartmentID != catalogs.Items[3].ID ||
+				view.JobAssignments[0].JobFamilyID == nil || *view.JobAssignments[0].JobFamilyID != catalogs.Items[4].ID ||
+				view.JobAssignments[0].CareerLevelID == nil || *view.JobAssignments[0].CareerLevelID != catalogs.Items[5].ID ||
+				view.JobAssignments[0].Position == nil || view.JobAssignments[0].Position.Title != "Consultant" {
+				t.Fatalf("complete employee projection = %#v", view)
+			}
+		})
+	}
+}
+
 func TestAPIRejectsFramingAndAmbiguousJSONWithoutWrite(t *testing.T) {
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {

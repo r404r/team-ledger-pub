@@ -17,13 +17,30 @@ type Lifecycle struct {
 	ValidFrom string  `json:"valid_from"`
 	ValidTo   *string `json:"valid_to"`
 }
+type InitialEmployment struct {
+	LegalEntityID string `json:"legal_entity_id"`
+	LocationCode  string `json:"location_code"`
+}
+type InitialEducation struct {
+	Level string `json:"level"`
+}
+type InitialJobAssignment struct {
+	DepartmentID  string          `json:"department_id"`
+	JobFamilyID   string          `json:"job_family_id"`
+	CareerLevelID string          `json:"career_level_id"`
+	Position      PositionPayload `json:"position"`
+}
+
 type CreateCommand struct {
-	Profile                 Profile   `json:"profile"`
-	Lifecycle               Lifecycle `json:"lifecycle"`
-	StaffCode               *string   `json:"staff_code,omitempty"`
-	ManagerEmployeeID       *string   `json:"manager_employee_id,omitempty"`
-	ExpectedCatalogRevision *string   `json:"expected_catalog_revision,omitempty"`
-	ExpectedGraphRevision   *string   `json:"expected_graph_revision,omitempty"`
+	Profile                 Profile               `json:"profile"`
+	Lifecycle               Lifecycle             `json:"lifecycle"`
+	StaffCode               *string               `json:"staff_code,omitempty"`
+	Employment              *InitialEmployment    `json:"employment,omitempty"`
+	Education               *InitialEducation     `json:"education,omitempty"`
+	JobAssignment           *InitialJobAssignment `json:"job_assignment,omitempty"`
+	ManagerEmployeeID       *string               `json:"manager_employee_id,omitempty"`
+	ExpectedCatalogRevision *string               `json:"expected_catalog_revision,omitempty"`
+	ExpectedGraphRevision   *string               `json:"expected_graph_revision,omitempty"`
 }
 type UpdateCommand struct {
 	ExpectedRevision string  `json:"expected_profile_revision"`
