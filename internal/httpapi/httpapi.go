@@ -382,7 +382,11 @@ func sessionCookie(r *http.Request) ([]byte, error) {
 	return raw, nil
 }
 func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
-	data, e := io.ReadAll(http.MaxBytesReader(w, r.Body, 256<<10))
+	return strictBodyLimit(w, r, out, 256<<10)
+}
+
+func strictBodyLimit(w http.ResponseWriter, r *http.Request, out any, maximum int64) error {
+	data, e := io.ReadAll(http.MaxBytesReader(w, r.Body, maximum))
 	if e != nil {
 		var limit *http.MaxBytesError
 		if errors.As(e, &limit) {
@@ -403,6 +407,8 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 	case *organization.CatalogChangeCommand:
 		root = "catalog_command"
 	case *organization.WorkforceChangeCommand:
+		root = "workforce_command"
+	case *organization.PersonnelImportReviewCommand:
 		root = "workforce_command"
 	case *organization.DirectoryQuery:
 		root = "directory_query"

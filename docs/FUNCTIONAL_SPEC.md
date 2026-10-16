@@ -21,7 +21,7 @@ flowchart TB
     bonus["F-BONUS-001 奖金；R5固定代码C已验<br/>目标、奖励/独立审批、支付与冲销<br/>匹配余额/异常、有限敏感扩展"]
     ai["F-AI-001 面谈跟进；R6b受控机制已实装<br/>确定规则、批准最小输入、持久任务<br/>受限worker、加密草稿与人审发布"]
     sec["F-SEC-001 安全横切<br/>OIDC/local、standalone/Staff关联账号、scope/grant/purpose、审计read<br/>Staff本人＋当前一层直属默认最小权；本地root/keyd、首次改密、TOTP＋恢复码<br/>用途分离KEK/MAC/backup；pepper无generic rotation"]
-    db["F-DB-001 数据横切；当前schema v17<br/>SQLite 或 PostgreSQL互斥部署；v12–v16可前向升级<br/>共同事务/版本/receipt/lease<br/>一致snapshot、认证加密包与隔离恢复"]
+    db["F-DB-001 数据横切；当前schema v18<br/>SQLite 或 PostgreSQL互斥部署；v12–v17可前向升级<br/>共同事务/版本/receipt/lease<br/>一致snapshot、认证加密包与隔离恢复"]
     org -->|"同org的employee_id、可见结构事实"| interview
     org -->|"同org的employee_id；关系不授财务权"| comp
     org -->|"同org的employee_id；关系不授财务权"| bonus
@@ -65,7 +65,7 @@ flowchart TB
     keyfiles[("独立持久key volume<br/>RAW32 root＋认证keyring＋持久lock<br/>不进入DB或DB backup")]
     offline["两份分离AES-256-GCM可移动介质<br/>同export完整inventory；pair只读verify<br/>DEV-021已实装；非完整灾备"]
     tx["短业务事务<br/>重验当前授权/版本、guard/CAS<br/>原子写policy/window/receipt/审计"]
-    store[("F-DB-001 单一持久后端<br/>SQLite 或 PostgreSQL；当前schema v17<br/>业务事实、账号/MFA、staff_default.v1、audit event/outbox<br/>及receiver ledger")]
+    store[("F-DB-001 单一持久后端<br/>SQLite 或 PostgreSQL；当前schema v18<br/>业务事实、账号/MFA、staff_default.v1、org级学历目录、audit event/outbox<br/>及receiver ledger")]
     staffDefault["Staff关联动态默认scope<br/>当前本人＋administrative一层直属<br/>员工metadata/PII、面谈metadata＋创建"]
     receipt["已提交事实与安全回执<br/>不确定结果只确认原命令"]
     query["授权人员的查询<br/>as_of业务投影；历史UTC录入窗口"]
@@ -207,7 +207,7 @@ flowchart TB
 
 ### 0.5 组织与历史：三种时间、当前scope和PII释放
 
-下图以当前v17为准。`as_of`只投影业务有效期；历史`from/to`只筛UTC `recorded_at`；授权始终使用服务端捕获的集团IANA当前业务日。v12是通知时登记的首个部署baseline；v13加入业务化调薪批次，v14加入本地MFA，v15加入用户管理/首次改密，v16为local bootstrap管理员补齐38项当前可委派authority，v17加入Staff关联账号默认最小scope。v1-v11仍不受支持；不得以清库代替升级。
+下图以当前v18为准。`as_of`只投影业务有效期；历史`from/to`只筛UTC `recorded_at`；授权始终使用服务端捕获的集团IANA当前业务日。v12是通知时登记的首个部署baseline；v13加入业务化调薪批次，v14加入本地MFA，v15加入用户管理/首次改密，v16为local bootstrap管理员补齐38项当前可委派authority，v17加入Staff关联账号默认最小scope，v18把学历改为org级受控目录并交付人员XLSX安全类型兼容及可编辑重校验。v1-v11仍不受支持；不得以清库代替升级。
 
 ```mermaid
 flowchart TB
@@ -285,13 +285,13 @@ flowchart TB
 
 | feature ID | 当前完整功能 | 设计状态 | 当前工作实现/检查（非全产品发布） | 最近发布 / 工作revision |
 | --- | --- | --- | --- | --- |
-| F-ORG-001 | 固定Business Group→Division→Department、全集团唯一员工工号/双语资料、雇佣/教育/单一岗位/直属主管(HOD)有效期历史 | DES-003/004完整并获批准 | DEV-015已实装OP-ORG-01/04..10、P-ORG-01/02/03与AC-ORG-01..11；DEV-017已实装department/job_assignment canonical授权 | 员工主数据固定C [`55466fe`](https://github.com/r404r/team-ledger-pub/commit/55466fe6f74d3c0dd56c42f0f2e72c427fb0c40e)，授权切换代码和测试在本仓库 |
+| F-ORG-001 | 固定Business Group→Division→Department、全集团唯一员工工号/双语资料、雇佣/org级受控教育目录/单一岗位/直属主管(HOD)有效期历史 | DES-003/004完整并获批准；DEV-046已交付 | OP-ORG-01/04..10、P-ORG-01/02/03、canonical授权、18列XLSX类型兼容、可编辑重校验及显式学历追加已实装 | 当前源码、v12/v18迁移、永久测试及页面smoke |
 | F-INT-001 | 面谈版本、共享/经理私有/HR保密分区、行动项、历史权限与交接 | DES-001/002；DEV-008已交付 | 8 INT OP、P-INT-01、6 AC、typed对象、独立source批准、人工最小化和有限导出已实装 | 当前源码、v6迁移和永久测试 |
 | F-COMP-001 | 个人薪资条款/纠错、salary range、年度normal/special业务批次录入/预览/显式提交/原子激活及历史 | DES-003/005/006；DEV-034已交付 | 个人5 OP保持；业务header、默认3行、Staff Code解析、手工/XLSX同构candidate、参考预算、工资差异确认、历史纠正及整批activation已实装 | 当前源码、v13迁移、永久测试及真实页面smoke |
 | F-BONUS-001 | 奖金目标、批准奖励、支付记录与敏感扩展 | DES-001/002；业务口径须显式批准 | 8 OP、P-BONUS-01、目标/奖励/批准、支付/冲销/异常、有限扩展、签名游标及受控HMAC维护已实装 | 固定代码C [`1c769d0`](https://github.com/r404r/team-ledger-pub/commit/1c769d0d5781eaf6cc797c46ab4ffc11d3940c95) |
 | F-AI-001 | 定期面谈状态、依据草稿、人审发布、过期/失败处理 | DES-001/002；真实外传政策待批准 | 确定规则、人工proposed→独立approve、standing policy、稳定调度、持久queue/lease/fence/receipt、受限worker、加密draft及人审发布已实装；真实provider质量/外传未验 | 当前源码、v9/v10迁移和永久测试 |
-| F-SEC-001 | 敏感内容库内密文、特殊权限、账号管理、授权先于解密、密钥/审计/恢复 | DES-001/002/007/008；机制已交付 | 本地root/keyring、local密码＋首次改密＋TOTP/OIDC身份、standalone/Staff关联账号、`identity.manage`用户管理、动态本人/一层直属员工与面谈最小默认权、bootstrap管理员固定三项安全direct grant与38项当前可委派authority、同库独立receiver、双介质离线副本已实装；不防host root | 当前源码、v17迁移、README runbook和永久测试 |
-| F-DB-001 | SQLite/PostgreSQL共同业务语义、对应迁移、冲突及原子性 | DES-001/002；v16→v17前向迁移已实装 | 审计/outbox/export/rewrap/restore事实、SQLite一致snapshot、PG exported snapshot/custom dump、keyd backup、本地账号、MFA domain、bootstrap authority及Staff关联政策已实装 | 当前源码与永久测试；PostgreSQL v17 migration在PG17实跑状态见DEV-043验证，容量/PITR/RPO/RTO另行批准 |
+| F-SEC-001 | 敏感内容库内密文、特殊权限、账号管理、授权先于解密、密钥/审计/恢复 | DES-001/002/007/008；机制已交付 | 本地root/keyring、local密码＋首次改密＋TOTP/OIDC身份、standalone/Staff关联账号、`identity.manage`用户管理、动态本人/一层直属员工与面谈最小默认权、bootstrap管理员固定三项安全direct grant与38项当前可委派authority、同库独立receiver、双介质离线副本已实装；不防host root | 当前源码、v17/v18迁移、README runbook和永久测试 |
+| F-DB-001 | SQLite/PostgreSQL共同业务语义、对应迁移、冲突及原子性 | DES-001/002；v17→v18前向迁移已实装 | 既有业务、教育记录、审计/outbox、账号/MFA、authority及Staff政策保留；v18只把学历目录按org隔离并拓展结构变更类型 | 当前源码与永久测试；PostgreSQL v18实跑状态以DEV-046验证为准，容量/PITR/RPO/RTO另行批准 |
 
 “已接受”需要实际决策记录；“已实现/已验证”须由本仓库源码、迁移、永久测试及实际运行证据支持；“生产发布”还需要真实部署与责任人批准。历史Task ID和commit只说明演进阶段，不替代当前行为检查。
 
@@ -377,14 +377,19 @@ DEV-028 T3将创建人员收敛为一次原子业务动作：创建页必填全�
 DEV-032在P-ORG-03人员资料创建页增加可折叠批量入口及安全XLSX解析/逐行恢复机制；DEV-033在不增加第二套employee字段的前提下，把同一入口升级为完整员工主数据创建。唯一`Employees`工作表固定18个双语表头，覆盖Staff Code、中英文姓名、Location、Branch Code、BG/Division/Department Code、学历、入职/退职日、职位、Job Family/Career Level Code、HOD Staff Code及可选联系/摘要；明确不包含薪资。选择合法XLSX后页面立即显示文件名并调用preview，不要求再点击第二个按钮；失败时保留明确的“重新校验”，preview成功且错误为零后仍须人工确认才创建。Excel明确标记的numeric/date/boolean/error cell会进入逐格`text_required`错误而不再使整份工作簿落入无细节失败；结构拒绝和逐行错误均显示`Employees!单元格`，结构拒绝同时显示request ID，服务端只记录request ID、固定错误码和安全sheet/cell，不记录单元格内容或公式。preview按每行入职日把受控code解析为ID并验证固定三层父链，返回冻结catalog/graph revision；确认后每行OP-ORG-05原子创建profile、lifecycle、identifier、employment、education及job assignment，所有两端均确认的直属主管关系最后以一次OP-ORG-10写入。文件安全边界、≤100行、逐行状态、原key/body结果确认和不自动认领重复Staff Code的规则保持不变。
 
 DEV-045修复“服务端已解析出rows，但页面显示服务暂时不可用”的客户端契约错误：当全部行在目录解析前已发现字段错误时，preview允许暂不返回catalog/graph revision；页面必须保留并显示`Employees!单元格`、字段和固定原因，错误清零后的下一次preview才要求两个正revision并允许创建。入职日和退职日仍只接受文本，不转换Excel date serial；导入边界接受四位年份的`YYYY-M-D`、`YYYY/M/D`、`YYYY.M.D`、`YYYY年M月D日`以及固定按月/日/年解释的`M/D/YYYY`、`M-D-YYYY`、`M.D.YYYY`，进入业务校验前统一为`YYYY-MM-DD`。不存在日期固定报实际J/O列，退职日不晚于入职日固定报O列；服务日志仅含request ID、sheet/cell/row/field/code。
+DEV-046取消人员导入“所有单元格必须是文本”的不必要限制。XLSX parser保留Text/Number/OOXML Date/Boolean/Error类型及工作簿1900/1904日期系统：Staff Code数字整数按原始十进制转文本并警告，Excel整数日期或OOXML零时刻日期转ISO并警告；小数/科学记数Staff Code、1900虚构2月29日、fraction日期、布尔/错误值保持原raw并阻断，公式/宏/外部关系仍整份拒绝。Location大小写及唯一目录label可规范为受控值并警告，重名不猜测。preview分开返回`errors`与`warnings`，18字段可直接编辑；任一编辑使创建失效，只有`POST .../import-review`重新执行完整服务端校验后才能创建。v18把固定全局学历三值迁移为org级受控目录，保留每个组织的Master/Bachelor/Diploma；未知学历保留并允许操作者明确填写rank后经OP-ORG-09追加，preview绝不自动建目录。
 
 ```mermaid
 flowchart LR
     operator["组织/人员维护者"]
     template["下载空白XLSX模板<br/>固定18个双语字段；无租户数据"]
-    workbook["本地填写≤100人<br/>身份＋雇佣＋三层组织code<br/>学历＋任职＋HOD；不含薪资"]
-    preview["选择文件即显示文件名并自动preview<br/>文本日期先规范为YYYY-MM-DD<br/>错误显示Employees!单元格；不写数据库"]
-    confirm{"错误为0且明确确认？"}
+    workbook["本地填写≤100人<br/>Text/Number/Date安全读取<br/>身份＋雇佣＋组织＋学历＋HOD"]
+    preview["选择文件即自动preview<br/>安全转换进入warnings<br/>阻断项定位Employees!单元格；零写入"]
+    edit["18字段可编辑<br/>修改立即使原校验失效"]
+    education{"出现未知学历？"}
+    append["明确名称＋rank<br/>OP-ORG-09追加org目录<br/>推进catalog revision并审计"]
+    review["POST import-review<br/>字段/重复工号/日期/主管环<br/>目录/父链/revision完整重验"]
+    confirm{"errors=0、revision齐全<br/>且明确确认？"}
     create["逐行OP-ORG-05原子创建<br/>profile＋lifecycle＋identifier<br/>employment＋education＋assignment"]
     createResult{"单行提交结果"}
     createPause["暂停批次<br/>保留原key/body并明确重放"]
@@ -396,8 +401,11 @@ flowchart LR
     complete["逐行完成结果"]
     directory["后续由用户进入<br/>员工目录/人员详情查询"]
 
-    operator --> template --> workbook --> preview --> confirm
-    confirm -->|"否：修正后重传"| workbook
+    operator --> template --> workbook --> preview --> education
+    education -->|"是；明确追加"| append --> review
+    education -->|"否或改为既有值"| edit --> review
+    review --> confirm
+    confirm -->|"否：继续编辑"| edit
     confirm -->|"是"| create --> createResult
     createResult -->|"结果不确定"| createPause --> create
     createResult -->|"明确失败：仅该行"| complete
@@ -416,7 +424,7 @@ flowchart LR
 | --- | --- | --- |
 | P-ORG-01 / F-ORG-001 | v12“组织树”：BG/Division/Department、employee安全ID、边/生命周期、as_of与graph revision；label另需PII，不返employee profile | root department/depth≤3/上限后重载；目录变更用OP-ORG-09，employee assignment/reporting用OP-ORG-10；不建team或自动grant |
 | P-ORG-02 / F-ORG-001 | v12“员工目录”：No.、Staff Code、中英文姓名、Location、Branch、BG、Division、Department、Latest Education、Date of Employment、Position、Job Family、Career Level、HOD；获PII权才含受保护正文 | department/lifecycle/as_of及body q有界过滤；结果保持服务端cursor分页，宽表仅在自身容器横向滚动；薪资不进入组织目录 |
-| P-ORG-03 / F-ORG-001及员工相关feature | 详情按目录同一字段顺序投影，内部ID/revision收进折叠数据状态；创建页以入职日读取目录并一次提交完整初始员工主数据 | 单人或18列XLSX批量均复用OP-ORG-05创建profile/lifecycle/Staff Code/employment/education/job assignment；批量主管关系复用OP-ORG-10并逐行显示部分结果；profile更正用OP-ORG-08，后续组合主数据用OP-ORG-10；薪酬/面谈/奖金/AI各自授权/分页，不互相转授 |
+| P-ORG-03 / F-ORG-001及员工相关feature | 详情按目录同一字段顺序投影，内部ID/revision收进折叠数据状态；创建页以入职日读取目录并一次提交完整初始员工主数据 | 单人或18列XLSX批量均复用OP-ORG-05；XLSX安全兼容数字工号/Excel日期并逐格警告，18字段可编辑但必须经服务端`import-review`重验；未知学历只能明确追加org目录；批量主管关系复用OP-ORG-10并逐行显示结果；薪酬/面谈/奖金/AI各自授权/分页，不互相转授 |
 | P-INT-01 / F-INT-001 | 当前主导航`/interviews`员工ID选择、员工面谈列表/安排页、`/interviews/:id`详情；metadata及分区/授权版本/行动各自独立 | 8 INT OP已实装；列表/详情自己的有限操作提示不依赖目录read。状态/补录、显式supersedes/理由更正、独立source批准与人工发布、额外授权NDJSON、原key/body结果确认；清理/冲突/partial明确呈现 |
 | P-COMP-01 / F-COMP-001 | `/employees/:employee_id/compensation`提供个人as_of/from/to四栏；`/orgs/:org_id/compensation-adjustments`提供批次列表、业务header及逐人录入工作台 | 个人5 OP/完整纠错保持；批次页从有效目录选择法分公司，默认3空行，以Staff Code回填员工/当前工资，支持增删、Normal/Special专属字段、手工或XLSX同构预览、工资不一致逐人确认、参考预算/混币摘要、冻结草稿和显式整批生效。Salary Range及已激活批次更正收进折叠高级区；页面级无横向溢出，宽表只在自身容器滚动 |
 | P-BONUS-01 / F-BONUS-001 | DEV-010固定代码路由`/employees/:employee_id/bonuses`；目标、奖励、支付/冲销、余额/异常、扩展分离（F，OP-BONUS-01），日期/状态（M） | 目标 OP-BONUS-02/07、奖励 OP-BONUS-03/04/05、支付 OP-BONUS-06、有限扩展 OP-BONUS-08；能力分别检查，命令前重验会话并按bonus/comp revision CAS，不放一个“财务编辑”总开关 |
@@ -554,7 +562,7 @@ P-ORG-03资料页标`as_of`与当前授权判断日；profile是当前获准版�
 
 ### 权限与验收
 
-以下为F-ORG-001唯一验收登记；场景以v12引入的员工模型和当前v17 schema执行。员工主数据、canonical授权及Staff关联默认最小读取已实装，但不外推生产启用。
+以下为F-ORG-001唯一验收登记；场景以v12引入的员工模型和当前v18 schema执行。员工主数据、canonical授权、Staff关联默认最小读取及人员导入可编辑校验台已实装，但不外推生产启用。
 
 | 验收 ID | 页面 / 操作 | 合成输入、动作与可观察结果 | 当前覆盖 / 未决 |
 | --- | --- | --- | --- |
@@ -567,9 +575,10 @@ P-ORG-03资料页标`as_of`与当前授权判断日；profile是当前获准版�
 | AC-ORG-07 | P-ORG-03；OP-ORG-05/06/08 | 创建双语profile、Staff Code及可选直属主管后重读权威详情；再以profile revision完整更正，追加加密历史/审计。创建任一identifier/manager失败零部分员工；同旧更正版本最多一成功，越权/未知字段拒绝；创建非upsert | DEV-015 profile v2密文/API；DEV-028原子创建SQLite API/UI已验，PostgreSQL待真实DSN |
 | AC-ORG-08 | P-ORG-02/03；OP-ORG-05/06/07/10 | 原子创建本地姓名“合成员工甲”＋英文名“Example A”及文本工号`\"0007\"`；两姓名和工号独立往返。该员工换为`\"0008\"`后rehire可重新启用本人旧`\"0007\"`，但另一employee在任何日期取得`\"0007\"`均整组拒绝；姓名不参与身份匹配，缺PII权不显示/解析工号 | DEV-015候选双库/API/UI及PII拒绝；DEV-028创建组合SQLite回归已验，PostgreSQL待真实DSN |
 | AC-ORG-09 | P-ORG-03；OP-ORG-06/07/09/10 | employee先hire到`法分公司`/Shanghai，结束后rehire到`法分公司`/Tokyo；指定日期投影唯一并保留全部spell。Wuxi可选，未知Location或非`法分公司`Branch拒绝；first/current employment dates分别可解释 | DEV-015候选双库/API/UI已验 |
-| AC-ORG-10 | P-ORG-01/02/03；OP-ORG-01/04/07/09/10 | SQLite新文件和PG空schema分别安装至当前v17，合成建立BG→Division→Department并写一个canonical assignment；schema/API不存在team第四层、team scope/ref、OP-ORG-02/03 writer。以v11 DB启动须明确`SCHEMA_VERSION_UNSUPPORTED`且零写入；合法v12–v16按冻结顺序升级至v17并保留员工数据，v17不从既有`subject_employee`自动补Staff政策 | DEV-015员工模型；v13–v17 SQLite migration实跑；PostgreSQL v17实跑状态见DEV-043验证 |
-| AC-ORG-11 | P-ORG-03；OP-ORG-06/07/09/10 | 先记录Bachelor，再记录日期更早的Master和日期更晚的Diploma，Highest Education为Master；未知level拒绝。Direct Manager与HOD读出同一administrative reporting fact且不授financial；独立HOD kind或不同人员拒绝。新assignment含canonical position payload，department不一致/secondary/并发旧revision整组拒绝 | DEV-015候选双库/API/UI已验 |
+| AC-ORG-10 | P-ORG-01/02/03；OP-ORG-01/04/07/09/10 | SQLite新文件和PG空schema分别安装至当前v18；v1-v11拒绝；合法v12–v17按冻结顺序升级至v18并保留业务。v17不推断Staff政策；v18把既有三档学历复制到每个org、保留education记录并为新org初始化默认三档 | v13–v18 SQLite migration实跑；PostgreSQL v18实跑状态见DEV-046验证 |
+| AC-ORG-11 | P-ORG-03；OP-ORG-06/07/09/10 | 先记录Bachelor，再记录日期更早的Master和日期更晚的Diploma，Highest Education按当前org目录rank仍为Master；未登记level拒绝，明确追加新level后可使用。Direct Manager与HOD读出同一administrative reporting fact且不授financial；独立HOD kind或不同人员拒绝 | 双库/API/UI永久测试覆盖 |
 | AC-ORG-12 | P-ORG-03；OP-ORG-07/09/10、OP-SEC-02/03/06 | 单个OP-ORG-10命令结束旧employment/assignment/reporting并新增合法后继，facts/projection/revisions/epochs/receipt/audit同Tx；任一目录、Staff Code owner、manager endpoint、单一任职或授权失败时SQLite/PG零部分事实。新grant只接受org/department/employee scope与reporting_line/job_assignment ref，team/team_membership类型一律拒绝；assignment结束后successor/rehire不复活绑定grant | 双库/API/UI永久测试覆盖组合写、旧team输入拒绝、department scope、job_assignment relation-bound、业务日coverage、DB kind/owner约束及end/replace不复活 |
+| AC-ORG-13 | P-ORG-03；OP-ORG-05/09 | XLSX数字整数Staff Code、1900/1904 Excel整数日期、OOXML date及受控label安全规范并逐格warning；公式、虚构1900-02-29、fraction日期、decimal/scientific工号、歧义label保持拒绝。全部18字段可编辑，dirty时创建禁用，服务端重验后才放行；未知学历不自动创建，只能明确rank追加当前org目录 | DEV-046 parser/API/migration/Vue永久测试及真实页面smoke |
 
 ## 3. F-INT-001 · 面谈、分区笔记、行动项与历史交接
 **R3当前边界**：面谈、分区笔记、行动项与历史交接已实装；AI消费者由F-AI-001的受限worker和人审机制处理，真实provider质量与外传仍未批准。当前契约和验收以本节、源码与永久测试为准。
@@ -1114,7 +1123,7 @@ F-SEC-001唯一验收登记：本地root/keyring、包装生命周期、Docker�
 
 输入为部署选择、版本/迁移、与其他feature相同命令和查询；输出为相同业务对象/状态/错误类别及迁移核对结果。备份和运维各按后端实际机制，不要求两种数据库底层锁/SQL完全相同。
 
-**当前兼容政策**：现行程序只接受当前v17 exact checksum，或接受登记的exact v12–v16并按冻结顺序执行SQLite/PostgreSQL前向migration；空库顺序安装到v17。v15→v16保留全部业务、密文、审计/outbox、账号/MFA、session和既有authority，只为local bootstrap主体补齐36项org authority，最终精确38项；v16→v17只新增空的immutable Staff关联政策表，不从既有账号或`subject_employee`推断默认权。v1-v11、未知版本、checksum drift、只读preflight失败或未完成备份恢复验证时保持阻塞，绝不自动清空。
+**当前兼容政策**：现行程序只接受当前v18 exact checksum，或接受登记的exact v12–v17并按冻结顺序执行SQLite/PostgreSQL前向migration；空库顺序安装到v18。v15→v16补齐bootstrap authority，v16→v17新增空Staff关联政策，v17→v18把固定学历目录按既有org复制、重建education复合外键并保留全部记录；不清库、不推断账号政策。v1-v11、未知版本、checksum drift、只读preflight失败或未完成备份恢复验证时保持阻塞。
 
 **R2当前数据库状态**：双方言只新增v5迁移、v1-v4 bytes/checksum不改。真实有数据v4→v5两库核对17旧表67原行所有旧列精确一致，原profile/KMS解密和原receipt确认保持；v5追加team/关系/lifecycle/结构change与密文载荷、typed scope/任期grant、不可改绑subject_employee、结构receipt及target_employee审计。全窗口拟图校验＋per-owner当前权＋graph CAS、epoch、事实/receipt/audit同短Tx；SQL目录当前scope在LIMIT前、窄GraphState查询。两库重启后未来事实/录入历史/撤权保持；九个原敏感marker及最终三个姓名/title/code markers在各29原生表无明文/hex镜像，SQLite physical DB/WAL亦未见、API log为空。以上是DEV-007受控观察，两轮审查闭环且固定代码C已push，不代全产品换库、备份恢复、生产批准或容量证明。
 
@@ -1144,16 +1153,16 @@ P-ORG-01 的图冲突、P-INT-01 的 head 冲突、P-COMP-01 的 basis 冲突、
 
 ### 权限与验收
 
-以下为F-DB-001唯一验收登记；全产品仍需两后端分别运行。R2-R7可达机制、v12员工主数据、v13业务化normal/special调薪批次、v14本地MFA及v15本地用户管理迁移均已实装；v14→v15 SQLite真实持久库升级和PostgreSQL 17 migration均已实跑。这不等于真实生产设施、介质责任、容量或恢复目标已批准。每项覆盖状态以§1.1、当前迁移、源码与永久测试为准。
+以下为F-DB-001唯一验收登记；全产品仍需两后端分别运行。R2-R7及v12–v18迁移均已实装；v18新增org级学历目录和人员导入兼容层。这不等于真实生产设施、介质责任、容量或恢复目标已批准。每项覆盖状态以§1.1、当前迁移、源码与永久测试为准。
 
 | 验收 ID | 页面 / 操作 | 合成输入、动作与可观察结果 |
 | --- | --- | --- |
-| AC-DB-01 | 全部业务页；全部适用OP | 同一v17合成fixture在SQLite新文件和PG空schema分别得到相同正常/拒绝/权限/历史结果；缺一后端不得skip/fallback算通过 |
+| AC-DB-01 | 全部业务页；全部适用OP | 同一v18合成fixture在SQLite新文件和PG空schema分别得到相同正常/拒绝/权限/历史结果；缺一后端不得skip/fallback算通过 |
 | AC-DB-02 | P-ORG-01/P-COMP-01/P-SEC-01；OP-ORG-09/10、OP-COMP-05、OP-SEC-03 | 原子变更注入取消/失败，两库均无半对象/条款/grant/audit；UI不显示成功 |
 | AC-DB-03 | P-ORG-01/P-INT-01/P-COMP-01；OP-ORG-09/10、OP-INT-05、OP-COMP-05 | 两真实连接争同旧revision/相冲突关系/薪资基准，过时请求拒绝且成功事实不覆盖 |
 | AC-DB-04 | P-COMP-01/P-BONUS-01/P-ORG-01；OP-COMP-01、OP-BONUS-01、OP-ORG-01 | `9007199254740993`金额、精确费率、相邻区间及未来生效在两库一致 |
 | AC-DB-05 | P-ORG-03/P-INT-01；OP-ORG-09/10、OP-INT-06 | 跨org/FK、自环/中间窗口环、无效区间及错误AAD/tag均真实拒绝，不以源码关键词代替 |
-| AC-DB-06 | 所有业务页；v17 startup/readiness | v1-v11/未知目标两端只读preflight后`SCHEMA_VERSION_UNSUPPORTED`且文件/catalog/sidecar零变化；不存在SQLite path或空PG目标可安装至v17；合法v12–v16按冻结顺序升v17并保留业务、MFA、审计、outbox、authority及账号映射；v15不强迫既有账号改密，v16只补齐bootstrap管理员38项authority，v17不推断Staff政策；合法v17可正常重启 |
+| AC-DB-06 | 所有业务页；v18 startup/readiness | v1-v11/未知目标只读拒绝且零变化；空目标安装至v18；合法v12–v17顺序升v18并保留业务、education记录、MFA、审计、outbox、authority及账号映射；v17不推断Staff政策，v18按org迁移学历目录；合法v18可正常重启 |
 | AC-DB-07 | 所有业务页；受影响读写OP | 写锁忙、断连、baseline安装中断、备份恢复绑定代码/schema：无半写、未验证目标不接流量；双库smoke不替代完整验收 |
 
 ## 9. 全量验收、文档与证据协作
@@ -1171,7 +1180,7 @@ P-ORG-01 的图冲突、P-INT-01 的 head 冲突、P-COMP-01 的 basis 冲突、
 | 既有顺序 / feature | 最窄可交付纵向行为与页面/OP | 退出证据（当前覆盖见§1.1，未来部分仍须提供） |
 | --- | --- | --- |
 | 1 / F-SEC-001＋F-DB-001，复用最小 F-ORG-001 对象 | 一名获准者在 P-SEC-01 用 OP-SEC-06 查询委派范围、OP-SEC-02 明确授权，在 P-ORG-02/03 用 OP-ORG-05/06 持久化/重载最小加密资料；另一身份拒绝。不是全量人员模块 | 同一行为真实RED/GREEN；先授权/错上下文/keyd不可用/超委派列表拒绝；真实SQLite文件与PG契约/迁移；最小Vue行为＋真实程序/页面smoke，无明文marker。本地keyd、实际IdP/独立审计生产验收仍需第7项，前期机制不冒充通过 |
-| 2 / F-ORG-001 | 以当前v17空库实现固定BG→Division→Department，再做全集团Staff Code、法分公司/三地点、employment、三档education、单一job assignment与直属主管/HOD同事实；OP-ORG-01/04..10，OP-ORG-02/03移除 | v1-v11启动明确拒绝且不升级/merge；合法v12–v16按冻结顺序前向迁移至v17并精确保留员工数据且不推断Staff政策；两库空安装、固定目录/最高学历/双语姓名、换号/同employee rehire复用、跨employee永不复用、HOD同事实、无team字段、PII/metadata授权先行、Staff Code/HOD/详情/批量XLSX真实UI |
+| 2 / F-ORG-001 | 以当前v18空库实现固定BG→Division→Department，再做全集团Staff Code、法分公司/三地点、employment、org级education目录、单一job assignment与直属主管/HOD同事实；OP-ORG-01/04..10 | v1-v11拒绝；合法v12–v17前向迁移至v18并保留员工/education数据；两库空安装、目录rank/最高学历、数字工号与Excel日期兼容、18字段编辑重校验、显式学历追加、双语姓名、rehire/HOD及批量XLSX真实UI |
 | 3 / F-INT-001 | 先P-INT-01一份shared新版本保存/重载，再三分区、行动与限定交接；OP-INT-02/05/04/06/07/08、OP-SEC-02/03 | 旧版冲突、分区直达拒绝、完成仍逾期、旧经理撤权/在途响应不复活；真实API＋双库＋Vue交互/交接E2E，不能只测隐藏按钮 |
 | 4 / F-COMP-001 | 个人initial/adjustment/correction保持；DEV-034已实现业务header、默认3行、Staff Code回填、手工/XLSX preview、参考预算、工资差异确认/历史纠正及整批activation；OP-COMP-01..11 | Text exact解析、混币increase分组和同币种预算参考、全批授权、固定service冲突零部分写、工资差异先纠正后调薪且旧史保留、range重叠拒绝；Compa Ratio不计算/不返回；双库API及真实页面 |
 | 5 / F-BONUS-001 | 先P-BONUS-01目标→award批准→一真实payment，再异常/冲销/幂等与有限扩展；OP-BONUS-01至OP-BONUS-08 | 目标/批准/支付分离，部分支付/超额/异币种/未匹配不藏事实，同键冲突、冲销边界，扩展allowlist；API双库＋Vue精确往返/失败反馈 |

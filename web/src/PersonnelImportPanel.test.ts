@@ -23,6 +23,9 @@ const workforce = {
 function json(status: number, body: unknown) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 }
+function previewBody(body: Record<string, unknown>) {
+  return { warnings: [], education_levels: [{ code: 'Master', rank: 3 }, { code: 'Bachelor', rank: 2 }, { code: 'Diploma', rank: 1 }], ...body }
+}
 function workbookFile() {
   return new File(['synthetic workbook'], 'people.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
 }
@@ -45,9 +48,9 @@ describe('personnel batch import panel', () => {
     vi.stubGlobal('fetch', async (input: RequestInfo | URL, init: RequestInit = {}) => {
       const path = new URL(String(input), location.href).pathname
       requests.push({ path, method: init.method ?? 'GET', headers: new Headers(init.headers), body: init.body })
-      if (path.endsWith('/import-preview')) return json(200, { row_count: 1, catalog_revision: '4', graph_revision: '9', errors: [], rows: [
+      if (path.endsWith('/import-preview')) return json(200, previewBody({ row_count: 1, catalog_revision: '4', graph_revision: '9', errors: [], rows: [
         { ...workforce, row_number: 2, staff_code: 'AUTO-001', local_name: '自动预览员工', hire_date: AS_OF, departure_date: null },
-      ] })
+      ] }))
       throw new Error(`unexpected request ${path}`)
     })
     const page = mount(PersonnelImportPanel, { props: { session: SESSION, asOf: AS_OF } })
@@ -62,8 +65,8 @@ describe('personnel batch import panel', () => {
     expect(requests[0]!.headers.get('Content-Type')).toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     expect(requests[0]!.body).toBeInstanceOf(File)
     expect(page.text()).toContain('people.xlsx 已校验 1 行')
-    expect(page.text()).toContain('自动预览员工')
-    expect(page.findAll('button').find(button => button.text() === '重新校验')).toBeDefined()
+    expect((page.findAll('.edit-input')[1]!.element as HTMLInputElement).value).toBe('自动预览员工')
+    expect(page.findAll('button').find(button => button.text() === '从文件重新校验')).toBeDefined()
     page.unmount()
   })
 
@@ -75,11 +78,11 @@ describe('personnel batch import panel', () => {
         code: 'INVALID_INPUT', request_id: ORG,
         workbook_error: { sheet: 'Employees', cell: 'A1', code: 'header_mismatch' },
       })
-      return json(200, {
+      return json(200, previewBody({
         row_count: 1,
         errors: [{ row_number: 2, sheet: 'Employees', cell: 'J2', field: 'hire_date', code: 'invalid_date' }],
         rows: [{ ...workforce, row_number: 2, staff_code: 'AUTO-001', local_name: '自动预览员工', hire_date: '31/12/2026', departure_date: null }],
-      })
+      }))
     })
     const page = mount(PersonnelImportPanel, { props: { session: SESSION, asOf: AS_OF } })
     await selectAndPreview(page)
@@ -89,8 +92,85 @@ describe('personnel batch import panel', () => {
     await page.findAll('button').find(button => button.text() === '校验并预览')!.trigger('click')
     await flushPromises()
     expect(page.text()).toContain('Employees!J2 · hire_date：日期格式无法识别')
-    expect(page.text()).toContain('请按工作表和单元格定位修正')
+    expect(page.text()).toContain('可直接编辑预览表')
     expect(page.text()).not.toContain('服务端暂时无法完成预览')
+    page.unmount()
+  })
+
+  it('keeps edited rows blocked until the server revalidates every editable field', async () => {
+    const requests: { path: string; body: unknown }[] = []
+    const invalidRow = { ...workforce, row_number: 2, staff_code: '7107', local_name: '可编辑员工', hire_date: '31/12/2026', departure_date: null }
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const path = new URL(String(input), location.href).pathname
+      const body = typeof init.body === 'string' ? JSON.parse(init.body) : init.body
+      requests.push({ path, body })
+      if (path.endsWith('/import-preview')) return json(200, previewBody({
+        row_count: 1, catalog_revision: '4', graph_revision: '9',
+        errors: [{ row_number: 2, sheet: 'Employees', cell: 'J2', field: 'hire_date', code: 'invalid_date' }],
+        warnings: [{ row_number: 2, sheet: 'Employees', cell: 'A2', field: 'staff_code', code: 'numeric_staff_code_coerced' }],
+        rows: [invalidRow],
+      }))
+      if (path.endsWith('/import-review')) return json(200, previewBody({
+        row_count: 1, catalog_revision: '4', graph_revision: '9', errors: [],
+        rows: [{ ...invalidRow, hire_date: AS_OF }],
+      }))
+      throw new Error(`unexpected request ${path}`)
+    })
+    const page = mount(PersonnelImportPanel, { props: { session: SESSION, asOf: AS_OF } })
+    await selectAndPreview(page)
+    expect(page.text()).toContain('数字 Staff Code 已按原始十进制整数转为文本')
+    const create = page.findAll('button').find(button => button.text().includes('确认并批量创建'))!
+    expect(create.attributes('disabled')).toBeDefined()
+    await page.findAll('.edit-input')[9]!.setValue(AS_OF)
+    expect(page.text()).toContain('编辑待校验')
+    expect(create.attributes('disabled')).toBeDefined()
+    await page.findAll('button').find(button => button.text() === '校验编辑内容')!.trigger('click')
+    await flushPromises()
+    const review = requests.find(request => request.path.endsWith('/import-review'))!
+    expect(review.body).toEqual({ rows: [{
+      row_number: 2, staff_code: '7107', local_name: '可编辑员工', english_name: '', location: 'Shanghai',
+      branch_code: 'BRANCH-A', business_group_code: 'BG-A', division_code: 'DIV-A', department_code: 'DEP-A',
+      education_level: 'Master', hire_date: AS_OF, position: '合成顾问', job_family_code: 'JF-A',
+      career_level_code: 'P1', manager_staff_code: '', departure_date: null, email: '', phone: '', profile_summary: '',
+    }] })
+    expect(page.text()).not.toContain('编辑待校验')
+    expect(page.findAll('button').find(button => button.text() === '确认并批量创建')!.attributes('disabled')).toBeUndefined()
+    page.unmount()
+  })
+
+  it('appends an unknown education level explicitly and then revalidates rows', async () => {
+    const requests: { path: string; body: unknown }[] = []
+    const row = { ...workforce, education_level: 'Doctor', row_number: 2, staff_code: 'EDU-001', local_name: '学历员工', hire_date: AS_OF, departure_date: null }
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const path = new URL(String(input), location.href).pathname
+      const body = typeof init.body === 'string' ? JSON.parse(init.body) : init.body
+      requests.push({ path, body })
+      if (path.endsWith('/import-preview')) return json(200, previewBody({
+        row_count: 1, catalog_revision: '4', graph_revision: '9',
+        errors: [{ row_number: 2, sheet: 'Employees', cell: 'I2', field: 'education_level', code: 'unknown_education_level' }],
+        rows: [row],
+      }))
+      if (path.endsWith('/workforce-catalog-changes')) return json(201, { catalog_revision: '5', graph_revision: '9' })
+      if (path.endsWith('/import-review')) return json(200, previewBody({
+        row_count: 1, catalog_revision: '5', graph_revision: '9', errors: [],
+        education_levels: [{ code: 'Doctor', rank: 4 }, { code: 'Master', rank: 3 }, { code: 'Bachelor', rank: 2 }, { code: 'Diploma', rank: 1 }],
+        rows: [row],
+      }))
+      throw new Error(`unexpected request ${path}`)
+    })
+    const page = mount(PersonnelImportPanel, { props: { session: SESSION, asOf: AS_OF } })
+    await selectAndPreview(page)
+    expect(page.text()).toContain('追加新学历目录')
+    await page.findAll('button').find(button => button.text() === '确认追加并重新校验')!.trigger('click')
+    await flushPromises()
+    const catalog = requests.find(request => request.path.endsWith('/workforce-catalog-changes'))!
+    expect(catalog.body).toEqual({
+      expected_catalog_revision: '4', expected_graph_revision: '9',
+      changes: [{ action: 'create', kind: 'education_level', code: 'Doctor', rank: 4 }],
+    })
+    expect(requests.some(request => request.path.endsWith('/import-review'))).toBe(true)
+    expect(page.text()).not.toContain('追加新学历目录')
+    expect(page.findAll('button').find(button => button.text() === '确认并批量创建')!.attributes('disabled')).toBeUndefined()
     page.unmount()
   })
 
@@ -112,10 +192,10 @@ describe('personnel batch import panel', () => {
       const method = init.method ?? 'GET'
       const body = typeof init.body === 'string' ? JSON.parse(init.body) : init.body
       requests.push({ path, method, headers: new Headers(init.headers), body })
-      if (path.endsWith('/import-preview')) return json(200, { row_count: 2, catalog_revision: '4', graph_revision: '9', errors: [], rows: [
+      if (path.endsWith('/import-preview')) return json(200, previewBody({ row_count: 2, catalog_revision: '4', graph_revision: '9', errors: [], rows: [
         { ...workforce, row_number: 2, staff_code: 'MGR-001', local_name: '合成主管', hire_date: AS_OF, departure_date: null },
         { ...workforce, row_number: 3, staff_code: 'EMP-001', local_name: '合成员工', english_name: 'Synthetic Employee', email: 'employee@example.test', phone: '+86 21 5555 0100', profile_summary: '跨团队交付', manager_staff_code: 'MGR-001', hire_date: AS_OF, departure_date: null },
-      ] })
+      ] }))
       if (path === '/api/v1/session') return json(200, { ...SESSION, auth_epoch: requests.some(request => request.path.endsWith('/workforce-changes')) ? '2' : '1' })
       if (path.endsWith('/workforce-catalogs')) return json(200, { catalog_revision: '4', graph_revision: '9' })
       if (path === `/api/v1/orgs/${ORG}/employees`) {
@@ -131,11 +211,12 @@ describe('personnel batch import panel', () => {
     const page = mount(PersonnelImportPanel, { props: { session: SESSION, asOf: AS_OF }, attachTo: document.body })
     await selectAndPreview(page)
     expect(page.text()).toContain('已校验 2 行')
-    expect(page.text()).toContain('合成员工')
-    expect(page.text()).toContain('Synthetic Employee')
-    expect(page.text()).toContain('employee@example.test')
-    expect(page.text()).toContain('+86 21 5555 0100')
-    expect(page.text()).toContain('跨团队交付')
+    const values = page.findAll('.edit-input').map(field => (field.element as HTMLInputElement).value)
+    expect(values).toContain('合成员工')
+    expect(values).toContain('Synthetic Employee')
+    expect(values).toContain('employee@example.test')
+    expect(values).toContain('+86 21 5555 0100')
+    expect(values).toContain('跨团队交付')
     await page.findAll('button').find(button => button.text() === '确认并批量创建')!.trigger('click')
     await flushPromises()
 
@@ -170,10 +251,10 @@ describe('personnel batch import panel', () => {
     let uncertainAttempt = 0
     vi.stubGlobal('fetch', async (input: RequestInfo | URL, init: RequestInit = {}) => {
       const path = new URL(String(input), location.href).pathname
-      if (path.endsWith('/import-preview')) return json(200, { row_count: 2, catalog_revision: '4', graph_revision: '9', errors: [], rows: [
+      if (path.endsWith('/import-preview')) return json(200, previewBody({ row_count: 2, catalog_revision: '4', graph_revision: '9', errors: [], rows: [
         { ...workforce, row_number: 2, staff_code: 'DUP-001', local_name: '合成冲突员工', hire_date: AS_OF, departure_date: null },
         { ...workforce, row_number: 3, staff_code: 'EMP-002', local_name: '合成重试员工', manager_staff_code: 'OLD-MGR', hire_date: AS_OF, departure_date: null },
-      ] })
+      ] }))
       if (path === '/api/v1/session') return json(200, SESSION)
       if (path.endsWith('/employees/query')) {
         const query = JSON.parse(String(init.body))

@@ -10,6 +10,61 @@ import (
 	"github.com/r404r/team-ledger/internal/fault"
 )
 
+func TestV18MigratesEducationCatalogPerOrganization(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(ctx, "sqlite", filepath.Join(t.TempDir(), "education-v17.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	tx, err := repo.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for version := 1; version <= 17; version++ {
+		ddl, checksum, loadErr := repo.migration(version)
+		if loadErr != nil {
+			t.Fatal(loadErr)
+		}
+		for _, statement := range migrationStatements(ddl) {
+			if _, err = tx.ExecContext(ctx, statement); err != nil {
+				t.Fatalf("build v17 statement: %v", err)
+			}
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO schema_version(version,backend,checksum) VALUES(?,?,?)", version, "sqlite", checksum); err != nil {
+			t.Fatal(err)
+		}
+	}
+	orgA := "10000000-0000-4000-8000-000000000081"
+	orgB := "10000000-0000-4000-8000-000000000082"
+	if _, err = tx.ExecContext(ctx, "INSERT INTO organization(id,timezone) VALUES(?,'UTC'),(?,'UTC')", orgA, orgB); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err = repo.DB.QueryRowContext(ctx, "SELECT count(*) FROM education_level WHERE org_id IN(?,?)", orgA, orgB).Scan(&count); err != nil || count != 6 {
+		t.Fatalf("migrated education levels=%d err=%v", count, err)
+	}
+	if _, err = repo.DB.ExecContext(ctx, "INSERT INTO education_level(org_id,code,rank) VALUES(?,'Doctor',4)", orgA); err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.DB.QueryRowContext(ctx, "SELECT count(*) FROM education_level WHERE org_id=? AND code='Doctor'", orgB).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("cross-org education level count=%d err=%v", count, err)
+	}
+	orgC := "10000000-0000-4000-8000-000000000083"
+	if _, err = repo.DB.ExecContext(ctx, "INSERT INTO organization(id,timezone) VALUES(?,'UTC')", orgC); err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.DB.QueryRowContext(ctx, "SELECT count(*) FROM education_level WHERE org_id=?", orgC).Scan(&count); err != nil || count != 3 {
+		t.Fatalf("new organization education levels=%d err=%v", count, err)
+	}
+}
+
 func TestV16MigratesPersistedV12BatchWithoutClearingData(t *testing.T) {
 	ctx := context.Background()
 	repo, err := Open(ctx, "sqlite", filepath.Join(t.TempDir(), "persisted-v12.sqlite"))
@@ -62,7 +117,7 @@ func TestV16MigratesPersistedV12BatchWithoutClearingData(t *testing.T) {
 		t.Fatal(err)
 	}
 	var version, rows int
-	if err = repo.DB.QueryRowContext(ctx, "SELECT max(version),count(*) FROM schema_version").Scan(&version, &rows); err != nil || version != 17 || rows != 17 {
+	if err = repo.DB.QueryRowContext(ctx, "SELECT max(version),count(*) FROM schema_version").Scan(&version, &rows); err != nil || version != 18 || rows != 18 {
 		t.Fatalf("ledger version=%d rows=%d err=%v", version, rows, err)
 	}
 	var code, state string
@@ -247,7 +302,7 @@ func TestV16MigratesPersistedV14AuditOutboxWithoutClearingData(t *testing.T) {
 	if err = repo.DB.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM audit_event WHERE id=?),(SELECT count(*) FROM audit_outbox WHERE event_id=?),(SELECT max(version) FROM schema_version)", event, event).Scan(&events, &outbox, &versions); err != nil {
 		t.Fatal(err)
 	}
-	if events != 1 || outbox != 1 || versions != 17 {
+	if events != 1 || outbox != 1 || versions != 18 {
 		t.Fatalf("migrated audit event=%d outbox=%d schema=%d", events, outbox, versions)
 	}
 	if err = repo.CheckSchema(ctx); err != nil {

@@ -268,7 +268,7 @@ func (r reader) sql(s, p string) string {
 }
 func (r *Repository) read() reader { return reader{r.DB, r.Backend} }
 
-const currentSchemaVersion = 17
+const currentSchemaVersion = 18
 
 func (r *Repository) migration(version int) (string, string, error) {
 	if (r.Backend != "sqlite" && r.Backend != "postgres") || version < 1 || version > currentSchemaVersion {
@@ -307,7 +307,7 @@ func (r *Repository) Migrate(ctx context.Context) error {
 			return err
 		}
 		// v12 is the first persisted deployment baseline. Older development
-		// schemas remain unsupported; exact v12 through v16 schemas are upgraded
+		// schemas remain unsupported; exact v12 through v18 schemas are upgraded
 		// or accepted without clearing operator data.
 		if version < 12 || version > currentSchemaVersion {
 			return fault.Unavailable
@@ -319,7 +319,7 @@ func (r *Repository) Migrate(ctx context.Context) error {
 			}
 		} else {
 			// Stop concurrent application writes for the controlled cutover.
-			if _, err = tx.ExecContext(ctx, "LOCK TABLE schema_version,organization,authorization_guard,subject,session,session_auth,employee,capability_assignment,delegation_authority,access_grant,encrypted_payload,employee_profile_version,command_receipt,audit_event,identity_mode_state,local_account,local_credential,local_login_throttle,local_bootstrap_receipt,bootstrap_admin_policy,compensation_adjustment_batch,compensation_batch_payload,compensation_batch_import_candidate IN ACCESS EXCLUSIVE MODE"); err != nil {
+			if _, err = tx.ExecContext(ctx, "LOCK TABLE schema_version,organization,authorization_guard,subject,session,session_auth,employee,capability_assignment,delegation_authority,access_grant,encrypted_payload,employee_profile_version,command_receipt,audit_event,identity_mode_state,local_account,local_credential,local_login_throttle,local_bootstrap_receipt,bootstrap_admin_policy,compensation_adjustment_batch,compensation_batch_payload,compensation_batch_import_candidate,education_level,education_record,structure_change_item IN ACCESS EXCLUSIVE MODE"); err != nil {
 				return safeError(err)
 			}
 		}

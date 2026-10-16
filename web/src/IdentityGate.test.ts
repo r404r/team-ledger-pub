@@ -274,7 +274,7 @@ describe('shared protected identity interaction', () => {
 
     checking.resolve(200, initialSession)
     previewing.resolve(200, {
-      row_count: 1, catalog_revision: '1', graph_revision: '1', errors: [], rows: [{
+      row_count: 1, catalog_revision: '1', graph_revision: '1', errors: [], warnings: [], education_levels: [{ code: 'Master', rank: 3 }], rows: [{
         row_number: 2, staff_code: 'FOCUS-001', local_name: '合成文件选择员工',
         location: 'Shanghai', branch_code: 'BR-A', business_group_code: 'BG-A', division_code: 'DIV-A', department_code: 'DEP-A',
         education_level: 'Master', hire_date: AS_OF, position: 'Consultant', job_family_code: 'JF-A', career_level_code: 'P1',
@@ -285,7 +285,7 @@ describe('shared protected identity interaction', () => {
     await selection
     await settled()
     expect(page.text()).toContain('people.xlsx 已校验 1 行')
-    expect(page.text()).toContain('合成文件选择员工')
+    expect(page.findAll('input').some(field => (field.element as HTMLInputElement).value === '合成文件选择员工')).toBe(true)
   })
 
   it('still destroys the retained surface when an internal route check rejects the session', async () => {

@@ -36,7 +36,8 @@ type ImportRow = {
   career_level_id: string
 }
 type ImportIssue = { row_number: number; sheet: string; cell?: string; field: string; code: string }
-type Preview = { rows: ImportRow[]; errors: ImportIssue[]; row_count: number; catalog_revision: string; graph_revision: string }
+type EducationLevel = { code: string; rank: number }
+type Preview = { rows: ImportRow[]; errors: ImportIssue[]; warnings: ImportIssue[]; education_levels: EducationLevel[]; row_count: number; catalog_revision: string; graph_revision: string }
 type WorkbookDiagnostic = { sheet?: string; cell?: string; code: string }
 type WorkbookFailure = { status: number; requestID?: string; diagnostic?: WorkbookDiagnostic }
 type Employee = {
@@ -67,40 +68,62 @@ const emit = defineEmits<{
 const workbook = shallowRef<File | null>(null)
 const preview = shallowRef<Preview | null>(null)
 const executions = ref<RowExecution[]>([])
-const phase = ref<'idle' | 'previewing' | 'applying' | 'downloading'>('idle')
+const phase = ref<'idle' | 'previewing' | 'reviewing' | 'cataloging' | 'applying' | 'downloading'>('idle')
 const errorMessage = ref('')
 const notice = ref('')
 const reportingCommand = shallowRef<ReportingCommand | null>(null)
 const reportingUncertain = ref(false)
 const reportingComplete = ref(false)
 const fileGeneration = ref(0)
+const dirty = ref(false)
+const educationRanks = ref<Record<string, number>>({})
 let controller: AbortController | null = null
 
 const busy = computed(() => phase.value !== 'idle')
-const hasPreviewErrors = computed(() => Boolean(preview.value?.errors.length))
+const hasPreviewErrors = computed(() => Boolean(preview.value?.errors.length) || dirty.value)
 const batchComplete = computed(() => reportingComplete.value && executions.value.length > 0 && executions.value.every(row => row.status === 'created' || row.status === 'manager_pending' || row.status === 'failed'))
 const executionLocked = computed(() => reportingComplete.value || reportingCommand.value !== null || executions.value.some(row => row.command !== undefined))
 const summary = computed(() => executions.value.reduce((result, row) => {
   result[row.status] = (result[row.status] ?? 0) + 1
   return result
 }, {} as Record<RowStatus, number>))
+const unknownEducationLevels = computed(() => {
+  if (!preview.value) return []
+  const rows = new Map(executions.value.map(row => [row.row_number, row]))
+  return [...new Set(preview.value.errors
+    .filter(issue => issue.code === 'unknown_education_level')
+    .map(issue => rows.get(issue.row_number)?.education_level ?? '')
+    .filter(Boolean))]
+})
 const issueMessages: Record<string, string> = {
-  text_required: '必须使用文本单元格',
+  text_required: '该单元格类型需要人工编辑',
+  staff_code_required: 'Staff Code 必填',
+  numeric_staff_code_not_integer: '数字 Staff Code 必须是非负整数；小数、科学记数法或符号值需人工修正',
   invalid_staff_code: 'Staff Code 格式不正确',
   duplicate_staff_code: '同一工作簿内的 Staff Code 重复',
   invalid_profile: '姓名或资料字段不符合规则',
-  invalid_employment_dates: '入职日/退职日必须为 YYYY-MM-DD，且退职日晚于入职日',
+  invalid_employment_dates: '入职日/退职日必须是有效日期，且退职日晚于入职日',
   invalid_date: '日期格式无法识别；可使用 YYYY-MM-DD、YYYY/M/D、M/D/YYYY、YYYY.M.D 或 YYYY年M月D日',
+  invalid_excel_date: 'Excel 日期序号或日期单元格无法无歧义转换，请人工填写日期',
+  cell_type_requires_edit: '布尔值、错误值或该列不支持的单元格类型需人工修改',
   departure_not_after_hire: '退职日必须晚于入职日',
   field_too_large: '字段超过允许长度，预览未回传其内容',
   manager_cycle: '同一文件内的直属主管关系形成自引用或闭环',
   unexpected_column: '存在模板以外的非空列',
   invalid_location: 'Location必须为Shanghai、Wuxi或Tokyo',
-  invalid_education_level: '学历必须为Master、Bachelor或Diploma',
+  invalid_education_level: '学历不能为空、首尾不能有空格且最多 64 字节',
+  unknown_education_level: '学历不在当前组织目录；可编辑为已有值，或明确追加为新学历',
   invalid_position: '职位不能为空或超过允许长度',
-  invalid_catalog_code: '目录Code不能为空或格式不正确',
-  unknown_catalog_code: '该入职日没有唯一有效的目录Code',
+  invalid_catalog_code: '目录值不能为空或格式不正确',
+  unknown_catalog_code: '目录 Code 或显示名称在该入职日不存在',
+  ambiguous_catalog_label: '显示名称匹配多项，请改填唯一目录 Code',
   organization_hierarchy_mismatch: 'Business Group、Division与Department层级不一致',
+  numeric_staff_code_coerced: '数字 Staff Code 已按原始十进制整数转为文本；Excel 已丢失的前导零无法恢复',
+  numeric_cell_coerced: '数字单元格已保留其原始十进制表示并转为文本，请核对',
+  excel_date_coerced: 'Excel 日期单元格已按工作簿日期系统转为 YYYY-MM-DD',
+  date_text_normalized: '日期文本已规范化为 YYYY-MM-DD',
+  location_case_normalized: 'Location 大小写已规范化',
+  catalog_label_resolved: '已通过唯一目录显示名称匹配，并规范化为目录 Code',
 }
 const workbookErrorMessages: Record<string, string> = {
   invalid_package: '文件不是有效的 XLSX 工作簿，或压缩包结构已损坏',
@@ -186,7 +209,116 @@ function resetResults() {
   reportingComplete.value = false
   errorMessage.value = ''
   notice.value = ''
+  dirty.value = false
+  educationRanks.value = {}
 }
+function acceptPreview(parsed: Preview, message: string) {
+  if (!parsed || !Array.isArray(parsed.rows) || !Array.isArray(parsed.errors) || !parsed.errors.every(validImportIssue) ||
+    !Array.isArray(parsed.warnings) || !parsed.warnings.every(validImportIssue) || !Array.isArray(parsed.education_levels) ||
+    !parsed.education_levels.every(level => typeof level?.code === 'string' && level.code.length > 0 && Number.isInteger(level.rank) && level.rank > 0) ||
+    parsed.row_count !== parsed.rows.length || parsed.row_count < 1 || parsed.row_count > 100) throw { status: 503 } satisfies WorkbookFailure
+  const catalogRevision = typeof parsed.catalog_revision === 'string' ? parsed.catalog_revision : ''
+  const graphRevision = typeof parsed.graph_revision === 'string' ? parsed.graph_revision : ''
+  const revisionsReady = /^[1-9]\d*$/.test(catalogRevision) && /^[1-9]\d*$/.test(graphRevision)
+  const revisionsDeferredByErrors = parsed.errors.length > 0 && catalogRevision === '' && graphRevision === ''
+  if (!revisionsReady && !revisionsDeferredByErrors) throw { status: 503 } satisfies WorkbookFailure
+  const safePreview = { ...parsed, catalog_revision: catalogRevision, graph_revision: graphRevision }
+  preview.value = safePreview
+  executions.value = safePreview.rows.map(row => ({ ...row, status: 'pending', message: '' }))
+  dirty.value = false
+  const known = new Set(safePreview.education_levels.map(level => level.code))
+  const unknown = [...new Set(safePreview.rows.map(row => row.education_level).filter(code => code && !known.has(code)))]
+  let nextRank = safePreview.education_levels.reduce((maximum, level) => Math.max(maximum, level.rank), 0) + 1
+  educationRanks.value = Object.fromEntries(unknown.map(code => [code, nextRank++]))
+  notice.value = safePreview.errors.length ? `${message}发现 ${safePreview.errors.length} 个错误；可直接编辑预览表，再执行“校验编辑内容”。` : `${message}已校验 ${safePreview.row_count} 行，尚未创建人员。`
+}
+
+function markEdited() {
+  if (busy.value || executionLocked.value) return
+  dirty.value = true
+  notice.value = '预览内容已修改；必须重新执行服务端校验后才能批量创建。'
+}
+
+function reviewPayload() {
+  return executions.value.map(row => ({
+    row_number: row.row_number,
+    staff_code: row.staff_code,
+    local_name: row.local_name ?? '',
+    english_name: row.english_name ?? '',
+    location: row.location,
+    branch_code: row.branch_code,
+    business_group_code: row.business_group_code,
+    division_code: row.division_code,
+    department_code: row.department_code,
+    education_level: row.education_level,
+    hire_date: row.hire_date,
+    position: row.position,
+    job_family_code: row.job_family_code,
+    career_level_code: row.career_level_code,
+    manager_staff_code: row.manager_staff_code ?? '',
+    departure_date: row.departure_date || null,
+    email: row.email ?? '',
+    phone: row.phone ?? '',
+    profile_summary: row.profile_summary ?? '',
+  }))
+}
+
+async function reviewRows() {
+  if (busy.value || !preview.value || executionLocked.value) return
+  phase.value = 'reviewing'
+  errorMessage.value = ''
+  controller = new AbortController()
+  try {
+    const response = await api(`/orgs/${props.session.org_id}/employees/import-review`, {
+      method: 'POST',
+      headers: csrfHeaders(true),
+      body: JSON.stringify({ rows: reviewPayload() }),
+    })
+    if (!response.ok) throw { status: response.status } satisfies WorkbookFailure
+    acceptPreview(await response.json() as Preview, '编辑内容')
+  } catch (error) {
+    if ((error as Error).name !== 'AbortError') errorMessage.value = workbookFailure(error)
+  } finally {
+    if (phase.value === 'reviewing') stopOperation()
+  }
+}
+
+async function appendEducationLevels() {
+  if (busy.value || !preview.value || !unknownEducationLevels.value.length || executionLocked.value) return
+  const changes = unknownEducationLevels.value.map(code => ({ action: 'create', kind: 'education_level', code, rank: educationRanks.value[code] }))
+  if (changes.some(change => !Number.isInteger(change.rank) || change.rank < 1 || change.rank > 10000)) {
+    errorMessage.value = '新学历排序必须是 1–10000 的整数。'
+    return
+  }
+  if (new Set(changes.map(change => change.rank)).size !== changes.length) {
+    errorMessage.value = '新学历排序不能重复。'
+    return
+  }
+  phase.value = 'cataloging'
+  errorMessage.value = ''
+  controller = new AbortController()
+  try {
+    const response = await api(`/orgs/${props.session.org_id}/workforce-catalog-changes`, {
+      method: 'POST',
+      headers: csrfHeaders(true, crypto.randomUUID()),
+      body: JSON.stringify({
+        expected_catalog_revision: preview.value.catalog_revision,
+        expected_graph_revision: preview.value.graph_revision,
+        changes,
+      }),
+    })
+    if (!response.ok) throw Object.assign(new Error(String(response.status)), { status: response.status })
+    phase.value = 'idle'
+    await reviewRows()
+  } catch (error) {
+    const status = (error as { status?: number }).status
+    if (status === 401) emit('session-expired')
+    else errorMessage.value = status === 409 ? '学历目录已变化，请先重新校验编辑内容。' : '新学历未能追加；请核对权限、名称和排序是否重复。'
+  } finally {
+    if (phase.value === 'cataloging') stopOperation()
+  }
+}
+
 async function chooseWorkbook(event: Event) {
   if (busy.value || executionLocked.value) return
   const input = event.target as HTMLInputElement
@@ -265,17 +397,7 @@ async function previewWorkbook() {
       }
       throw { status: response.status, requestID, diagnostic } satisfies WorkbookFailure
     }
-    const parsed = await response.json() as Preview
-    if (!parsed || !Array.isArray(parsed.rows) || !Array.isArray(parsed.errors) || !parsed.errors.every(validImportIssue) || parsed.row_count !== parsed.rows.length || parsed.row_count < 1 || parsed.row_count > 100) throw { status: 503 } satisfies WorkbookFailure
-    const catalogRevision = typeof parsed.catalog_revision === 'string' ? parsed.catalog_revision : ''
-    const graphRevision = typeof parsed.graph_revision === 'string' ? parsed.graph_revision : ''
-    const revisionsReady = /^[1-9]\d*$/.test(catalogRevision) && /^[1-9]\d*$/.test(graphRevision)
-    const revisionsDeferredByErrors = parsed.errors.length > 0 && catalogRevision === '' && graphRevision === ''
-    if (!revisionsReady && !revisionsDeferredByErrors) throw { status: 503 } satisfies WorkbookFailure
-    const safePreview = { ...parsed, catalog_revision: catalogRevision, graph_revision: graphRevision }
-    preview.value = safePreview
-    executions.value = safePreview.rows.map(row => ({ ...row, status: 'pending', message: '' }))
-    notice.value = safePreview.errors.length ? `${file.name} 预览发现错误；请按工作表和单元格定位修正后重新上传。` : `${file.name} 已校验 ${safePreview.row_count} 行，尚未创建人员。`
+    acceptPreview(await response.json() as Preview, `${file.name} `)
   } catch (error) {
     if ((error as Error).name !== 'AbortError') {
       notice.value = ''
@@ -536,7 +658,7 @@ onBeforeUnmount(() => stopOperation())
       <div class="import-intro">
         <div>
           <h2>批量创建人员</h2>
-          <p>最多 100 人。一次校验并创建完整员工主数据：身份、雇佣关系、组织任职、学历及直属主管；薪资不在此功能导入。日期保持文本，可填写 YYYY-MM-DD、YYYY/M/D、M/D/YYYY、YYYY.M.D 或 YYYY年M月D日。</p>
+          <p>最多 100 人。完整导入身份、雇佣关系、组织任职、学历及直属主管；薪资不在此功能导入。Staff Code 可为文本或整数单元格；日期可为 Excel 日期、YYYY-MM-DD、YYYY/M/D、M/D/YYYY、YYYY.M.D 或 YYYY年M月D日。预览中的全部字段均可修正。</p>
         </div>
         <button type="button" class="secondary" :disabled="busy" @click="downloadTemplate">下载 XLSX 模板</button>
       </div>
@@ -547,8 +669,9 @@ onBeforeUnmount(() => stopOperation())
       </ol>
       <div class="import-controls">
         <label>选择 XLSX<input :key="fileGeneration" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" :disabled="busy || executionLocked" @change="chooseWorkbook"></label>
-        <button type="button" class="secondary" :disabled="busy || !workbook || executionLocked" @click="previewWorkbook">{{ phase === 'previewing' ? '正在上传并校验…' : preview ? '重新校验' : '校验并预览' }}</button>
-        <button type="button" :disabled="busy || !preview || hasPreviewErrors || batchComplete" @click="applyBatch">{{ batchComplete ? '批量处理已完成' : executions.some(row => row.status === 'uncertain') ? '确认原提交并继续' : '确认并批量创建' }}</button>
+        <button type="button" class="secondary" :disabled="busy || !workbook || executionLocked" @click="previewWorkbook">{{ phase === 'previewing' ? '正在上传并校验…' : preview ? '从文件重新校验' : '校验并预览' }}</button>
+        <button v-if="preview" type="button" class="secondary" :disabled="busy || executionLocked" @click="reviewRows">{{ phase === 'reviewing' ? '正在校验编辑内容…' : '校验编辑内容' }}</button>
+        <button type="button" :disabled="busy || !preview || hasPreviewErrors || batchComplete" @click="applyBatch">{{ batchComplete ? '批量处理已完成' : executions.some(row => row.status === 'uncertain') ? '确认原提交并继续' : dirty ? '请先校验编辑内容' : '确认并批量创建' }}</button>
         <button v-if="batchComplete" type="button" class="secondary" :disabled="busy" @click="startNewBatch">开始下一批</button>
       </div>
       <p v-if="errorMessage" class="error" role="alert">{{ errorMessage }}</p>
@@ -556,7 +679,7 @@ onBeforeUnmount(() => stopOperation())
       <div v-if="preview" class="import-preview">
         <div class="import-summary">
           <strong>{{ preview.row_count }} 行</strong>
-          <span v-if="preview.errors.length">{{ preview.errors.length }} 个错误</span>
+          <span v-if="preview.errors.length">{{ preview.errors.length }} 个错误</span><span v-if="preview.warnings.length">{{ preview.warnings.length }} 个兼容转换提醒</span><span v-if="dirty">编辑待校验</span>
           <template v-if="executions.length">
             <span>已创建 {{ summary.created ?? 0 }}</span>
             <span>主管待维护 {{ summary.manager_pending ?? 0 }}</span>
@@ -567,22 +690,45 @@ onBeforeUnmount(() => stopOperation())
         <ul v-if="preview.errors.length" class="import-errors">
           <li v-for="issue in preview.errors" :key="`${issue.row_number}-${issue.cell ?? issue.field}-${issue.code}`">{{ issue.sheet }}<template v-if="issue.cell">!{{ issue.cell }}</template> · {{ issue.field }}：{{ issueMessages[issue.code] ?? issue.code }}</li>
         </ul>
+        <ul v-if="preview.warnings.length" class="import-warnings">
+          <li v-for="issue in preview.warnings" :key="`warning-${issue.row_number}-${issue.cell ?? issue.field}-${issue.code}`">{{ issue.sheet }}<template v-if="issue.cell">!{{ issue.cell }}</template> · {{ issue.field }}：{{ issueMessages[issue.code] ?? issue.code }}</li>
+        </ul>
+        <section v-if="unknownEducationLevels.length" class="education-extension">
+          <div><strong>追加新学历目录</strong><p>预览不会自动修改目录。确认名称与排序后，明确追加到当前组织，再重新校验全部行。</p></div>
+          <label v-for="code in unknownEducationLevels" :key="code"><span>{{ code }}</span><input v-model.number="educationRanks[code]" type="number" min="1" max="10000" step="1" :disabled="busy || executionLocked" aria-label="学历排序"></label>
+          <button type="button" class="secondary" :disabled="busy || executionLocked || !preview.catalog_revision" @click="appendEducationLevels">{{ phase === 'cataloging' ? '正在追加…' : '确认追加并重新校验' }}</button>
+        </section>
         <div class="import-table-wrap">
           <table>
-            <thead><tr><th>行</th><th>Staff Code</th><th>姓名</th><th>Location</th><th>Branch</th><th>Business Group</th><th>Division</th><th>Department</th><th>学历</th><th>入职日</th><th>职位</th><th>职系</th><th>职级</th><th>HOD Staff Code</th><th>退职日</th><th>联系与摘要</th><th>结果</th></tr></thead>
+            <thead><tr><th>行</th><th>Staff Code</th><th>本地姓名</th><th>英文姓名</th><th>Location</th><th>Branch</th><th>Business Group</th><th>Division</th><th>Department</th><th>学历</th><th>入职日</th><th>职位</th><th>职系</th><th>职级</th><th>HOD Staff Code</th><th>退职日</th><th>邮箱</th><th>电话</th><th>资料摘要</th><th>结果</th></tr></thead>
             <tbody>
               <tr v-for="row in executions" :key="row.row_number">
-                <td>{{ row.row_number }}</td><td>{{ row.staff_code }}</td>
-                <td><span>{{ row.local_name || '—' }}</span><small>英文：{{ row.english_name || '—' }}</small></td>
-                <td>{{ row.location }}</td><td>{{ row.branch_code }}</td><td>{{ row.business_group_code }}</td><td>{{ row.division_code }}</td><td>{{ row.department_code }}</td>
-                <td>{{ row.education_level }}</td><td>{{ row.hire_date }}</td><td>{{ row.position }}</td><td>{{ row.job_family_code }}</td><td>{{ row.career_level_code }}</td>
-                <td>{{ row.manager_staff_code || '—' }}</td><td>{{ row.departure_date || '未退职' }}</td>
-                <td class="profile-summary"><span>{{ row.email || '—' }}</span><small>电话：{{ row.phone || '—' }}</small><small>摘要：{{ row.profile_summary || '—' }}</small></td>
+                <td>{{ row.row_number }}</td>
+                <td><input v-model="row.staff_code" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.local_name" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.english_name" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.location" class="edit-input" list="personnel-locations" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.branch_code" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.business_group_code" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.division_code" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.department_code" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.education_level" class="edit-input" list="personnel-education-levels" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.hire_date" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.position" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.job_family_code" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.career_level_code" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.manager_staff_code" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.departure_date" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.email" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.phone" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><textarea v-model="row.profile_summary" class="edit-input" rows="2" :disabled="busy || executionLocked" @input="markEdited"></textarea></td>
                 <td><span :class="['row-status', `is-${row.status}`]">{{ statusLabels[row.status] }}</span><small v-if="row.message">{{ row.message }}</small></td>
               </tr>
             </tbody>
           </table>
         </div>
+          <datalist id="personnel-locations"><option value="Shanghai"></option><option value="Wuxi"></option><option value="Tokyo"></option></datalist>
+          <datalist id="personnel-education-levels"><option v-for="level in preview.education_levels" :key="level.code" :value="level.code"></option></datalist>
       </div>
     </div>
   </details>
@@ -609,12 +755,22 @@ details[open] .summary-action::after { content: '收起'; font-size: .78rem; }
 .import-controls label { display: grid; gap: .35rem; min-width: min(100%, 22rem); color: var(--ink-800); font-size: .78rem; font-weight: 700; }
 .import-controls input { min-height: 2.65rem; padding: .55rem; }
 .import-summary { display: flex; flex-wrap: wrap; gap: .55rem 1rem; margin: 1rem 0 .65rem; color: var(--ink-600); font-size: .78rem; }
-.import-errors { margin: .5rem 0 1rem; padding: .75rem 1rem .75rem 2rem; border: 1px solid var(--danger-100); border-radius: var(--radius-md); background: var(--danger-50); color: var(--danger-700); font-size: .78rem; }
+.import-errors, .import-warnings { margin: .5rem 0 1rem; padding: .75rem 1rem .75rem 2rem; border-radius: var(--radius-md); font-size: .78rem; }
+.import-errors { border: 1px solid var(--danger-100); background: var(--danger-50); color: var(--danger-700); }
+.import-warnings { border: 1px solid var(--accent-200); background: var(--surface-muted); color: var(--ink-700); }
+.education-extension { display: flex; align-items: end; gap: .75rem; flex-wrap: wrap; margin: .75rem 0 1rem; padding: .85rem; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-muted); }
+.education-extension > div { min-width: min(100%, 20rem); flex: 1; }
+.education-extension strong, .education-extension p { display: block; margin: 0; }
+.education-extension p { margin-top: .25rem; color: var(--ink-600); font-size: .76rem; }
+.education-extension label { display: grid; gap: .25rem; color: var(--ink-700); font-size: .74rem; font-weight: 700; }
+.education-extension input { width: 7rem; }
 .import-table-wrap { overflow-x: auto; border: 1px solid var(--line-soft); border-radius: var(--radius-md); }
-table { width: 100%; min-width: 110rem; border-collapse: collapse; }
+table { width: 100%; min-width: 170rem; border-collapse: collapse; }
 th, td { padding: .7rem .8rem; border-bottom: 1px solid var(--line-soft); text-align: left; vertical-align: top; font-size: .75rem; }
 th { background: var(--surface-muted); color: var(--ink-700); }
 td small { display: block; max-width: 16rem; margin-top: .25rem; color: var(--ink-600); }
+.edit-input { width: 9rem; min-height: 2.2rem; padding: .4rem .5rem; font: inherit; }
+textarea.edit-input { width: 14rem; resize: vertical; }
 .profile-summary { max-width: 18rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 .row-status { display: inline-flex; padding: .15rem .45rem; border-radius: 999px; background: var(--surface-muted); font-weight: 720; }
 .is-created { background: var(--success-50); color: var(--success-700); }

@@ -92,6 +92,30 @@ func TestReadFirstSheetDistinguishesTextFromNumericCells(t *testing.T) {
 		t.Fatalf("cell types were not preserved: %#v", rows[0].Cells)
 	}
 }
+func TestReadFirstSheetPreservesSemanticCellKindsAndDateSystem(t *testing.T) {
+	raw := workbook(t, map[string]string{
+		"xl/workbook.xml":          `<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><workbookPr date1904="1"/><sheets><sheet name="Employees" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+		"xl/worksheets/sheet1.xml": sheet(`<c r="A1" t="inlineStr"><is><t>001</t></is></c><c r="B1" t="n"><v>42</v></c><c r="C1" t="d"><v>2026-10-16T00:00:00Z</v></c><c r="D1" t="b"><v>1</v></c><c r="E1" t="e"><v>#N/A</v></c>`),
+	})
+	rows, err := ReadFirstSheet(raw, testLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := rows[0]
+	if !row.Date1904 || row.Cells[1].Kind != CellText || row.Cells[2].Kind != CellNumber || row.Cells[3].Kind != CellDate || row.Cells[4].Kind != CellBoolean || row.Cells[5].Kind != CellError {
+		t.Fatalf("semantic cells = %#v", row)
+	}
+}
+
+func TestReadFirstSheetRejectsInvalidWorkbookDateSystem(t *testing.T) {
+	raw := workbook(t, map[string]string{
+		"xl/workbook.xml":          `<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><workbookPr date1904="sometimes"/><sheets><sheet name="Employees" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+		"xl/worksheets/sheet1.xml": sheet(`<c r="A1" t="inlineStr"><is><t>x</t></is></c>`),
+	})
+	if _, err := ReadFirstSheet(raw, testLimits); err == nil {
+		t.Fatal("invalid date1904 flag was accepted")
+	}
+}
 
 func TestReadFirstSheetReportsSafeSheetAndCellAndAcceptsExplicitNumericType(t *testing.T) {
 	numeric := workbook(t, map[string]string{"xl/worksheets/sheet1.xml": sheet(`<c r="A1" t="n"><v>46000</v></c>`)})

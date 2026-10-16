@@ -46,7 +46,7 @@ var personnelImportFields = []string{
 	"career_level_code", "manager_staff_code", "departure_date", "email", "phone", "profile_summary",
 }
 
-var personnelImportFieldLimits = []int{64, 256, 256, 16, 64, 64, 64, 64, 16, 32, 1024, 32, 32, 64, 32, 320, 64, 16 << 10}
+var personnelImportFieldLimits = []int{64, 256, 256, 16, 64, 64, 64, 64, 64, 32, 1024, 32, 32, 64, 32, 320, 64, 16 << 10}
 
 type PersonnelImportRow struct {
 	RowNumber         int     `json:"row_number"`
@@ -132,9 +132,93 @@ func personnelCellReference(column, row int) string {
 type PersonnelImportPreview struct {
 	Rows            []PersonnelImportRow   `json:"rows"`
 	Errors          []PersonnelImportIssue `json:"errors"`
+	Warnings        []PersonnelImportIssue `json:"warnings"`
+	EducationLevels []EducationLevelView   `json:"education_levels"`
 	RowCount        int                    `json:"row_count"`
 	CatalogRevision string                 `json:"catalog_revision,omitempty"`
 	GraphRevision   string                 `json:"graph_revision,omitempty"`
+}
+type PersonnelImportReviewCommand struct {
+	Rows []PersonnelImportReviewRow `json:"rows"`
+}
+
+type PersonnelImportReviewRow struct {
+	RowNumber         int     `json:"row_number"`
+	StaffCode         string  `json:"staff_code"`
+	LocalName         string  `json:"local_name"`
+	EnglishName       string  `json:"english_name"`
+	Location          string  `json:"location"`
+	BranchCode        string  `json:"branch_code"`
+	BusinessGroupCode string  `json:"business_group_code"`
+	DivisionCode      string  `json:"division_code"`
+	DepartmentCode    string  `json:"department_code"`
+	EducationLevel    string  `json:"education_level"`
+	HireDate          string  `json:"hire_date"`
+	Position          string  `json:"position"`
+	JobFamilyCode     string  `json:"job_family_code"`
+	CareerLevelCode   string  `json:"career_level_code"`
+	ManagerStaffCode  string  `json:"manager_staff_code"`
+	DepartureDate     *string `json:"departure_date"`
+	Email             string  `json:"email"`
+	Phone             string  `json:"phone"`
+	ProfileSummary    string  `json:"profile_summary"`
+}
+
+func (s *Service) ReviewPersonnelImport(ctx context.Context, request Request, org string, command PersonnelImportReviewCommand) (PersonnelImportPreview, error) {
+	snapshot, err := s.authorize(ctx, s.Store, request, org, "", "OP-ORG-05")
+	if err != nil {
+		return PersonnelImportPreview{}, s.denied(ctx, request, snapshot, "OP-ORG-05", err)
+	}
+	if len(command.Rows) == 0 || len(command.Rows) > personnelWorkbookRows {
+		return PersonnelImportPreview{}, fault.Invalid
+	}
+	preview := PersonnelImportPreview{Rows: make([]PersonnelImportRow, 0, len(command.Rows)), Errors: []PersonnelImportIssue{}, Warnings: []PersonnelImportIssue{}, EducationLevels: []EducationLevelView{}}
+	rowNumbers := make(map[int]struct{}, len(command.Rows))
+	for _, input := range command.Rows {
+		if input.RowNumber < 2 || input.RowNumber > 1_048_576 {
+			return PersonnelImportPreview{}, fault.Invalid
+		}
+		if _, duplicate := rowNumbers[input.RowNumber]; duplicate {
+			return PersonnelImportPreview{}, fault.Invalid
+		}
+		rowNumbers[input.RowNumber] = struct{}{}
+		values := []string{
+			input.StaffCode, input.LocalName, input.EnglishName, input.Location, input.BranchCode,
+			input.BusinessGroupCode, input.DivisionCode, input.DepartmentCode, input.EducationLevel,
+			input.HireDate, input.Position, input.JobFamilyCode, input.CareerLevelCode, input.ManagerStaffCode,
+			optionalText(input.DepartureDate), input.Email, input.Phone, input.ProfileSummary,
+		}
+		for column, text := range values {
+			if len(text) > personnelImportFieldLimits[column] {
+				return PersonnelImportPreview{}, fault.Invalid
+			}
+		}
+		row := PersonnelImportRow{
+			RowNumber: input.RowNumber, StaffCode: input.StaffCode, LocalName: input.LocalName,
+			EnglishName: input.EnglishName, Location: input.Location, BranchCode: input.BranchCode,
+			BusinessGroupCode: input.BusinessGroupCode, DivisionCode: input.DivisionCode,
+			DepartmentCode: input.DepartmentCode, EducationLevel: input.EducationLevel,
+			HireDate: input.HireDate, Position: input.Position, JobFamilyCode: input.JobFamilyCode,
+			CareerLevelCode: input.CareerLevelCode, ManagerStaffCode: input.ManagerStaffCode,
+			DepartureDate: input.DepartureDate, Email: input.Email, Phone: input.Phone,
+			ProfileSummary: input.ProfileSummary,
+		}
+		preview.Rows = append(preview.Rows, row)
+		validatePersonnelRow(xlsx.Row{Number: input.RowNumber}, &preview, len(preview.Rows)-1)
+	}
+	preview.RowCount = len(preview.Rows)
+	validatePersonnelReferences(&preview)
+	if err := s.resolvePersonnelImportCatalogs(ctx, org, &preview, snapshot.Allows("pii.read", "pii", "", request.Purpose, s.clock())); err != nil {
+		return PersonnelImportPreview{}, err
+	}
+	return preview, nil
+}
+
+func optionalText(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func (s *Service) PersonnelImportTemplate(ctx context.Context, request Request, org string) ([]byte, error) {
@@ -158,7 +242,7 @@ func (s *Service) PreviewPersonnelImport(ctx context.Context, request Request, o
 	if err != nil {
 		return PersonnelImportPreview{}, err
 	}
-	if err = s.resolvePersonnelImportCatalogs(ctx, org, &preview); err != nil {
+	if err = s.resolvePersonnelImportCatalogs(ctx, org, &preview, snapshot.Allows("pii.read", "pii", "", request.Purpose, s.clock())); err != nil {
 		return PersonnelImportPreview{}, err
 	}
 	return preview, nil
@@ -189,7 +273,7 @@ func parsePersonnelWorkbook(raw []byte) (PersonnelImportPreview, error) {
 	if err := validatePersonnelHeaders(rows[0]); err != nil {
 		return PersonnelImportPreview{}, err
 	}
-	preview := PersonnelImportPreview{Rows: []PersonnelImportRow{}, Errors: []PersonnelImportIssue{}}
+	preview := PersonnelImportPreview{Rows: []PersonnelImportRow{}, Errors: []PersonnelImportIssue{}, Warnings: []PersonnelImportIssue{}, EducationLevels: []EducationLevelView{}}
 	for _, source := range rows[1:] {
 		if rowEmpty(source) {
 			continue
@@ -200,14 +284,21 @@ func parsePersonnelWorkbook(raw []byte) (PersonnelImportPreview, error) {
 		values := make([]string, len(personnelImportHeaders))
 		for column, limit := range personnelImportFieldLimits {
 			cell, ok := source.Cells[column+1]
-			if !ok || !cell.IsText {
+			if !ok {
 				continue
 			}
-			if len(cell.Text) > limit {
+			text, warning, issue := personnelImportCellValue(cell, column, source.Date1904)
+			if len(text) > limit {
 				preview.Errors = append(preview.Errors, personnelImportIssue(source.Number, personnelImportFields[column], "field_too_large"))
 				continue
 			}
-			values[column] = cell.Text
+			values[column] = text
+			if warning != "" {
+				preview.Warnings = append(preview.Warnings, personnelImportIssue(source.Number, personnelImportFields[column], warning))
+			}
+			if issue != "" {
+				preview.Errors = append(preview.Errors, personnelImportIssue(source.Number, personnelImportFields[column], issue))
+			}
 		}
 		row := PersonnelImportRow{
 			RowNumber:         source.Number,
@@ -273,6 +364,94 @@ func rowEmpty(row xlsx.Row) bool {
 	}
 	return true
 }
+func personnelImportCellValue(cell xlsx.Cell, column int, date1904 bool) (string, string, string) {
+	switch cell.Kind {
+	case xlsx.CellText, xlsx.CellBlank:
+		return cell.Text, "", ""
+	case xlsx.CellNumber:
+		switch column {
+		case 0:
+			if cell.Text == "" || !asciiDigits(cell.Text) {
+				return cell.Text, "", "numeric_staff_code_not_integer"
+			}
+			return cell.Text, "numeric_staff_code_coerced", ""
+		case 9, 14:
+			canonical, ok := normalizeExcelSerialDate(cell.Text, date1904)
+			if !ok {
+				return cell.Text, "", "invalid_excel_date"
+			}
+			return canonical, "excel_date_coerced", ""
+		default:
+			return cell.Text, "numeric_cell_coerced", ""
+		}
+	case xlsx.CellDate:
+		if column == 9 || column == 14 {
+			canonical, ok := normalizeOOXMLDate(cell.Text)
+			if !ok {
+				return cell.Text, "", "invalid_excel_date"
+			}
+			return canonical, "excel_date_coerced", ""
+		}
+		return cell.Text, "", "cell_type_requires_edit"
+	case xlsx.CellBoolean, xlsx.CellError:
+		return cell.Text, "", "cell_type_requires_edit"
+	default:
+		return cell.Text, "", "cell_type_requires_edit"
+	}
+}
+
+func asciiDigits(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	for index := range len(raw) {
+		if raw[index] < '0' || raw[index] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeExcelSerialDate(raw string, date1904 bool) (string, bool) {
+	if !asciiDigits(raw) {
+		return "", false
+	}
+	serial, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil {
+		return "", false
+	}
+	var parsed time.Time
+	if date1904 {
+		if serial > 2_958_465 {
+			return "", false
+		}
+		parsed = time.Date(1904, 1, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, int(serial))
+	} else {
+		if serial < 1 || serial == 60 || serial > 2_958_465 {
+			return "", false
+		}
+		if serial > 60 {
+			serial--
+		}
+		parsed = time.Date(1899, 12, 31, 0, 0, 0, 0, time.UTC).AddDate(0, 0, int(serial))
+	}
+	canonical := parsed.Format("2006-01-02")
+	return canonical, value.ValidDate(canonical)
+}
+
+func normalizeOOXMLDate(raw string) (string, bool) {
+	if canonical, ok := normalizePersonnelImportDate(raw); ok {
+		return canonical, true
+	}
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05"} {
+		parsed, err := time.Parse(layout, raw)
+		if err == nil && parsed.Hour() == 0 && parsed.Minute() == 0 && parsed.Second() == 0 && parsed.Nanosecond() == 0 && len(raw) >= 10 && value.ValidDate(raw[:10]) {
+			return raw[:10], true
+		}
+	}
+	return "", false
+}
+
 func normalizePersonnelImportDate(raw string) (string, bool) {
 	var yearText, monthText, dayText string
 	if strings.HasSuffix(raw, "日") {
@@ -332,10 +511,26 @@ func normalizePersonnelImportDate(raw string) (string, bool) {
 	return canonical, value.ValidDate(canonical)
 }
 
+func canonicalLocation(raw string) (string, bool) {
+	switch strings.ToLower(raw) {
+	case strings.ToLower(LocationShanghai):
+		return LocationShanghai, true
+	case strings.ToLower(LocationWuxi):
+		return LocationWuxi, true
+	case strings.ToLower(LocationTokyo):
+		return LocationTokyo, true
+	default:
+		return "", false
+	}
+}
+
 func validatePersonnelRow(source xlsx.Row, preview *PersonnelImportPreview, index int) {
 	row := &preview.Rows[index]
 	issue := func(field, code string) {
 		preview.Errors = append(preview.Errors, personnelImportIssue(row.RowNumber, field, code))
+	}
+	warning := func(field, code string) {
+		preview.Warnings = append(preview.Warnings, personnelImportIssue(row.RowNumber, field, code))
 	}
 	hasIssue := func(field string) bool {
 		for _, existing := range preview.Errors {
@@ -349,14 +544,15 @@ func validatePersonnelRow(source xlsx.Row, preview *PersonnelImportPreview, inde
 		if column > len(personnelImportHeaders) && cell.Text != "" {
 			preview.Errors = append(preview.Errors, PersonnelImportIssue{RowNumber: row.RowNumber, Sheet: "Employees", Cell: personnelCellReference(column, row.RowNumber), Field: "workbook", Code: "unexpected_column"})
 		}
-		if column <= len(personnelImportHeaders) && cell.Text != "" && !cell.IsText {
-			issue(personnelImportFields[column-1], "text_required")
-		}
 	}
-	if normalized, ok := NormalizeStaffCode(row.StaffCode); !ok {
-		issue("staff_code", "invalid_staff_code")
-	} else {
-		row.StaffCode = normalized
+	if row.StaffCode == "" {
+		issue("staff_code", "staff_code_required")
+	} else if !hasIssue("staff_code") {
+		if normalized, ok := NormalizeStaffCode(row.StaffCode); !ok {
+			issue("staff_code", "invalid_staff_code")
+		} else {
+			row.StaffCode = normalized
+		}
 	}
 	profile := Profile{LocalName: row.LocalName, EnglishName: row.EnglishName, ProfileSummary: row.ProfileSummary}
 	if row.Email != "" || row.Phone != "" {
@@ -367,34 +563,47 @@ func validatePersonnelRow(source xlsx.Row, preview *PersonnelImportPreview, inde
 	}
 	hireValid := !hasIssue("hire_date")
 	if hireValid {
-		normalized, ok := normalizePersonnelImportDate(row.HireDate)
+		original := row.HireDate
+		normalized, ok := normalizePersonnelImportDate(original)
 		if !ok {
 			issue("hire_date", "invalid_date")
 			hireValid = false
 		} else {
 			row.HireDate = normalized
+			if original != normalized {
+				warning("hire_date", "date_text_normalized")
+			}
 		}
 	}
 	departureValid := !hasIssue("departure_date")
 	if departureValid && row.DepartureDate != nil {
-		normalized, ok := normalizePersonnelImportDate(*row.DepartureDate)
+		original := *row.DepartureDate
+		normalized, ok := normalizePersonnelImportDate(original)
 		if !ok {
 			issue("departure_date", "invalid_date")
 			departureValid = false
 		} else {
 			row.DepartureDate = &normalized
+			if original != normalized {
+				warning("departure_date", "date_text_normalized")
+			}
 		}
 	}
 	if hireValid && departureValid && !validLifecycle(Lifecycle{ValidFrom: row.HireDate, ValidTo: row.DepartureDate}) {
 		issue("departure_date", "departure_not_after_hire")
 	}
-	if !validLocation(row.Location) {
-		issue("location", "invalid_location")
+	if !hasIssue("location") && !validLocation(row.Location) {
+		if canonical, ok := canonicalLocation(row.Location); ok {
+			row.Location = canonical
+			warning("location", "location_case_normalized")
+		} else {
+			issue("location", "invalid_location")
+		}
 	}
-	if !validEducationLevel(row.EducationLevel) {
+	if !hasIssue("education_level") && !validEducationLevel(row.EducationLevel) {
 		issue("education_level", "invalid_education_level")
 	}
-	if !positionValid(PositionPayload{Title: row.Position}) {
+	if !hasIssue("position") && !positionValid(PositionPayload{Title: row.Position}) {
 		issue("position", "invalid_position")
 	}
 	for _, field := range []struct {
@@ -409,11 +618,11 @@ func validatePersonnelRow(source xlsx.Row, preview *PersonnelImportPreview, inde
 		{"job_family_code", row.JobFamilyCode, 32},
 		{"career_level_code", row.CareerLevelCode, 32},
 	} {
-		if field.value == "" || strings.TrimSpace(field.value) != field.value || len(field.value) > field.limit {
+		if !hasIssue(field.name) && (field.value == "" || strings.TrimSpace(field.value) != field.value || len(field.value) > field.limit) {
 			issue(field.name, "invalid_catalog_code")
 		}
 	}
-	if row.ManagerStaffCode != "" {
+	if row.ManagerStaffCode != "" && !hasIssue("manager_staff_code") {
 		if normalized, ok := NormalizeStaffCode(row.ManagerStaffCode); !ok {
 			issue("manager_staff_code", "invalid_staff_code")
 		} else {
@@ -422,7 +631,42 @@ func validatePersonnelRow(source xlsx.Row, preview *PersonnelImportPreview, inde
 	}
 }
 
-func (s *Service) resolvePersonnelImportCatalogs(ctx context.Context, org string, preview *PersonnelImportPreview) error {
+type personnelCatalogEntry struct {
+	ID    string
+	Code  string
+	Label string
+}
+
+func resolvePersonnelCatalog(raw string, entries []personnelCatalogEntry) (string, string, bool, bool) {
+	codeMatches := 0
+	var codeMatch personnelCatalogEntry
+	for _, entry := range entries {
+		if entry.Code == raw {
+			codeMatches++
+			codeMatch = entry
+		}
+	}
+	if codeMatches == 1 {
+		return codeMatch.ID, codeMatch.Code, false, false
+	}
+	if codeMatches > 1 {
+		return "", "", false, true
+	}
+	labelMatches := 0
+	var labelMatch personnelCatalogEntry
+	for _, entry := range entries {
+		if entry.Label != "" && entry.Label == raw {
+			labelMatches++
+			labelMatch = entry
+		}
+	}
+	if labelMatches == 1 {
+		return labelMatch.ID, labelMatch.Code, true, false
+	}
+	return "", "", false, labelMatches > 1
+}
+
+func (s *Service) resolvePersonnelImportCatalogs(ctx context.Context, org string, preview *PersonnelImportPreview, includeLabels bool) error {
 	catalogsByDate := make(map[string]WorkforceCatalogs)
 	for index := range preview.Rows {
 		row := &preview.Rows[index]
@@ -436,6 +680,24 @@ func (s *Service) resolvePersonnelImportCatalogs(ctx context.Context, org string
 			if err != nil {
 				return err
 			}
+			if includeLabels {
+				for index := range catalogs.LegalEntities {
+					var label legalEntityLabel
+					entry := &catalogs.LegalEntities[index]
+					if err = s.openWorkforcePayload(ctx, org, "", entry.ID, entry.LabelPayloadID, "legal_entity", "pii.legal_entity_label.v1", &label); err != nil {
+						return err
+					}
+					entry.DisplayName = label.DisplayName
+				}
+				for index := range catalogs.OrgUnits {
+					var label catalogLabel
+					entry := &catalogs.OrgUnits[index]
+					if err = s.openWorkforcePayload(ctx, org, "", entry.ID, entry.LabelPayloadID, "org_unit", "pii.org_unit_label.v1", &label); err != nil {
+						return err
+					}
+					entry.Label = label.Label
+				}
+			}
 			catalogsByDate[row.HireDate] = catalogs
 		}
 		if preview.CatalogRevision == "" {
@@ -446,71 +708,80 @@ func (s *Service) resolvePersonnelImportCatalogs(ctx context.Context, org string
 		issue := func(field, code string) {
 			preview.Errors = append(preview.Errors, personnelImportIssue(row.RowNumber, field, code))
 		}
-		for _, entry := range catalogs.LegalEntities {
-			if entry.Active && entry.Code == row.BranchCode {
-				if row.BranchID != "" {
-					row.BranchID = ""
-					break
+		warning := func(field, code string) {
+			preview.Warnings = append(preview.Warnings, personnelImportIssue(row.RowNumber, field, code))
+		}
+		hasIssue := func(field string) bool {
+			for _, existing := range preview.Errors {
+				if existing.RowNumber == row.RowNumber && existing.Field == field {
+					return true
 				}
-				row.BranchID = entry.ID
+			}
+			return false
+		}
+		for _, level := range catalogs.EducationLevels {
+			found := false
+			for _, existing := range preview.EducationLevels {
+				found = found || existing.Code == level.Code
+			}
+			if !found {
+				preview.EducationLevels = append(preview.EducationLevels, level)
 			}
 		}
-		for _, entry := range catalogs.OrgUnits {
-			if !entry.Active {
-				continue
+		resolve := func(field string, raw *string, target *string, entries []personnelCatalogEntry) {
+			if hasIssue(field) {
+				return
 			}
+			id, code, labelMatch, ambiguous := resolvePersonnelCatalog(*raw, entries)
 			switch {
-			case entry.Kind == "business_group" && entry.Code == row.BusinessGroupCode:
-				if row.BusinessGroupID != "" {
-					row.BusinessGroupID = ""
-				} else {
-					row.BusinessGroupID = entry.ID
-				}
-			case entry.Kind == "division" && entry.Code == row.DivisionCode:
-				if row.DivisionID != "" {
-					row.DivisionID = ""
-				} else {
-					row.DivisionID = entry.ID
-				}
-			case entry.Kind == "department" && entry.Code == row.DepartmentCode:
-				if row.DepartmentID != "" {
-					row.DepartmentID = ""
-				} else {
-					row.DepartmentID = entry.ID
+			case ambiguous:
+				issue(field, "ambiguous_catalog_label")
+			case id == "":
+				issue(field, "unknown_catalog_code")
+			default:
+				*raw, *target = code, id
+				if labelMatch {
+					warning(field, "catalog_label_resolved")
 				}
 			}
 		}
+		legalEntities := make([]personnelCatalogEntry, 0, len(catalogs.LegalEntities))
+		for _, entry := range catalogs.LegalEntities {
+			if entry.Active {
+				legalEntities = append(legalEntities, personnelCatalogEntry{ID: entry.ID, Code: entry.Code, Label: entry.DisplayName})
+			}
+		}
+		orgUnits := make(map[string][]personnelCatalogEntry, 3)
+		for _, entry := range catalogs.OrgUnits {
+			if entry.Active {
+				orgUnits[entry.Kind] = append(orgUnits[entry.Kind], personnelCatalogEntry{ID: entry.ID, Code: entry.Code, Label: entry.Label})
+			}
+		}
+		jobFamilies := make([]personnelCatalogEntry, 0, len(catalogs.JobFamilies))
 		for _, entry := range catalogs.JobFamilies {
-			if entry.Active && entry.Code == row.JobFamilyCode {
-				if row.JobFamilyID != "" {
-					row.JobFamilyID = ""
-					break
-				}
-				row.JobFamilyID = entry.ID
+			if entry.Active {
+				jobFamilies = append(jobFamilies, personnelCatalogEntry{ID: entry.ID, Code: entry.Code, Label: entry.Label})
 			}
 		}
+		careerLevels := make([]personnelCatalogEntry, 0, len(catalogs.CareerLevels))
 		for _, entry := range catalogs.CareerLevels {
-			if entry.Active && entry.Code == row.CareerLevelCode {
-				if row.CareerLevelID != "" {
-					row.CareerLevelID = ""
-					break
-				}
-				row.CareerLevelID = entry.ID
+			if entry.Active {
+				careerLevels = append(careerLevels, personnelCatalogEntry{ID: entry.ID, Code: entry.Code, Label: entry.Label})
 			}
 		}
-		for _, resolved := range []struct {
-			field string
-			id    string
-		}{
-			{"branch_code", row.BranchID},
-			{"business_group_code", row.BusinessGroupID},
-			{"division_code", row.DivisionID},
-			{"department_code", row.DepartmentID},
-			{"job_family_code", row.JobFamilyID},
-			{"career_level_code", row.CareerLevelID},
-		} {
-			if resolved.id == "" {
-				issue(resolved.field, "unknown_catalog_code")
+		resolve("branch_code", &row.BranchCode, &row.BranchID, legalEntities)
+		resolve("business_group_code", &row.BusinessGroupCode, &row.BusinessGroupID, orgUnits["business_group"])
+		resolve("division_code", &row.DivisionCode, &row.DivisionID, orgUnits["division"])
+		resolve("department_code", &row.DepartmentCode, &row.DepartmentID, orgUnits["department"])
+		resolve("job_family_code", &row.JobFamilyCode, &row.JobFamilyID, jobFamilies)
+		resolve("career_level_code", &row.CareerLevelCode, &row.CareerLevelID, careerLevels)
+		if !hasIssue("education_level") {
+			educationFound := false
+			for _, level := range catalogs.EducationLevels {
+				educationFound = educationFound || level.Code == row.EducationLevel
+			}
+			if !educationFound {
+				issue("education_level", "unknown_education_level")
 			}
 		}
 		if row.BusinessGroupID != "" && row.DivisionID != "" && row.DepartmentID != "" {

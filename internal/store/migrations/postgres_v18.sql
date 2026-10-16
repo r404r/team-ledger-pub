@@ -1,0 +1,14 @@
+CREATE TABLE schema_version_v18(version INTEGER PRIMARY KEY CHECK(version IN(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18)),backend TEXT NOT NULL CHECK(backend='postgres'),checksum TEXT NOT NULL);
+INSERT INTO schema_version_v18 SELECT * FROM schema_version;
+DROP TABLE schema_version;
+ALTER TABLE schema_version_v18 RENAME TO schema_version;
+ALTER TABLE education_record DROP CONSTRAINT education_record_level_code_fkey;
+ALTER TABLE education_level RENAME TO education_level_v17;
+CREATE TABLE education_level(org_id TEXT NOT NULL REFERENCES organization(id),code TEXT NOT NULL CHECK(length(code) BETWEEN 1 AND 64 AND btrim(code)=code),rank INTEGER NOT NULL CHECK(rank BETWEEN 1 AND 10000),PRIMARY KEY(org_id,code),UNIQUE(org_id,rank));
+INSERT INTO education_level(org_id,code,rank) SELECT o.id,e.code,e.rank FROM organization o CROSS JOIN education_level_v17 e;
+ALTER TABLE education_record ADD CONSTRAINT education_record_level_code_fkey FOREIGN KEY(org_id,level_code) REFERENCES education_level(org_id,code);
+DROP TABLE education_level_v17;
+CREATE FUNCTION seed_default_education_levels() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO education_level(org_id,code,rank) VALUES(NEW.id,'Master',3),(NEW.id,'Bachelor',2),(NEW.id,'Diploma',1); RETURN NEW; END $$;
+CREATE TRIGGER organization_seed_education_levels AFTER INSERT ON organization FOR EACH ROW EXECUTE FUNCTION seed_default_education_levels();
+ALTER TABLE structure_change_item DROP CONSTRAINT structure_change_item_kind_check;
+ALTER TABLE structure_change_item ADD CONSTRAINT structure_change_item_kind_check CHECK(kind IN('legal_entity','business_group','division','department','org_unit_parent','education_level','job_family','career_level','identifier','employment','education','job_assignment','reporting','employee_lifecycle'));

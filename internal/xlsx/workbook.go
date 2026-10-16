@@ -35,14 +35,27 @@ func parseError(code, sheet, cell string) error {
 	return &ParseError{Code: code, Sheet: sheet, Cell: cell}
 }
 
+type CellKind string
+
+const (
+	CellBlank   CellKind = "blank"
+	CellText    CellKind = "text"
+	CellNumber  CellKind = "number"
+	CellDate    CellKind = "date"
+	CellBoolean CellKind = "boolean"
+	CellError   CellKind = "error"
+)
+
 type Cell struct {
 	Text   string
 	IsText bool
+	Kind   CellKind
 }
 
 type Row struct {
-	Number int
-	Cells  map[int]Cell
+	Number   int
+	Cells    map[int]Cell
+	Date1904 bool
 }
 
 type sharedStrings struct {
@@ -79,6 +92,9 @@ type relationships struct {
 }
 
 type workbookManifest struct {
+	Properties struct {
+		Date1904 string `xml:"date1904,attr"`
+	} `xml:"workbookPr"`
 	Sheets []struct {
 		Name           string `xml:"name,attr"`
 		RelationshipID string `xml:"http://schemas.openxmlformats.org/officeDocument/2006/relationships id,attr"`
@@ -132,6 +148,10 @@ func ReadFirstSheet(raw []byte, limits Limits) ([]Row, error) {
 	if workbookFile == nil || workbookRelsFile == nil || decodeZipXML(workbookFile, limits.ExpandedBytes, xmlBounds{Nodes: limits.XMLNodes}, &manifest) != nil || len(manifest.Sheets) != 1 {
 		return nil, parseError("worksheet_manifest", "", "")
 	}
+	date1904, validDateSystem := workbookDate1904(manifest.Properties.Date1904)
+	if !validDateSystem {
+		return nil, parseError("worksheet_manifest", "", "")
+	}
 	sheetName := safeSheetName(manifest.Sheets[0].Name)
 	var workbookRels relationships
 	if decodeZipXML(workbookRelsFile, limits.ExpandedBytes, xmlBounds{Nodes: limits.XMLNodes}, &workbookRels) != nil {
@@ -183,7 +203,7 @@ func ReadFirstSheet(raw []byte, limits Limits) ([]Row, error) {
 			return nil, parseError("unordered_rows", sheetName, "")
 		}
 		lastRow = number
-		row := Row{Number: number, Cells: make(map[int]Cell, len(source.Cells))}
+		row := Row{Number: number, Cells: make(map[int]Cell, len(source.Cells)), Date1904: date1904}
 		for _, sourceCell := range source.Cells {
 			column, referencedRow, ok := cellPosition(sourceCell.Reference)
 			if !ok || referencedRow != number {
@@ -202,13 +222,23 @@ func ReadFirstSheet(raw []byte, limits Limits) ([]Row, error) {
 				if parseErr != nil || sharedIndex < 0 || sharedIndex >= len(shared) {
 					return nil, parseError("invalid_shared_string", sheetName, sourceCell.Reference)
 				}
-				cell.Text, cell.IsText = shared[sharedIndex], true
+				cell.Text, cell.IsText, cell.Kind = shared[sharedIndex], true, CellText
 			case "inlineStr":
-				cell.Text, cell.IsText = richTextValue(sourceCell.Inline), true
+				cell.Text, cell.IsText, cell.Kind = richTextValue(sourceCell.Inline), true, CellText
 			case "str":
-				cell.IsText = true
-			case "", "n", "d", "b", "e":
-				cell.IsText = sourceCell.Value == ""
+				cell.IsText, cell.Kind = true, CellText
+			case "", "n":
+				if sourceCell.Value == "" {
+					cell.IsText, cell.Kind = true, CellBlank
+				} else {
+					cell.Kind = CellNumber
+				}
+			case "d":
+				cell.Kind = CellDate
+			case "b":
+				cell.Kind = CellBoolean
+			case "e":
+				cell.Kind = CellError
 			default:
 				return nil, parseError("unsupported_cell_type", sheetName, sourceCell.Reference)
 			}
@@ -218,6 +248,17 @@ func ReadFirstSheet(raw []byte, limits Limits) ([]Row, error) {
 		rows = append(rows, row)
 	}
 	return rows, nil
+}
+
+func workbookDate1904(raw string) (bool, bool) {
+	switch raw {
+	case "", "0", "false":
+		return false, true
+	case "1", "true":
+		return true, true
+	default:
+		return false, false
+	}
 }
 
 func safeEntryName(name string) bool {

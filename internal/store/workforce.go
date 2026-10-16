@@ -117,7 +117,7 @@ func (r reader) WorkforceCatalogs(ctx context.Context, org, asOf string) (organi
 	}
 	rows.Close()
 
-	rows, err = r.db.QueryContext(ctx, "SELECT code,rank FROM education_level ORDER BY rank DESC")
+	rows, err = r.db.QueryContext(ctx, r.structureSQL("SELECT code,rank FROM education_level WHERE org_id=? ORDER BY rank DESC,code"), org)
 	if err != nil {
 		return out, safeError(err)
 	}

@@ -124,7 +124,7 @@ func validCatalogChange(command CatalogChangeCommand) bool {
 }
 
 func validCatalogChangeItem(item CatalogChangeItem) bool {
-	if !oneOf(item.Action, "create", "end", "replace") || !oneOf(item.Kind, "legal_entity", "business_group", "division", "department", "org_unit_parent", "job_family", "career_level") {
+	if !oneOf(item.Action, "create", "end", "replace") || !oneOf(item.Kind, "legal_entity", "business_group", "division", "department", "org_unit_parent", "education_level", "job_family", "career_level") {
 		return false
 	}
 	if item.Ref != nil && !value.ValidID(*item.Ref) || item.ParentRef != nil && !value.ValidID(*item.ParentRef) {
@@ -143,8 +143,11 @@ func validCatalogChangeItem(item CatalogChangeItem) bool {
 	if item.Code != nil && (!utf8.ValidString(*item.Code) || strings.TrimSpace(*item.Code) == "" || len(*item.Code) > 64) {
 		return false
 	}
-	if item.Rank != nil && *item.Rank < 1 {
+	if item.Rank != nil && (*item.Rank < 1 || *item.Rank > 10000) {
 		return false
+	}
+	if item.Kind == "education_level" {
+		return item.Action == "create" && item.Ref == nil && item.Code != nil && validEducationLevel(*item.Code) && item.Label == nil && item.Rank != nil && item.ParentRef == nil && item.ValidFrom == nil && item.ValidTo == nil && item.EffectiveTo == nil
 	}
 	switch item.Action {
 	case "create":

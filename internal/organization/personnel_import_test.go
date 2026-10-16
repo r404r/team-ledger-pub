@@ -87,7 +87,7 @@ func TestParsePersonnelWorkbookPinsDateErrorsToTheirCells(t *testing.T) {
 	}
 }
 
-func TestParsePersonnelWorkbookReportsDuplicateCycleAndTypedDate(t *testing.T) {
+func TestParsePersonnelWorkbookReportsDuplicateCycleAndCoercesTypedDate(t *testing.T) {
 	rows := [][]string{
 		personnelRow("EMP-001", "员工甲", "EMP-002"),
 		personnelRow("EMP-002", "员工乙", "EMP-001"),
@@ -100,13 +100,40 @@ func TestParsePersonnelWorkbookReportsDuplicateCycleAndTypedDate(t *testing.T) {
 		t.Fatal(err)
 	}
 	codes := map[string]int{}
-	typedCell := false
 	for _, issue := range preview.Errors {
 		codes[issue.Code]++
-		typedCell = typedCell || issue.Code == "text_required" && issue.Sheet == "Employees" && issue.Cell == "J5" && issue.Field == "hire_date"
 	}
-	if codes["duplicate_staff_code"] != 2 || codes["manager_cycle"] != 2 || codes["text_required"] != 1 || codes["invalid_date"] != 0 || !typedCell {
-		t.Fatalf("issues = %#v", preview.Errors)
+	warnings := map[string]int{}
+	for _, issue := range preview.Warnings {
+		warnings[issue.Code]++
+	}
+	if codes["duplicate_staff_code"] != 2 || codes["manager_cycle"] != 2 || len(preview.Errors) != 4 || warnings["excel_date_coerced"] != 1 || preview.Rows[3].HireDate != "2025-12-09" {
+		t.Fatalf("preview = %#v", preview)
+	}
+}
+
+func TestParsePersonnelWorkbookCoercesIntegerStaffCodeWithoutDuplicateErrors(t *testing.T) {
+	row := personnelRow("7107", "数字工号员工", "")
+	preview, err := parsePersonnelWorkbook(personnelWorkbook(t, [][]string{row}, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Errors) != 0 || preview.Rows[0].StaffCode != "7107" || len(preview.Warnings) != 1 || preview.Warnings[0].Code != "numeric_staff_code_coerced" {
+		t.Fatalf("preview = %#v", preview)
+	}
+}
+
+func TestNormalizeExcelSerialDateHonorsWorkbookEpochAndRejectsAmbiguity(t *testing.T) {
+	if got, ok := normalizeExcelSerialDate("1", false); !ok || got != "1900-01-01" {
+		t.Fatalf("1900 serial = %q %v", got, ok)
+	}
+	if got, ok := normalizeExcelSerialDate("1", true); !ok || got != "1904-01-02" {
+		t.Fatalf("1904 serial = %q %v", got, ok)
+	}
+	for _, raw := range []string{"60", "1.5", "1E3", "-1"} {
+		if got, ok := normalizeExcelSerialDate(raw, false); ok {
+			t.Fatalf("ambiguous serial %q = %q", raw, got)
+		}
 	}
 }
 

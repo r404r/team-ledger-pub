@@ -27,7 +27,7 @@ func protected(path string, limit int) ([]byte, error) { return configfile.Read(
 
 var keyEnvelopeMagic = [8]byte{'T', 'L', 'B', 'K', 'E', 'Y', 'D', 1}
 
-const supportedSchemaVersion = 17
+const supportedSchemaVersion = 18
 
 func writeArchiveKey(out io.Writer, key sensitive.WrappedKey) error {
 	if len(key.Data) != 150 {

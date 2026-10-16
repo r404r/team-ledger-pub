@@ -178,6 +178,9 @@ func (s *Service) ChangeCatalogs(ctx context.Context, request Request, org strin
 	write := CatalogWrite{ID: value.NewID(), OrgID: org, SubjectID: snapshot.SubjectID, RecordedAt: s.clock(), Items: make([]CatalogPreparedItem, len(command.Changes))}
 	for i, item := range command.Changes {
 		prepared := CatalogPreparedItem{Command: item, ID: value.NewID(), VersionID: value.NewID()}
+		if item.Kind == "education_level" {
+			prepared.ID, prepared.VersionID = *item.Code, *item.Code
+		}
 		if item.Action == "end" {
 			prepared.ID, prepared.VersionID = *item.Ref, *item.Ref
 		} else if item.Action == "replace" && item.Kind != "org_unit_parent" {

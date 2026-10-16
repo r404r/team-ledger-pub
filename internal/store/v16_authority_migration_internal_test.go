@@ -94,7 +94,7 @@ func TestV16ExpandsOnlyBootstrapAdminAuthorities(t *testing.T) {
 	if err = repo.DB.QueryRowContext(ctx, "SELECT count(*) FROM delegation_authority WHERE org_id=? AND manager_subject_id=? AND policy_version='operator_policy.v1'", orgID, otherSubject).Scan(&unrelatedCount); err != nil || unrelatedCount != 1 {
 		t.Fatalf("unrelated authority count=%d err=%v", unrelatedCount, err)
 	}
-	if err = repo.DB.QueryRowContext(ctx, "SELECT max(version) FROM schema_version").Scan(&version); err != nil || version != 17 {
+	if err = repo.DB.QueryRowContext(ctx, "SELECT max(version) FROM schema_version").Scan(&version); err != nil || version != 18 {
 		t.Fatalf("schema version=%d err=%v", version, err)
 	}
 }

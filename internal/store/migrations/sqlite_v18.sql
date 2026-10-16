@@ -1,0 +1,18 @@
+CREATE TABLE schema_version_v18(version INTEGER PRIMARY KEY CHECK(version IN(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18)),backend TEXT NOT NULL CHECK(backend='sqlite'),checksum TEXT NOT NULL) STRICT;
+INSERT INTO schema_version_v18 SELECT * FROM schema_version;
+DROP TABLE schema_version;
+ALTER TABLE schema_version_v18 RENAME TO schema_version;
+ALTER TABLE education_level RENAME TO education_level_v17;
+CREATE TABLE education_level(org_id TEXT NOT NULL REFERENCES organization(id),code TEXT NOT NULL CHECK(length(code) BETWEEN 1 AND 64 AND trim(code)=code),rank INTEGER NOT NULL CHECK(rank BETWEEN 1 AND 10000),PRIMARY KEY(org_id,code),UNIQUE(org_id,rank)) STRICT;
+INSERT INTO education_level(org_id,code,rank) SELECT o.id,e.code,e.rank FROM organization o CROSS JOIN education_level_v17 e;
+CREATE TRIGGER organization_seed_education_levels AFTER INSERT ON organization BEGIN INSERT INTO education_level(org_id,code,rank) VALUES(NEW.id,'Master',3),(NEW.id,'Bachelor',2),(NEW.id,'Diploma',1); END;
+ALTER TABLE education_record RENAME TO education_record_v17;
+CREATE TABLE education_record(org_id TEXT NOT NULL,id TEXT NOT NULL,employee_id TEXT NOT NULL,level_code TEXT NOT NULL,payload_kind TEXT NOT NULL DEFAULT 'education_record' CHECK(payload_kind='education_record'),payload_id TEXT NOT NULL,valid_from TEXT NOT NULL CHECK(length(valid_from)=10 AND date(valid_from,'+0 days')=valid_from),valid_to TEXT CHECK(valid_to IS NULL OR (length(valid_to)=10 AND date(valid_to,'+0 days')=valid_to AND valid_from<valid_to)),recorded_at INTEGER NOT NULL,change_id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>0),supersedes_id TEXT,PRIMARY KEY(org_id,id),FOREIGN KEY(org_id,employee_id) REFERENCES employee(org_id,id),FOREIGN KEY(org_id,level_code) REFERENCES education_level(org_id,code),FOREIGN KEY(org_id,payload_kind,id,payload_id) REFERENCES workforce_payload(org_id,owner_kind,owner_id,id) DEFERRABLE INITIALLY DEFERRED,FOREIGN KEY(org_id,change_id) REFERENCES structure_change(org_id,id),FOREIGN KEY(org_id,supersedes_id) REFERENCES education_record(org_id,id),CHECK(supersedes_id IS NULL OR supersedes_id<>id)) STRICT;
+INSERT INTO education_record SELECT * FROM education_record_v17;
+DROP TABLE education_record_v17;
+DROP TABLE education_level_v17;
+ALTER TABLE structure_change_item RENAME TO structure_change_item_v17;
+CREATE TABLE structure_change_item(org_id TEXT NOT NULL,change_id TEXT NOT NULL,ordinal INTEGER NOT NULL CHECK(ordinal BETWEEN 0 AND 99),action TEXT NOT NULL CHECK(action IN('create','add','end','replace')),kind TEXT NOT NULL CHECK(kind IN('legal_entity','business_group','division','department','org_unit_parent','education_level','job_family','career_level','identifier','employment','education','job_assignment','reporting','employee_lifecycle')),fact_id TEXT,employee_id TEXT,owner_id TEXT,valid_from TEXT CHECK(valid_from IS NULL OR (length(valid_from)=10 AND date(valid_from,'+0 days')=valid_from)),valid_to TEXT CHECK(valid_to IS NULL OR (length(valid_to)=10 AND date(valid_to,'+0 days')=valid_to)),effective_to TEXT CHECK(effective_to IS NULL OR (length(effective_to)=10 AND date(effective_to,'+0 days')=effective_to)),supersedes_id TEXT,CHECK(valid_to IS NULL OR valid_from<valid_to),PRIMARY KEY(org_id,change_id,ordinal),FOREIGN KEY(org_id,change_id) REFERENCES structure_change(org_id,id),FOREIGN KEY(org_id,employee_id) REFERENCES employee(org_id,id)) STRICT;
+INSERT INTO structure_change_item SELECT * FROM structure_change_item_v17;
+DROP TABLE structure_change_item_v17;
+CREATE INDEX structure_change_item_employee ON structure_change_item(org_id,employee_id,change_id);

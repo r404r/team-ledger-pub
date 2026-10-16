@@ -206,5 +206,5 @@ func validLocation(code string) bool {
 }
 
 func validEducationLevel(code string) bool {
-	return code == EducationMaster || code == EducationBachelor || code == EducationDiploma
+	return utf8.ValidString(code) && code != "" && len(code) <= 64 && strings.TrimSpace(code) == code
 }

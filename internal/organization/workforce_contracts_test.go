@@ -47,7 +47,7 @@ func TestWorkforceProfileRequiresOneBoundedBilingualName(t *testing.T) {
 	}
 }
 
-func TestFixedWorkforceCatalogValues(t *testing.T) {
+func TestControlledWorkforceCatalogValues(t *testing.T) {
 	for _, code := range []string{LocationShanghai, LocationWuxi, LocationTokyo} {
 		if !validLocation(code) {
 			t.Fatal("fixed location rejected:", code)
@@ -58,14 +58,14 @@ func TestFixedWorkforceCatalogValues(t *testing.T) {
 			t.Fatal("unknown location accepted:", code)
 		}
 	}
-	for _, code := range []string{EducationMaster, EducationBachelor, EducationDiploma} {
+	for _, code := range []string{EducationMaster, EducationBachelor, EducationDiploma, "Doctor"} {
 		if !validEducationLevel(code) {
-			t.Fatal("fixed education level rejected:", code)
+			t.Fatal("valid education level code rejected:", code)
 		}
 	}
-	for _, code := range []string{"PhD", "master", ""} {
+	for _, code := range []string{"", " Doctor", strings.Repeat("x", 65)} {
 		if validEducationLevel(code) {
-			t.Fatal("unknown education level accepted:", code)
+			t.Fatal("invalid education level code accepted:", code)
 		}
 	}
 }

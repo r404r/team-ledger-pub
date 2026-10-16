@@ -434,6 +434,8 @@ func (t *transaction) insertCatalogCreate(ctx context.Context, org, changeID str
 		if err == nil {
 			_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO org_unit_version(org_id,id,org_unit_id,label_payload_id,valid_from,valid_to,revision,change_id) VALUES(?,?,?,?,?,?,1,?)"), org, item.VersionID, item.ID, item.Payload.ID, *command.ValidFrom, nullablePointer(command.ValidTo), changeID)
 		}
+	case "education_level":
+		_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO education_level(org_id,code,rank) VALUES(?,?,?)"), org, *command.Code, *command.Rank)
 	case "job_family":
 		_, err = t.tx.ExecContext(ctx, t.structureSQL("INSERT INTO job_family(org_id,id,code) VALUES(?,?,?)"), org, item.ID, *command.Code)
 		if err == nil {
