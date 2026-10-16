@@ -10,10 +10,12 @@ import CompensationPage from './CompensationPage.vue'
 import CompensationBatchPage from './CompensationBatchPage.vue'
 import BonusPage from './BonusPage.vue'
 import FollowupPage from './FollowupPage.vue'
+import UserPage from './UserPage.vue'
 
 const pathname = ref(window.location.pathname)
 const grantsRoute = computed(() => /^\/security\/grants\/?$/.test(pathname.value))
 const auditRoute = computed(() => /^\/security\/audit\/?$/.test(pathname.value))
+const usersRoute = computed(() => /^\/security\/users\/?$/.test(pathname.value))
 const organizationRoute = computed(() => /^\/orgs\/[0-9a-f-]+\/(?:tree|employees)\/?$/.test(pathname.value) ||
   /^\/employees\/[0-9a-f-]+\/organization-history\/?$/.test(pathname.value))
 const interviewRoute = computed(() => /^\/interviews(?:\/[0-9a-f-]+)?\/?$/.test(pathname.value) ||
@@ -38,11 +40,12 @@ function changeViewDate(event: Event, setAsOf: (value: string) => boolean, curre
   if (!setAsOf(input.value)) input.value = current
 }
 
-function navActive(section: 'profile' | 'grants' | 'audit' | 'organization' | 'directory' | 'interviews' | 'batches') {
+function navActive(section: 'profile' | 'grants' | 'audit' | 'users' | 'organization' | 'directory' | 'interviews' | 'batches') {
   const path = pathname.value
   if (section === 'profile') return path === '/' || /^\/employees\/[0-9a-f-]+\/?$/.test(path)
   if (section === 'grants') return grantsRoute.value
   if (section === 'audit') return auditRoute.value
+  if (section === 'users') return usersRoute.value
   if (section === 'organization') return /\/(?:tree|organization-history)\/?$/.test(path)
   if (section === 'directory') return /\/employees\/?$/.test(path) && path.startsWith('/orgs/')
   if (section === 'interviews') return interviewRoute.value
@@ -53,7 +56,7 @@ onBeforeUnmount(() => window.removeEventListener('popstate', readRoute))
 </script>
 
 <template>
-  <IdentityGate v-slot="{ expireSession, orgID, asOf, setAsOf }">
+  <IdentityGate v-slot="{ expireSession, orgID, asOf, setAsOf, canManageUsers }">
     <header class="app-shell-header">
       <div class="app-shell-bar">
         <a class="brand-lockup" href="/" aria-label="TeamLedger 首页" @click="navigate($event, '/')">
@@ -72,6 +75,7 @@ onBeforeUnmount(() => window.removeEventListener('popstate', readRoute))
         <a href="/" :aria-current="navActive('profile') ? 'page' : undefined" @click="navigate($event, '/')">人员资料</a>
         <a href="/security/grants" :aria-current="navActive('grants') ? 'page' : undefined" @click="navigate($event, '/security/grants')">授权</a>
         <a href="/security/audit" :aria-current="navActive('audit') ? 'page' : undefined" @click="navigate($event, '/security/audit')">审计</a>
+        <a v-if="canManageUsers" href="/security/users" :aria-current="navActive('users') ? 'page' : undefined" @click="navigate($event, '/security/users')">用户管理</a>
         <a :href="`/orgs/${orgID}/tree`" :aria-current="navActive('organization') ? 'page' : undefined" @click="navigate($event, `/orgs/${orgID}/tree`)">组织树</a>
         <a :href="`/orgs/${orgID}/employees`" :aria-current="navActive('directory') ? 'page' : undefined" @click="navigate($event, `/orgs/${orgID}/employees`)">员工目录</a>
         <a href="/interviews" :aria-current="navActive('interviews') ? 'page' : undefined" @click="navigate($event, '/interviews')">面谈</a>
@@ -80,6 +84,7 @@ onBeforeUnmount(() => window.removeEventListener('popstate', readRoute))
     </header>
     <GrantPage v-if="grantsRoute" @session-expired="expireSession" />
     <AuditPage v-else-if="auditRoute" @session-expired="expireSession" />
+    <UserPage v-else-if="usersRoute" @session-expired="expireSession" />
     <InterviewPage v-else-if="interviewRoute" @session-expired="expireSession" />
     <FollowupPage v-else-if="followupRoute" @session-expired="expireSession" />
     <CompensationPage v-else-if="compensationRoute" :query-date="asOf" @session-expired="expireSession" />

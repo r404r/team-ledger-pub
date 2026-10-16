@@ -175,6 +175,20 @@ describe('shared protected identity interaction', () => {
     expect(page.text()).toContain(SAVED_NAME)
   })
 
+  it('shows user administration navigation only when the session advertises identity.manage', async () => {
+    api.reply('GET', PROFILE_PATH, 200, profile())
+    const hidden = await open()
+    expect(hidden.find('a[href="/security/users"]').exists()).toBe(false)
+    hidden.unmount(); pages = []
+
+    api = new ExternalHTTP()
+    api.session = { ...initialSession, capabilities: [...initialSession.capabilities, 'identity.manage'] }
+    vi.stubGlobal('fetch', api.fetch)
+    api.reply('GET', PROFILE_PATH, 200, profile())
+    const visible = await open()
+    expect(visible.get('a[href="/security/users"]').text()).toBe('用户管理')
+  })
+
   it('renders the compact session control in the supplied header target and closes its overlay on Escape', async () => {
     const page = await openGate()
     const target = page.get('#identity-session-target')
@@ -550,6 +564,43 @@ describe('shared protected identity interaction', () => {
     expect(page.find('nav').exists()).toBe(false)
     expect(page.findComponent(ProfilePage).exists()).toBe(false)
     expect(page.text()).not.toContain(SAVED_NAME)
+  })
+
+  it('forces an initial-password replacement before MFA enrollment or protected access', async () => {
+    api.replies.push({ method: 'GET', path: '/api/v1/session', promise: Promise.resolve(response(401, { code: 'UNAUTHENTICATED' }, { 'X-TeamLedger-Identity-Mode': 'local' })) })
+    api.reply('POST', '/api/v1/auth/local/login', 202, { return_to: '/', next: 'change_password', csrf_token: 'restricted-csrf' })
+    const page = await openGate()
+    await page.get('#local-username').setValue('new.operator')
+    await page.get('#local-password').setValue('temporary horse battery staple')
+    await page.get('form').trigger('submit')
+    await settled()
+    expect(identityState(page)).toBe('password-change')
+    expect(page.text()).toContain('当前会话只能修改密码或注销')
+    expect(page.find('[data-protected-surface]').exists()).toBe(false)
+    expect(api.matching('POST', '/api/v1/auth/local/mfa/enrollment')).toHaveLength(0)
+
+    await page.get('#temporary-password').setValue('temporary horse battery staple')
+    await page.get('#replacement-password').setValue('permanent horse battery staple')
+    await page.get('#replacement-confirm').setValue('different horse battery staple')
+    await page.get('.enrollment-card form').trigger('submit')
+    await settled()
+    expect(page.text()).toContain('两次输入的新密码不一致')
+    expect(api.matching('POST', '/api/v1/auth/local/initial-password')).toHaveLength(0)
+
+    api.reply('POST', '/api/v1/auth/local/initial-password', 204)
+    await page.get('#replacement-confirm').setValue('permanent horse battery staple')
+    await page.get('.enrollment-card form').trigger('submit')
+    await settled()
+    const changed = api.matching('POST', '/api/v1/auth/local/initial-password')[0]!
+    expect(changed.headers.get('X-CSRF-Token')).toBe('restricted-csrf')
+    expect(JSON.parse(changed.body!)).toEqual({ current_password: 'temporary horse battery staple', new_password: 'permanent horse battery staple' })
+    expect(identityState(page)).toBe('password-changed')
+    expect(page.findAll('input[type=\"password\"]')).toHaveLength(0)
+    expect(page.text()).not.toContain('temporary horse battery staple')
+    expect(page.text()).not.toContain('permanent horse battery staple')
+    await action(page, /返回登录/).trigger('click')
+    expect(identityState(page)).toBe('logged-out')
+    expect(page.find('#local-password').exists()).toBe(true)
   })
 
   it('keeps first-time local users in a server-restricted enrollment flow and displays the recovery code once', async () => {

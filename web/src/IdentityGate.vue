@@ -12,9 +12,10 @@ type SessionHint = {
   identity_available?: boolean
   identity_mode?: 'local' | 'oidc'
   sensitivity_valid_until?: string
+  can_manage_users: boolean
 }
 type Phase = 'checking' | 'authenticated' | 'logged-out' | 'expired' | 'changed' | 'unavailable' |
-  'logging-out' | 'logout-failed' | 'mfa-starting' | 'mfa-redirecting' | 'mfa-failed' | 'login-redirecting' | 'login-failed' | 'login-totp' | 'enrollment-loading' | 'enrolling' | 'mfa-confirming' | 'recovery-code' | 'recovery-failed'
+  'logging-out' | 'logout-failed' | 'mfa-starting' | 'mfa-redirecting' | 'mfa-failed' | 'login-redirecting' | 'login-failed' | 'login-totp' | 'password-change' | 'password-changing' | 'password-change-failed' | 'password-changed' | 'enrollment-loading' | 'enrolling' | 'mfa-confirming' | 'recovery-code' | 'recovery-failed'
 type Operation = { generation: number; controller: AbortController }
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -33,6 +34,10 @@ const newPassword = ref('')
 const totpCode = ref('')
 const recoveryCodeInput = ref('')
 const loginKind = ref<'password' | 'recovery'>('password')
+const temporaryPassword = ref('')
+const replacementPassword = ref('')
+const replacementConfirm = ref('')
+const passwordChangeError = ref('')
 const restrictedCSRF = ref('')
 const enrollment = shallowRef<{ secret: string; uri: string; mode: 'initial' | 'replace' | 'recovery'; expires_at: string } | null>(null)
 const enrollmentCode = ref('')
@@ -65,7 +70,8 @@ const canLogout = computed(() => session.value !== null && !['logging-out', 'log
 const interviewRoute = computed(() => /^\/interviews(?:\/|$)/.test(returnTo.value) || /^\/employees\/[^/]+\/interviews$/.test(returnTo.value))
 const followupRoute = computed(() => /^\/employees\/[^/]+\/followup$/.test(returnTo.value))
 const compensationRoute = computed(() => /^\/employees\/[^/]+\/(?:compensation|bonuses)(?:\?|$)/.test(returnTo.value) || /^\/orgs\/[^/]+\/compensation-adjustments(?:\?|$)/.test(returnTo.value))
-const stepUpAction = computed(() => returnTo.value.split('?')[0] === '/security/grants' ? 'access_grant.manage' : returnTo.value.split('?')[0] === '/security/audit' ? 'audit.read' : compensationRoute.value ? compensationIntent.value : followupRoute.value ? 'interview_policy.manage' : interviewRoute.value ? interviewIntent.value : 'pii.write')
+const stepUpAction = computed(() => returnTo.value.split('?')[0] === '/security/grants' ? 'access_grant.manage' : returnTo.value.split('?')[0] === '/security/audit' ? 'audit.read' : returnTo.value.split('?')[0] === '/security/users' ? 'identity.manage' : compensationRoute.value ? compensationIntent.value : followupRoute.value ? 'interview_policy.manage' : interviewRoute.value ? interviewIntent.value : 'pii.write')
+const canManageUsers = computed(() => session.value?.can_manage_users === true)
 
 function validDate(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
@@ -102,6 +108,7 @@ function knownReturnRoute() {
   else if (/^\/interviews\/?$/.test(url.pathname)) path = '/interviews'
   else if (/^\/security\/grants\/?$/.test(url.pathname)) path = '/security/grants'
   else if (/^\/security\/audit\/?$/.test(url.pathname)) path = '/security/audit'
+  else if (/^\/security\/users\/?$/.test(url.pathname)) path = '/security/users'
   else if (url.pathname === '/') path = '/'
   else return '/'
   const query = Array.from(url.searchParams.entries())
@@ -132,7 +139,7 @@ function isCurrent(operation: Operation) {
 }
 function sessionHint(value: unknown): SessionHint | null {
   if (!value || typeof value !== 'object') return null
-  const next = value as Partial<SessionHint>
+  const next = value as Partial<SessionHint> & { capabilities?: unknown }
   if (typeof next.subject_id !== 'string' || !uuid.test(next.subject_id) ||
       typeof next.org_id !== 'string' || !uuid.test(next.org_id) ||
       typeof next.business_date !== 'string' || !validDate(next.business_date) ||
@@ -141,7 +148,8 @@ function sessionHint(value: unknown): SessionHint | null {
       typeof next.csrf_token !== 'string' || !next.csrf_token ||
       typeof next.mfa_recent !== 'boolean' ||
       (next.identity_available !== undefined && typeof next.identity_available !== 'boolean') ||
-      (next.identity_mode !== undefined && next.identity_mode !== 'local' && next.identity_mode !== 'oidc')) return null
+      (next.identity_mode !== undefined && next.identity_mode !== 'local' && next.identity_mode !== 'oidc') ||
+      (next.capabilities !== undefined && (!Array.isArray(next.capabilities) || !next.capabilities.every(capability => typeof capability === 'string')))) return null
   if (next.sensitivity_valid_until !== undefined) {
     if (typeof next.sensitivity_valid_until !== 'string') return null
     const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d{1,6})?Z$/.exec(next.sensitivity_valid_until)
@@ -152,7 +160,7 @@ function sessionHint(value: unknown): SessionHint | null {
     subject_id: next.subject_id, org_id: next.org_id, auth_epoch: next.auth_epoch,
     business_date: next.business_date, csrf_token: next.csrf_token, mfa_recent: next.mfa_recent,
     identity_available: next.identity_available, identity_mode: next.identity_mode,
-    sensitivity_valid_until: next.sensitivity_valid_until,
+    sensitivity_valid_until: next.sensitivity_valid_until, can_manage_users: Array.isArray(next.capabilities) && next.capabilities.includes('identity.manage'),
 }
 }
 function sameIdentity(left: SessionHint, right: SessionHint) {
@@ -180,6 +188,10 @@ function clearRestrictedSecrets() {
   enrollmentCode.value = ''
   restrictedCSRF.value = ''
   recoveryCodeInput.value = ''
+  temporaryPassword.value = ''
+  replacementPassword.value = ''
+  replacementConfirm.value = ''
+  passwordChangeError.value = ''
 }
 function clearSecuritySecrets() {
   securityPassword.value = ''
@@ -249,6 +261,10 @@ async function logout() {
   if (!csrf || phase.value === 'logging-out' || phase.value === 'logged-out') return
   const operation = beginOperation('logging-out')
   logoutCSRF = csrf
+  clearRestrictedSecrets()
+  oneTimeRecoveryCode.value = ''
+  recoverySaved.value = false
+  clearSecuritySecrets()
   session.value = null
   await nextTick()
   globalViewDate.value = ''
@@ -367,14 +383,19 @@ async function localLogin() {
     }
     if (response.status === 202) {
       if (!('csrf_token' in body) || typeof body.csrf_token !== 'string' || !body.csrf_token ||
-          !('next' in body) || body.next !== 'enroll' && body.next !== 'recover') {
+          !('next' in body) || body.next !== 'enroll' && body.next !== 'recover' && body.next !== 'change_password') {
         phase.value = 'login-failed'
         return
       }
       restrictedCSRF.value = body.csrf_token
       logoutCSRF = body.csrf_token
-      phase.value = 'enrollment-loading'
-      await loadRestrictedEnrollment(body.next, operation)
+      if (body.next === 'change_password') {
+        passwordChangeError.value = ''
+        phase.value = 'password-change'
+      } else {
+        phase.value = 'enrollment-loading'
+        await loadRestrictedEnrollment(body.next, operation)
+      }
       recoveryRequestID = ''
       return
     }
@@ -388,6 +409,46 @@ async function localLogin() {
     if (isCurrent(operation)) controller = null
   }
 }
+async function submitInitialPassword() {
+  if (!restrictedCSRF.value || phase.value !== 'password-change' && phase.value !== 'password-change-failed') return
+  if (replacementPassword.value !== replacementConfirm.value || replacementPassword.value === temporaryPassword.value) {
+    passwordChangeError.value = replacementPassword.value !== replacementConfirm.value ? '两次输入的新密码不一致。' : '新密码不能与初始密码相同。'
+    return
+  }
+  const operation = beginOperation('password-changing')
+  passwordChangeError.value = ''
+  const payload = JSON.stringify({ current_password: temporaryPassword.value, new_password: replacementPassword.value })
+  const request = fetch('/api/v1/auth/local/initial-password', {
+    method: 'POST', credentials: 'same-origin', cache: 'no-store', signal: operation.controller.signal,
+    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': restrictedCSRF.value }, body: payload,
+  })
+  temporaryPassword.value = ''
+  replacementPassword.value = ''
+  replacementConfirm.value = ''
+  try {
+    const response = await request
+    if (!isCurrent(operation)) return
+    if (response.status !== 204) {
+      passwordChangeError.value = response.status === 401 ? '受限会话已失效，请重新登录。' : '密码修改失败。请重新输入初始密码，并使用不同的 12..256 位新密码。'
+      phase.value = response.status === 401 ? 'expired' : 'password-change-failed'
+      if (response.status === 401) { restrictedCSRF.value = ''; logoutCSRF = null }
+      return
+    }
+    restrictedCSRF.value = ''
+    logoutCSRF = null
+    phase.value = 'password-changed'
+  } catch {
+    if (isCurrent(operation)) {
+      passwordChangeError.value = '无法确认密码修改结果。请返回登录页，先尝试使用新密码登录。'
+      restrictedCSRF.value = ''
+      logoutCSRF = null
+      phase.value = 'password-changed'
+    }
+  } finally {
+    if (isCurrent(operation)) controller = null
+  }
+}
+
 async function confirmEnrollment() {
   if (!enrollment.value || !restrictedCSRF.value || phase.value !== 'enrolling') return
   const operation = beginOperation('mfa-confirming')
@@ -661,10 +722,10 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section :class="{ 'identity-shell': phase !== 'authenticated', 'identity-shell-wide': ['enrolling', 'mfa-confirming', 'recovery-code'].includes(phase) }" aria-label="共同身份与会话" :data-identity-state="phase" :aria-busy="['checking', 'logging-out', 'mfa-starting', 'enrollment-loading', 'mfa-confirming'].includes(phase)">
+  <section :class="{ 'identity-shell': phase !== 'authenticated', 'identity-shell-wide': ['password-change', 'password-changing', 'password-change-failed', 'enrolling', 'mfa-confirming', 'recovery-code'].includes(phase) }" aria-label="共同身份与会话" :data-identity-state="phase" :aria-busy="['checking', 'logging-out', 'mfa-starting', 'password-changing', 'enrollment-loading', 'mfa-confirming'].includes(phase)">
     <template v-if="phase === 'authenticated'">
       <div :key="protectedGeneration">
-        <slot :expireSession="expireSession" :orgID="session?.org_id" :asOf="globalViewDate" :setAsOf="setGlobalViewDate" />
+        <slot :expireSession="expireSession" :orgID="session?.org_id" :asOf="globalViewDate" :setAsOf="setGlobalViewDate" :canManageUsers="canManageUsers" />
       </div>
       <Teleport defer :key="`session-${protectedGeneration}`" to="#identity-session-target">
         <details ref="sessionPanel" class="identity-session-panel">
@@ -687,9 +748,9 @@ onBeforeUnmount(() => {
               <div v-if="identityAvailable" class="identity-tools-row">
                 <label v-if="interviewRoute" for="interview-stepup-intent">重新验证意图<select id="interview-stepup-intent" v-model="interviewIntent"><option value="note.publish">发布笔记</option><option value="sensitive.export">敏感导出</option></select></label>
                 <label v-if="compensationRoute" for="compensation-stepup-intent">财务重新验证意图<select id="compensation-stepup-intent" v-model="compensationIntent"><option value="compensation.read">财务读取</option><option value="compensation.propose">薪酬提出</option><option value="compensation.approve">独立薪酬审批</option><option value="bonus.target.manage">奖金目标维护</option><option value="bonus.propose">奖金奖励维护</option><option value="bonus.approve">独立奖金审批</option><option value="bonus.payment.record">奖金支付事实</option><option value="compensation.extension.manage">薪酬有限扩展</option><option value="sensitive.export">财务敏感导出</option></select></label>
-                <button type="button" @click="closeSessionPanel(); stepUp()">{{ compensationRoute ? '重新验证财务 MFA' : stepUpAction === 'access_grant.manage' ? '重新验证授权管理 MFA' : stepUpAction === 'audit.read' ? '重新验证审计 MFA' : stepUpAction === 'interview_policy.manage' ? '重新验证跟进策略 MFA' : stepUpAction === 'note.publish' ? '重新验证笔记发布 MFA' : stepUpAction === 'sensitive.export' ? '重新验证敏感导出 MFA' : '重新验证资料写入 MFA' }}</button>
+                <button type="button" @click="closeSessionPanel(); stepUp()">{{ compensationRoute ? '重新验证财务 MFA' : stepUpAction === 'access_grant.manage' ? '重新验证授权管理 MFA' : stepUpAction === 'audit.read' ? '重新验证审计 MFA' : stepUpAction === 'identity.manage' ? '重新验证用户管理 MFA' : stepUpAction === 'interview_policy.manage' ? '重新验证跟进策略 MFA' : stepUpAction === 'note.publish' ? '重新验证笔记发布 MFA' : stepUpAction === 'sensitive.export' ? '重新验证敏感导出 MFA' : '重新验证资料写入 MFA' }}</button>
               </div>
-              <p v-if="interviewRoute || compensationRoute || followupRoute || stepUpAction === 'audit.read'">MFA 是会话级近期认证；认证后重载并明确重新确认，不自动提交、审批、生成结论、查询审计或导出。</p>
+              <p v-if="interviewRoute || compensationRoute || followupRoute || stepUpAction === 'audit.read' || stepUpAction === 'identity.manage'">MFA 是会话级近期认证；认证后重载并明确重新确认，不自动提交、审批、创建用户、生成结论、查询审计或导出。</p>
               <p v-if="securityNotice" class="security-success" role="status">{{ securityNotice }}</p>
               <details v-if="identityMode === 'local'" class="identity-account-panel">
                 <summary>账号安全、验证器与密码</summary>
@@ -756,8 +817,21 @@ onBeforeUnmount(() => {
       <p v-else-if="phase === 'login-redirecting'" role="status">{{ identityMode === 'local' ? '正在验证本地账号。' : '正在前往可信身份设施登录。' }}</p>
       <p v-else-if="phase === 'login-totp'" role="status">密码已确认。请输入验证器中的 6 位新验证码；密码需要再次输入且不会保留。</p>
       <p v-else-if="phase === 'login-failed'" role="alert">账号、密码、验证码或登录状态无效；请稍后重试。</p>
+      <p v-else-if="phase === 'password-changed'" role="status">密码修改请求已经结束，受限会话已撤销。请使用新密码重新登录；若刚才网络中断，请先尝试新密码，再尝试初始密码。</p>
       <p v-else-if="phase === 'recovery-failed'" role="alert">账号、密码或恢复码无效；未开始账号恢复。</p>
-      <section v-if="(phase === 'enrolling' || phase === 'mfa-confirming') && enrollment" class="enrollment-card" aria-labelledby="enrollment-title">
+      <section v-if="['password-change', 'password-changing', 'password-change-failed'].includes(phase)" class="enrollment-card" aria-labelledby="initial-password-title">
+        <p class="eyebrow">首次登录 · 必须完成</p>
+        <h2 id="initial-password-title">修改初始密码</h2>
+        <p>当前会话只能修改密码或注销，不能打开用户、员工、授权或审计资料。修改成功后，请用新密码重新登录并登记 TOTP。</p>
+        <p v-if="passwordChangeError" role="alert">{{ passwordChangeError }}</p>
+        <form @submit.prevent="submitInitialPassword">
+          <label for="temporary-password">初始密码<input id="temporary-password" v-model="temporaryPassword" type="password" autocomplete="current-password" required minlength="12" maxlength="256" autofocus></label>
+          <label for="replacement-password">新密码<input id="replacement-password" v-model="replacementPassword" type="password" autocomplete="new-password" required minlength="12" maxlength="256"></label>
+          <label for="replacement-confirm">再次输入新密码<input id="replacement-confirm" v-model="replacementConfirm" type="password" autocomplete="new-password" required minlength="12" maxlength="256"></label>
+          <div class="identity-actions"><button type="button" :disabled="phase === 'password-changing'" @click="logout">取消并注销</button><button type="submit" :disabled="phase === 'password-changing' || replacementPassword !== replacementConfirm">{{ phase === 'password-changing' ? '正在修改…' : '修改密码并注销' }}</button></div>
+        </form>
+      </section>
+      <section v-else-if="(phase === 'enrolling' || phase === 'mfa-confirming') && enrollment" class="enrollment-card" aria-labelledby="enrollment-title">
         <p class="eyebrow">仅限账号安全</p>
         <h2 id="enrollment-title">{{ enrollment.mode === 'recovery' ? '恢复并设置新验证器' : '设置 TOTP 验证器' }}</h2>
         <p>使用任一标准离线验证器扫描二维码；TeamLedger 不调用外部 MFA 服务。无法扫描时可手工输入密钥。</p>
@@ -776,6 +850,7 @@ onBeforeUnmount(() => {
         <label><input v-model="recoverySaved" type="checkbox">我已将恢复码保存在安全的离线位置</label>
         <button type="button" :disabled="!recoverySaved" @click="finishRecoveryCode">进入 TeamLedger</button>
       </section>
+      <section v-else-if="phase === 'password-changed'" class="identity-actions"><button type="button" @click="phase = 'logged-out'">返回登录</button></section>
       <template v-else>
         <div class="identity-actions">
           <button v-if="canLogout" type="button" @click="logout">注销本会话</button>
