@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
+import PersonnelImportPanel from './PersonnelImportPanel.vue'
 
 const props = defineProps<{ queryDate?: string }>()
 const emit = defineEmits<{ 'session-expired': [] }>()
@@ -324,6 +325,18 @@ async function searchManagers() {
   }
 }
 
+function updateImportSession(payload: { session: Session; catalogRevision: string; graphRevision: string }) {
+  if (!session.value || !sameIdentity(session.value, payload.session)) {
+    clearSensitive()
+    session.value = null
+    emit('session-expired')
+    return
+  }
+  session.value = payload.session
+  catalogRevision.value = payload.catalogRevision
+  graphRevision.value = payload.graphRevision
+}
+
 function updateAddress() {
   const path = routeKind.value === 'employee' ? `/employees/${employeeId.value}` : '/'
   if (validDate(props.queryDate ?? '')) window.history.replaceState({}, '', path)
@@ -636,6 +649,14 @@ onBeforeUnmount(() => {
         </section>
         <button v-if="canEdit && !editing" type="button" :disabled="busy" @click="beginEdit">更正资料</button>
       </section>
+
+      <PersonnelImportPanel
+        v-if="session && routeKind === 'create' && canCreate && validDate(asOf)"
+        :session="session"
+        :as-of="asOf"
+        @session-expired="emit('session-expired')"
+        @session-updated="updateImportSession"
+      />
 
       <form v-if="session && ((routeKind === 'create' && canCreate) || editing)" class="profile-editor" @submit.prevent="save">
         <fieldset :disabled="busy">
