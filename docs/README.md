@@ -29,5 +29,6 @@
 - [DEV-041初始管理员全量可委派权限](plans/DEV-041.md)：38项当前可委派authority、v15→v16迁移及安全边界。
 - [DEV-041验证摘要](validation/DEV-041.md)
 - [DEV-042人员XLSX逐格错误诊断](validation/DEV-042.md)：最新模板经Excel保存后的类型兼容、sheet/cell错误和安全日志。
+- [DEV-043 Staff关联账号与默认直属权限](plans/DEV-043.md)：standalone/staff账号类型、动态一层直属范围、员工资料与面谈最小默认权限及v16→v17迁移。
 
 历史私有计划、review会话、本机路径和旧文档commit台账不复制到public仓库；它们不是当前产品契约。当前行为以本仓库源码、迁移、永久测试和上述文档为准。
