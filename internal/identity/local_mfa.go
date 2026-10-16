@@ -148,7 +148,7 @@ func enrollmentURI(secret string) string {
 	}.Encode()
 }
 
-func (s *Service) sealEnrollment(ctx context.Context, owner LocalSessionCredential, mode string, sessionHash []byte) (LocalMFAEnrollment, string, error) {
+func (s *Service) sealEnrollment(ctx context.Context, owner LocalSessionCredential, mode string, sessionHash []byte, now time.Time) (LocalMFAEnrollment, string, error) {
 	if mode != "initial" && mode != "replace" && mode != "recovery" || len(sessionHash) != 32 {
 		return LocalMFAEnrollment{}, "", fault.Invalid
 	}
@@ -168,7 +168,6 @@ func (s *Service) sealEnrollment(ctx context.Context, owner LocalSessionCredenti
 	if err != nil {
 		return LocalMFAEnrollment{}, "", fault.Unavailable
 	}
-	now := s.now()
 	return LocalMFAEnrollment{AccountID: owner.Credential.AccountID, OrgID: owner.Credential.OrgID, EnrollmentID: id, Mode: mode, Generation: generation, ExpiresAt: now.Add(localMFATTL), BoundSessionHash: append([]byte(nil), sessionHash...), Envelope: envelope}, encoded, nil
 }
 
@@ -190,11 +189,12 @@ func (s *Service) LocalMFABegin(ctx context.Context, sessionHash []byte, request
 	} else if owner.Session.AccessKind != "mfa_enrollment" || owner.Credential.MFAStatus != "enrollment_required" {
 		return LocalMFAPendingResult{}, fault.Forbidden
 	}
-	enrollment, secret, err := s.sealEnrollment(ctx, owner, mode, sessionHash)
+	now := s.now()
+	enrollment, secret, err := s.sealEnrollment(ctx, owner, mode, sessionHash, now)
 	if err != nil {
 		return LocalMFAPendingResult{}, err
 	}
-	if err = s.local.store.BeginLocalMFAEnrollment(ctx, LocalMFAEnrollmentInput{SessionHash: sessionHash, Enrollment: enrollment, AcceptedStep: accepted, RequestID: request.RequestID, Now: s.now()}); err != nil {
+	if err = s.local.store.BeginLocalMFAEnrollment(ctx, LocalMFAEnrollmentInput{SessionHash: sessionHash, Enrollment: enrollment, AcceptedStep: accepted, RequestID: request.RequestID, Now: now}); err != nil {
 		return LocalMFAPendingResult{}, err
 	}
 	return LocalMFAPendingResult{Secret: secret, URI: enrollmentURI(secret), Mode: mode, ExpiresAt: enrollment.ExpiresAt}, nil
@@ -362,7 +362,7 @@ func (s *Service) LocalMFARecover(ctx context.Context, request LocalMFARecoveryR
 	}
 	hash := issue.TokenHash
 	placeholder.Session = Session{Hash: hash, AccessKind: "mfa_recovery"}
-	enrollment, _, err := s.sealEnrollment(ctx, placeholder, "recovery", hash)
+	enrollment, _, err := s.sealEnrollment(ctx, placeholder, "recovery", hash, now)
 	if err != nil {
 		return LoginResult{}, err
 	}

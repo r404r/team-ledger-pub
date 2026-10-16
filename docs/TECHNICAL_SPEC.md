@@ -1,8 +1,8 @@
 # TeamLedger · 整体最新技术文档
 
 - 当前修订日期：**2026-10-16**。本文件与源码同属 `team-ledger`，是当前架构、HTTP语义、安全边界和运行设计的唯一公开技术说明。
-- 当前实现基线：Go模块化单体、Vue、SQLite/PostgreSQL schema v13、本地keyd、local/OIDC互斥身份模式、同库独立audit receiver及Docker Compose独立部署。
-- 历史Task ID用于说明实现阶段；历史私有计划、审查会话、本机路径及旧文档commit台账不属于public文档。实现事实以本仓库源码、v13迁移、永久测试和当前文档为准。
+- 当前实现基线：Go模块化单体、Vue、SQLite/PostgreSQL schema v14、本地keyd、local密码＋TOTP/OIDC互斥身份模式、同库独立audit receiver及Docker Compose独立部署。
+- 历史Task ID用于说明实现阶段；历史私有计划、审查会话、本机路径及旧文档commit台账不属于public文档。实现事实以本仓库源码、v14迁移、永久测试和当前文档为准。
 - 功能/page/OP/AC登记见[功能规范](FUNCTIONAL_SPEC.md)，开发与验证门禁见[开发规则](DEVELOPMENT_RULES.md)，Docker操作见[README](../README.md)。
 
 ## 1. 架构、部署与信任边界
@@ -11,7 +11,7 @@
 
 ### 1.1 上下文与数据流
 
-R7历史实现使用受控外部Transit adapter；DEV-018已用本地keyd替换生产KMS依赖，保留并收窄envelope/AAD/用途分离接口。DEV-019本地账号固定代码C [`c8b4da4`](https://github.com/r404r/team-ledger-pub/commit/c8b4da4e93920e272bec7a0462f3ccbfe797aaa9)已完成双库/API/Docker验证；DEV-020已实装Compose内置同库audit receiver。本地keyd和receiver均为同一安装包组件，不抵御整机root。
+R7历史实现使用受控外部Transit adapter；DEV-018已用本地keyd替换生产KMS依赖，保留并收窄envelope/AAD/用途分离接口。DEV-019交付内置账号密码，DEV-020交付Compose内置同库audit receiver，DEV-035在v14交付本地TOTP、恢复码、step-up及18-domain keyring。本地keyd和receiver均为同一安装包组件，不抵御整机root。
 
 ```mermaid
 flowchart LR
@@ -19,7 +19,7 @@ flowchart LR
     subgraph app["边界 A：浏览器与应用"]
         proxy["反向代理 / TLS"]
         api["Go API<br/>当前授权、业务事务、有限导出<br/>live / ready"]
-        localAuth["local模式<br/>账号/密码＋Argon2id/keyd pepper；当前无MFA<br/>TOTP＋恢复码已批准，待后续schema版本"]
+        localAuth["local模式<br/>账号/密码＋TOTP<br/>Argon2id/keyd pepper＋RFC 6238<br/>受限登记/恢复＋一次性恢复码"]
         listener["内部 worker routes<br/>mTLS；拒 cookie/Authorization"]
         proxy --> api
         localAuth --> api
@@ -32,13 +32,13 @@ flowchart LR
     subgraph localkeys["边界 C：同部署本地密钥设施；DEV-018已固定"]
         keyd["teamledger-keyd<br/>Unix socket；wrap / unwrap / rewrap / mac / verify<br/>maintenance stage / activate / mac_staging"]
         rootFile["CSPRNG RAW32 root file<br/>keyd UID / 0400"]
-        keyring["认证加密versioned keyring<br/>当前7 wrapper＋9 MAC＝16 domains"]
+        keyring["认证加密versioned keyring<br/>当前8 wrapper＋10 MAC＝18 domains"]
         offlineKeys["DEV-021已实装：两份独立AES-256-GCM可移动副本<br/>软件拒同filesystem device；完整inventory＋pair只读verify<br/>物理/地理分离由运维确认；不进入DB备份"]
         rootFile --> keyd
         keyring --> keyd
     end
     subgraph storage["边界 D：每次部署只选一个后端"]
-        db["SQLite持久盘 或 PostgreSQL服务<br/>当前schema v13；v12可前向升级<br/>员工主数据、业务调薪批次与canonical授权"]
+        db["SQLite持久盘 或 PostgreSQL服务<br/>当前schema v14；v13可前向升级<br/>员工、调薪、canonical授权与MFA状态"]
         outbox["同库 audit_outbox / receipt / job / result<br/>业务事实与投递意图原子提交"]
         archive["每archive随机DEK的认证分块备份包<br/>DEK经keyd backup_archive包装<br/>SQLite VACUUM或PG exported snapshot/custom dump"]
         db --> outbox
@@ -124,18 +124,18 @@ flowchart TB
 
 R2固定C实际路径：[organization契约](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_contracts.go)、[service](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_service.go)、[逐owner权限](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_authority.go)、[queries](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/structure_queries.go)、[graph](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/graph.go)、[cursor](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/organization/cursor.go)；[HTTP handler](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/httpapi/structure.go)与[store](https://github.com/r404r/team-ledger-pub/blob/5a19d632a5c0ea15ecf20eed3340e2c984c69fa4/internal/store/structure.go)承接现有事务。上述固定代码已实际push，不再用漂移main定位代替版本。查询尽量使用窄`GraphState`/employee关系/SQL候选，不为目录和history读取全org图；写与tree的窗口图仍由组织模块负责。
 
-R3当前源契约：`internal/interview/{contracts,commands,reads,export,service,state}.go`、`internal/store/interview.go`/`interview_tx.go`、`internal/httpapi/interviews.go`、`web/src/InterviewPage.vue`/`interviewDTO.ts`及`internal/authz/object*.go`。当前空库顺序安装至`internal/store/migrations/*_v13.sql`；`*_v6.sql`仅保留历史迁移校验，不是当前安装终点。
+R3当前源契约：`internal/interview/{contracts,commands,reads,export,service,state}.go`、`internal/store/interview.go`/`interview_tx.go`、`internal/httpapi/interviews.go`、`web/src/InterviewPage.vue`/`interviewDTO.ts`及`internal/authz/object*.go`。当前空库顺序安装至`internal/store/migrations/*_v14.sql`；`*_v6.sql`仅保留历史迁移校验，不是当前安装终点。
 
-R4及员工调薪批次当前源：`internal/compensation/`内contracts/policy/commands/chain/reads/cursor/export、batch及salary range实现，共用`internal/xlsx`有界工作簿读取器；`internal/store/compensation*.go`、`internal/httpapi/compensation*.go`、`internal/value/financial.go`、`web/src/CompensationPage.vue`/`CompensationBatchPage.vue`/`CompensationTermsEditor.vue`/`compensationDTO.ts`/`compensationAPI.ts`及`cmd/api/finance.go`。当前schema v13；v12是受支持升级源，`*_v7.sql`仅保留历史迁移校验。
+R4及员工调薪批次当前源：`internal/compensation/`、`internal/store/compensation*.go`、`internal/httpapi/compensation*.go`、`internal/value/financial.go`、`web/src/CompensationPage.vue`/`CompensationBatchPage.vue`及`cmd/api/finance.go`。当前schema v14；v13保留为本地MFA升级源，`*_v7.sql`仅保留历史迁移校验。
 
-R5当前代码源：`internal/compensation/bonus*.go`、`internal/store/bonus*.go`、`internal/httpapi/bonus.go`、`web/src/BonusPage.vue`/`bonusDTO.ts`、`cmd/bonus-hmac`及`cmd/api/finance.go`。当前schema v13；`*_v8.sql`只保留历史迁移校验。
-R6a/R6b当前代码源：`internal/assessment/`、`internal/store/assessment*.go`、`internal/httpapi/assessment*.go`、`web/src/FollowupPage.vue`/`assessmentDTO.ts`、`internal/authz`、`internal/providerapproval`及`cmd/assessment-worker`。当前schema v13；`*_v9.sql`/`*_v10.sql`只保留历史迁移校验。
+R5当前代码源：`internal/compensation/bonus*.go`、`internal/store/bonus*.go`、`internal/httpapi/bonus.go`、`web/src/BonusPage.vue`/`bonusDTO.ts`、`cmd/bonus-hmac`及`cmd/api/finance.go`。当前schema v14；`*_v8.sql`只保留历史迁移校验。
+R6a/R6b当前代码源：`internal/assessment/`、`internal/store/assessment*.go`、`internal/httpapi/assessment*.go`、`web/src/FollowupPage.vue`/`assessmentDTO.ts`、`internal/authz`、`internal/providerapproval`及`cmd/assessment-worker`。当前schema v14；`*_v9.sql`/`*_v10.sql`只保留历史迁移校验。
 
 DEV-025前端视觉基础集中在`web/src/styles.css`并由`main.ts`静态导入；Vite production build生成内容hash CSS/JS，由Go静态服务同源返回。`App.vue`负责品牌栏、sticky主导航和当前路由状态，`IdentityGate.vue`负责认证态会话条及未认证登录卡；9个业务页面继续使用原生语义/ARIA和既有scoped专属布局。无远程字体、CSS框架、图标CDN、分析SDK或运行时主题服务；全局层只改变呈现，不缓存或扩大敏感DTO。
 
 DEV-026把`IdentityGate.checkSession`区分为破坏式显式/生命周期核对和路由后台核对。已有`authenticated`会话收到`popstate`时，后台请求仍使用`no-store`并参与generation/AbortController竞态控制，但不提前增加`protectedGeneration`或切换`phase=checking`；pending期间保持身份壳层，返回相同subject、org及auth epoch时确认继续。401调用统一`expireSession`，context变化/敏感期限失效进入`changed`，transport/非成功响应进入`unavailable`，这些失败路径仍清空session并卸载slot。用户显式“重新核对”、focus/pageshow及pagehide继续采用先销毁后核对语义。
 
-DEV-030把认证态`IdentityGate`的原生`details/summary`经deferred Teleport放入`App.vue` sticky顶栏的固定target，默认closed且不写local/session storage；浮层absolute定位，不推动业务layout，动态视口限高并内部滚动。路由切换、外部pointer及Escape关闭，Escape返回summary焦点；`protectedGeneration`同时重建受保护slot、target与Teleport，避免控件留在detached DOM。summary仅呈现非敏感会话/MFA状态；local当前明确“MFA未提供”。完整操作仍调用原`checkSession`、`stepUp`、`logout`和`changePassword`路径；phase离开`authenticated`时整个业务slot和控件卸载，异常gate保持独占。
+DEV-030把认证态`IdentityGate`的原生`details/summary`经deferred Teleport放入`App.vue` sticky顶栏固定target，默认closed且不写local/session storage；浮层absolute定位，不推动业务layout，动态视口限高并内部滚动。DEV-035加入本地TOTP后，未登记/恢复session只渲染账号安全页；business session的本地step-up、factor替换和恢复码重发在模态框完成，不卸载受保护页面，也不自动重放命令。二维码由浏览器本地生成，不调用外部服务；secret/code只保存在当前Vue内存并在取消、失效、离页时清除。
 
 DEV-028 T1在`GET /session`增加规范Date字段`business_date`，由handler使用同一次授权时钟和snapshot中的组织IANA timezone计算；timezone缺失/不可加载时fail closed。`IdentityGate`验证后以其初始化session级`globalViewDate`，通过受保护slot交给`App.vue`顶部日期控件及Profile/Organization/Compensation页面；单一合法`as_of`深链接优先初始化该内存值，内部导航保留，session销毁时清空。相关页面仍向既有API发送`as_of`并在全局值变化后取消旧请求、清敏感投影、重新读取；授权服务继续使用独立当前业务日，客户端值不参与scope判断。
 
@@ -365,9 +365,9 @@ OP-SEC-05批次请求只接受单个完整frozen batch，不能选择行或跳�
 历史关系原事实与有效投影有明确对应；structure change允许add/end/replace及lifecycle原子typed set，原始事实不能被更正区间抹掉。授权只取当前有效投影。position/title、姓名、联系方式默认加密；org-unit code/必要relation type等metadata也只对授权scope公开。
 DEV-015的v12采用**全新baseline而非v11前向迁移**。SQLite当时要求不存在的新DB文件，PostgreSQL要求空的专用schema/database；该历史决定解释为何v1-v11仍不支持。v12 migration bytes/checksum现已冻结，不能再覆写。
 
-DEV-034分配当前schema v13并同时提供SQLite/PostgreSQL v12→v13 migration。迁移精确保留v12全部表、行和既有密文，只追加`compensation_batch_header_payload`、`compensation_adjustment_batch.header_payload_id`及owner/immutable约束，再更新schema version/checksum。既有v12批次保留nullable header ref，由业务层只读投影为原business code、原默认日期和明确`budget_legacy_unspecified=true`；新建v13批次必须有加密header。迁移SQL不需要keyd，不伪造无法知道的预算/原因，也不改变旧payload AAD。
+DEV-034分配schema v13并同时提供SQLite/PostgreSQL v12→v13 migration。迁移精确保留v12全部表、行和既有密文，只追加业务化调薪批次header/ref与约束；既有批次用明确legacy投影读取，新v13批次必须有加密header。v13迁移bytes/checksum冻结。
 
-启动先只读preflight：exact v13直接核对，exact v12才允许顺序升级；v1-v11、未知版本、checksum drift、业务表与schema记录不一致或迁移中失败均阻塞并保全原库。下一项持久化变化必须分配v14或更高版本并继续为登记source提供双数据库前向migration，不得清库替代。
+DEV-035分配当前schema v14并提供SQLite/PostgreSQL v13→v14 migration。`session`新增`access_kind=business|mfa_enrollment|mfa_recovery`且旧值为business；新增`local_mfa_account/factor/enrollment/recovery_code/recovery_receipt/reset_receipt`。迁移为每个active本地账号建立`enrollment_required`并撤销其既有session，OIDC session及全部业务事实保持。启动只读preflight接受exact v14或登记的exact v13升级；v12须先按冻结顺序升v13。v1-v11、未知版本、checksum drift、业务表与schema记录不一致或迁移失败均阻塞并保全原库。
 
 OP-ORG-10是v12唯一跨员工主数据/组织任职命令：一个1..100项typed set可同时处理identifier、employment、education、job_assignment（含membership/position）及administrative/dotted reporting和employee lifecycle。请求携带graph/catalog及每个affected employee revision；服务端先规划全部owner/endpoints，按§6.1锁org graph/auth→subjects→employee UUID→facts，逐owner重验OrgR/OrgW及PII、全窗口/目录/Staff Code owner/单一assignment/reporting无环，然后在**一个事务**写全部facts、canonical projection、graph/catalog/employee revisions、auth/source epochs、一个command receipt、audit/outbox；任一项失败全部rollback。OP-ORG-03在v12不再是writer，不能把两个HTTP请求拼成“原子”。
 
@@ -454,7 +454,7 @@ R4 v7实际新增aggregate/proposal及immutable revision/approval/event/terms/pa
 | `compensation.batch_header.v1` / `compensation.batch_line.v1` / `compensation.correction_member.v1` | header含业务名、默认生效日、Special原因和参考预算；adjustment line含Staff Code、金额/日期/Normal参考字段、冻结basis及工资纠正确认；correction member显式target/dependency、source kind/owner/head/witness及replacement。禁止自动补链、隐式FX或把预算当批准 |
 | `compensation.batch_import.v1` | 手工/XLSX同构candidate：规范rows、冻结basis、Special计数、工资差异warnings及安全errors；AAD绑定exact batch/candidate，invalid candidate仍用同一context；不保存原工作簿或把正文/digest写日志 |
 | `compensation_memo.v1` | `memo`必填≤2000 Unicode字符、`source_reference`可选≤200，整体≤16KiB；拒未知字段，不从备注计算金额 |
-| `identity.mapping.v1` / `identity.transaction.v1` / `identity.local_username.v1` | mapping为canonical exact issuer URL＋sub UTF-8及owner subject；transaction为nonce/verifier/action/return/binding；local username为账号owner绑定的canonical ASCII source。AAD owner slots按下方registry；不得进入日志/普通审计 |
+| `identity.mapping.v1` / `identity.transaction.v1` / `identity.local_username.v1` / `identity.local_mfa_factor.v1` / `identity.local_mfa_enrollment.v1` | mapping为canonical issuer/sub；transaction为nonce/verifier/action/return/binding；local username为账号owner绑定source；MFA payload只含TOTP secret。factor/enrollment AAD绑定org/account、factor或enrollment ID、generation、purpose与schema；不得跨owner/mode互换或进入日志/普通审计 |
 | `assessment.input.v1` / `assessment.result.v1` | 最小已批准结构事实/片段；result仅facts/support_needs/followups/source citations/caveats；无score/rank/诊断/隐藏推理 |
 
 ### 4.3 身份、权限、AI与审计
@@ -462,8 +462,10 @@ R4 v7实际新增aggregate/proposal及immutable revision/approval/event/terms/pa
 | 实体 | 字段/关系 | 索引 / 不变量 |
 | --- | --- | --- |
 | `subject` / `subject_identity` | v12存approved org/subject/active、lookup MAC id/version/digest及`identity.mapping.v1`加密canonical issuer/sub payload ref；不存明文。DEV-006仅HMAC无source是历史证据，不进入v12空库 | lookup唯一；owner永不转移。换MAC前解密全部active/inactive source，验证ID/owner全集与旧index一一对应再CAS；缺一保持blocked，不从email/group推断 |
-| `session` / `session_auth` / `oidc_transaction` | v12新建session保存随机token hash、subject/org、absolute/idle/MFA、CSRF hash/version、subject epoch/revoked；session_auth另存created/verified auth_time、部署批准ACR/AMR和identity digest；transaction存state/binding hash及nonce/verifier AEAD、有限mode/action/return、previous/expected identity/epoch、consume/issue事实 | 同owner复合FK；8h absolute、有效请求idle≤30m且不超absolute；10m proof先原子消费后外部I/O，一次性guarded issue；每次新transaction写入只按expiry有界清理≤256已到期记录，与insert同Tx，保留未到期含在途/已consume proof；session/CSRF轮换和logout/unbind审计原子；不可从hash回读cookie/CSRF |
-| `identity_mode_state` / `local_account` / `local_credential` / `local_login_throttle` / `local_bootstrap_receipt` | mode固定`local|oidc`及revision；account存UUID、subject owner、active、versioned username digest及加密canonical source；credential存Argon2id PHC、pepper key/version、revision；throttle按username digest记录失败/retry_at；receipt绑定request/input digest与原安全IDs、`bootstrap_policy.v1` | fresh DB仅一次性bootstrap可同Tx建首org/subject/account及固定最小权；其后账号只绑定既有active subject。模式不匹配启动拒绝，切换须全session revoke＋auth epoch推进＋审计；username owner不转移；未知账号也走同throttle/fake PHC |
+| `session` / `session_auth` / `oidc_transaction` | session保存随机token hash、subject/org、absolute/idle/MFA、CSRF hash/version、subject epoch/revoked及v14 `access_kind`；session_auth存auth_time/ACR/AMR/identity digest；transaction存OIDC proof | 仅`access_kind=business`进入普通session loader和业务授权；`mfa_enrollment|mfa_recovery`只由identity专用loader读取。business为8h absolute/30m idle；受限MFA session为10分钟；轮换/revoke与审计原子 |
+| `identity_mode_state` / `local_account` / `local_credential` / `local_login_throttle` / `local_bootstrap_receipt` | mode固定`local|oidc`；account绑定subject并保存加密username source及lookup；credential为Argon2id PHC＋exact pepper；throttle/receipt持久 | fresh bootstrap与新账号同Tx建立`local_mfa_account(enrollment_required,generation=1)`；模式不匹配拒绝，username owner不转移，未知账号走fake PHC及同类throttle |
+| `local_mfa_account` / `local_mfa_factor` / `local_mfa_enrollment` | account状态仅`enrollment_required|active`且generation单增；factor保存`identity_mfa` envelope及持久`last_accepted_step`；每账号最多一个10分钟pending，mode为initial/replace/recovery并绑定受限session hash | active账号恰有当前generation factor；TOTP确认最多5次；错AAD/tag/key/version拒绝；同step在登录/step-up/替换/重发之间不能重复接受 |
+| `local_mfa_recovery_code` / `local_mfa_recovery_receipt` / `local_mfa_reset_receipt` | recovery只保存`local_recovery_code` exact key reference＋MAC；恢复开始receipt绑定request/input digest/pending；reset receipt保证离线命令幂等 | 每账号最多一个未消费码；消费与session撤销/pending创建同Tx且并发单赢家；同request同input可恢复响应，异input冲突；原文不可回读 |
 | `capability_assignment` / `access_grant` | subject、有限capability、scope kind为`org`、`department`或`employee`、category/object/purpose/validity；grant另有relation ref/authority/revision | relation ref仅`reporting_line`、`job_assignment`或null；当前关系/assignment及主体/对象/scope资格逐请求核对；结束/替代不跟随successor |
 | `delegation_authority` | 批准者、manager subject、capability/category/purpose、scope kind为`org`、`department`或`employee`、validity/MFA/policy | 与当前management capability/grant取交集；不自授、不从职位推导；v12无team兼容 |
 | `authorization_guard` | org auth/policy epoch，subject auth epoch（global主体需按顺序锁） | 唯一guard；当前授权权威在DB，epoch缓存不是权限真相 |
@@ -496,7 +498,7 @@ DB必须执行 PK/NOT NULL、复合org/employee FK、有限state/kind/category C
 
 ## 5. 唯一 HTTP 操作注册
 
-共**51个稳定OP ID**：ORG10、INT8、COMP11、BONUS8、AI8、SEC6；当前v13中OP-ORG-02/03退休且无路由，因此可调用49项。辅助模板、preview和options端点归入对应稳定OP，不另造操作ID。
+共**51个稳定OP ID**：ORG10、INT8、COMP11、BONUS8、AI8、SEC6；当前v14中OP-ORG-02/03退休且无路由，因此可调用49项。辅助模板、preview和options端点归入对应稳定OP，不另造操作ID。
 
 ### 5.1 权限与输入记号（适用于每一行）
 
@@ -588,16 +590,20 @@ DB必须执行 PK/NOT NULL、复合org/employee FK、有限state/kind/category C
 
 ### 5.5 Supporting协议路由（不是额外业务OP）
 
-身份Supporting协议都以`/api/v1`为前缀，不增加51个业务OP；启动时只启用DB固定mode对应路由，另一模式不fallback。匿名`GET /health/live`只证明进程handler存活；`GET /health/ready`实际检查当前v13 schema/DB、identity配置与DB mode一致、PII/interview/assessment/financial wrapper、审计outbox积压及DEV-020 receiver heartbeat。forwarder每5秒经mTLS探测receiver并写DB单例状态；missing/false或超过15秒均503，积压超过1000或最老超过5分钟同样not-ready。敏感依赖一项不可用即fail closed，不能以live代ready接业务流量。
+身份Supporting协议都以`/api/v1`为前缀，不增加51个业务OP；启动时只启用DB固定mode对应路由，另一模式不fallback。匿名`GET /health/live`只证明进程handler存活；`GET /health/ready`检查当前v14 schema/DB、identity mode、18-domain keyring与DB ack、业务wrapper、审计outbox及receiver heartbeat。missing/false、heartbeat超过15秒、积压超过1000或最老超过5分钟均not-ready；敏感依赖不可用必须fail closed。
 
 | 方法 / 路由 | 输入与前提 | 成功 / 拒绝边界 |
 | --- | --- | --- |
 | GET `/auth/login` | 仅`oidc` mode；单值可选`return_to`，无测试trust/客户端IdP token入口 | 302真实受信authorization URL与独立`__Host-teamledger_oidc_binding`；设施disabled则503；local mode拒绝且不fallback |
 | GET `/auth/callback` | 仅`oidc` mode；一次性code/state与同浏览器binding；协议例外不以普通body CSRF替代PKCE/nonce | 成功才轮换opaque session/CSRF并302批准站内路径；401/403 MFA_REQUIRED/503均不签新cookie，不把code/token返回或写日志 |
-| POST `/auth/local/login` | 仅`local` mode；strict JSON `{username,password}`、Origin/Fetch Metadata、TLS；密码按§7.1.2原始bytes | 成功签8h/30m session/CSRF；不存在/disabled/错误/限流统一401且无另一模式fallback；DB/keyd/audit故障503 |
-| POST `/auth/local/password` | 仅`local` mode；当前cookie/CSRF/Origin/Metadata，strict `{current_password,new_password}` | 重验当前密码，原子换credential、推进epoch、撤销全部session及审计；成功204并清当前cookie，须重新登录 |
-| POST `/auth/step-up` | 当前仅`oidc` mode；当前cookie/CSRF/Origin/Fetch Metadata，`{action,return_to}`；action有限pii.write/access_grant.manage/note.publish/sensitive.export及compensation.read/propose/approve（含批次） | 200受信HTTPS authorization_url与binding；当前local mode或无可信MFA为`403/MFA_REQUIRED`，意图不授业务权、不自动重提命令。已批准的local TOTP使用v13独立协议，未实装前不复用密码或此OIDC redirect契约 |
-| POST `/auth/logout` | 两种mode；同current cookie/CSRF/Origin/Metadata/JSON，body仅`{}`，无mutation query/未知字段 | 同敏感release guard原子revoke**本session**＋safe audit后204并清cookie；非subject全会话登出/IdP全局登出。失败不可假确认 |
+| POST `/auth/local/login` | 仅local；strict `{username,password,totp_code?,return_to}`、TLS/Origin/Metadata | `enrollment_required`且密码正确返回202受限登记cookie/CSRF；active缺TOTP返回403 `MFA_REQUIRED`；密码＋未重放TOTP签business session、`AMR=["pwd","otp"]`及10分钟MFA。未知/disabled/错误/限流统一拒绝；依赖故障503 |
+| POST `/auth/local/recover` | strict `{username,password,recovery_code,return_to}`及UUID `Idempotency-Key` | 密码＋恢复码原子消费，撤账号session/pending，建立recovery enrollment/受限session/receipt并202；同request/input恢复同pending，不同input冲突；不能直接进入business |
+| POST `/auth/local/mfa/enrollment`、GET `/auth/local/mfa/pending` | 仅对应受限session＋CSRF；enrollment POST body `{}` | 建立/读取10分钟initial或recovery pending并返回no-store Base32 secret、otpauth URI、mode/expiry；普通business API仍拒绝受限session |
+| POST `/auth/local/mfa/confirm`、POST `/auth/local/mfa/cancel` | strict `{totp_code}`或`{}`；受限initial/recovery，confirm也支持business replace pending | confirm原子切generation、factor/recovery/session并返回新business cookie/CSRF及只显示一次的恢复码；cancel删除pending并撤受限session，recovery/replace保留旧factor |
+| POST `/auth/local/mfa/replace`、POST `/auth/local/mfa/recovery-code` | local business session、CSRF，strict `{current_password,totp_code}` | 未重放TOTP＋密码建立replace pending，或轮换恢复码与session/CSRF；恢复码原文只在成功响应一次显示 |
+| POST `/auth/local/password` | 仅local business；当前cookie/CSRF，strict `{current_password,new_password}` | 重验当前密码，原子换credential、推进epoch并撤全部session；active factor保留，须以新密码＋原TOTP重新登录 |
+| POST `/auth/step-up` | 当前business cookie/CSRF；OIDC为`{action,return_to}`，local另要求`current_password,totp_code`；action在固定allowlist | OIDC返回受信authorization URL；local验证密码＋未重放TOTP并轮换session/CSRF、签10分钟MFA。不授业务权、不自动重提命令 |
+| POST `/auth/logout` | business或受限session；cookie/CSRF/Origin/Metadata，body仅`{}` | 原子revoke本session＋safe audit后204并清cookie；失败不可假确认 |
 
 `return_to`有限`/`、`/security/grants`、canonical员工/组织R2路由、R3面谈路由、`/employees/<id>/compensation`及`/compensation/adjustment-batches[/<id>]`；只各自定义安全query，无任意host/fragment/PII/转义path。cookie Secure/HttpOnly/Lax/Path=/、无Domain，callback no-referrer/no-store。`identity_available`只配置hint。`sensitivity_valid_until`为服务端下一组织IANA日界、会话绝对/idle、MFA及未来grant生效/失效的保守最早期限；UI到期销毁并显式重验，不承诺在线撤权推送。
 
@@ -959,7 +965,7 @@ HMAC状态不是可忽略运维标记：所有新增奖金写在事务内读取�
 
 所有cookie mutation及敏感POST校验session绑定CSRF token、Origin与Fetch Metadata。[S3] token只经keyd当前`csrf_token` MAC：规范输入为domain＋原始32-byte session随机值，DB存token hash/key version，`/session`从已验证cookie以**当前同version key**重算。CSRF key rotation必须停写，并在激活前同一DB事务撤销全部旧version session、推进subject/session epoch及写audit；因此不提供历史MAC派生。旧tab/reload/POST统一401并清敏感状态，按当前部署模式重新登录才取得新session/token；多tab不静默换token。OIDC callback仍以state/nonce/PKCE而非普通CSRF。
 
-当前只有`oidc`模式提供step-up：通过同login流程绑定当前主体＋requested action/return，`max_age`和essential auth_time/实际IdP认可acr请求；回包核验同issuer/sub、auth_time和**已约定可信acr/amr映射**，不是客户端勾选“MFA”或收到任意amr就通过。**沿既有授权设计，合格近期MFA是会话级认证条件，不是一次性动作授权票据**：action只绑定短时认证transaction/AAD及回跳意图；例如为`pii.write`完成MFA的同一会话，在当前grant允许时也满足同窗口内其他要求MFA的能力。DEV-030批准的local TOTP＋恢复码仍是v13目标，实际部署preflight和migration完成前不改变本段当前行为。
+两种模式均提供step-up。OIDC通过同login流程绑定当前主体、action/return和可信`auth_time/acr/amr`；local在当前business session中重新验证当前密码＋未重放TOTP。两者成功均撤销旧session、轮换opaque cookie/CSRF，并从本次证明时间签发10分钟`mfa_until`。合格近期MFA是会话级认证条件，不是一次性动作票据；action只约束认证意图，不创造能力、scope或grant，UI不得自动重放先前业务命令。
 
 #### 7.1.1 OIDC身份协议时序（DEV-006候选已实际运行，生产设施另验）
 
@@ -1005,40 +1011,55 @@ sequenceDiagram
 
 当前v3身份proof与业务release/授权变化使用同组织guard，跨组织先排序所有org、再排序subject；网络交换不在SQL事务里。callback后仍重验当前mapping/主体/原session撤销与epoch，不以开始认证时的快照授会话；unlink后重bind不得复活旧cookie。已有C3 grant原回执规则不因身份gate改变。
 
-#### 7.1.2 内置账号/密码协议（DES-008固定；DEV-019固定C `c8b4da4`已实装/验证）
+#### 7.1.2 内置账号、密码与TOTP协议（DES-008；DEV-019/035已实装）
 
-除fresh bootstrap外，local账号不是新的授权主体：maintenance只能把账号UUID绑定到**既有active subject**，登录只建立session，不创建subject、capability或grant。canonical username只接受ASCII，先转小写再匹配`[a-z0-9][a-z0-9._-]{2,63}`；唯一性为全部署。DB保存`local_username_lookup` versioned HMAC索引与`identity_mapping` wrapper加密的canonical source，owner永不自动转移。密码输入按原始UTF-8 bytes处理，不trim、不Unicode normalize，长度12..256 bytes且拒绝NUL；日志、审计、错误和CLI argv均不得带密码。
+除fresh bootstrap外，local账号不是新的授权主体：maintenance只能把账号UUID绑定到既有active subject，登录不创建subject、capability或grant。canonical username为小写ASCII并匹配`[a-z0-9][a-z0-9._-]{2,63}`；DB保存`local_username_lookup` HMAC索引与加密canonical source，owner永不转移。密码按原始UTF-8 bytes处理，不trim/normalize，长度12..256且拒NUL；不能进入argv/env/log/audit。
 
-keyd的`local_password_pepper` key永不离开keyd。MAC规范输入为ASCII `TEAMLEDGER-LOCAL-PASSWORD`、单个`0x00`、ASCII `V1`、原始密码长度的4-byte big-endian及原始密码bytes；API把32-byte MAC结果作为Argon2id输入。PHC固定`m=65536 KiB,t=3,p=1`、随机16-byte salt、32-byte output；credential记录pepper key/version和PHC。DEV-019只接受当前active pepper精确版本，错误/旧version安全拒绝；成功登录惰性升级、旧version verify与退役属于DEV-022，不在本task冒充完成。不存在/disabled账号执行固定有效fake PHC校验并返回相同`401 UNAUTHENTICATED`。
+`local_password_pepper`不离开keyd。规范MAC frame进入Argon2id `m=65536 KiB,t=3,p=1`、随机16-byte salt、32-byte output；credential保存exact pepper reference＋PHC。不存在/disabled账号执行有效fake PHC。`local_login_throttle`把密码或TOTP失败按username digest原子累计，退避`min(2^(n-1),900)`秒；响应不能暴露账号/factor是否存在。
 
-`local_login_throttle`按username MAC digest原子记录连续失败；失败后`retry_at=now+min(2^(n-1),900)`秒，成功原子清零。未知账号也写同类throttle行，因此DB持有人可观察登录尝试的等值关系；响应体、状态和近似计算路径不得暴露账号存在性。审计不可用时bootstrap、subject/account create/reset/disable、mode-switch、password-change和login均fail closed，不签session或确认身份/凭据变更。
+fresh `local-bootstrap`和后续`local-account create`在credential事务内建立`local_mfa_account(status=enrollment_required,generation=1)`。密码正确只签10分钟`access_kind=mfa_enrollment`受限session；它不能进入普通session loader或业务API。页面调用enrollment端点取得CSPRNG 20-byte Base32 secret和本地生成二维码；pending使用`identity_mfa` domain密封、绑定org/account/enrollment/generation AAD，10分钟内最多确认5次。
 
-维护入口只接受由调用方预建的regular input file，owner必须为maintenance UID、mode `0600`、`nlink=1`且拒绝symlink/hardlink；内容必须是无BOM、无前后空白/尾随换行、无重复/未知字段的UTF-8 fixed-order JSON：`{"username":"…","password":"…"}`。密码不接受argv/env/stdin，CLI不删除调用方文件。`create`要求username未占用且subject active；`reset`、用户自改密码与`disable`均推进credential/subject auth epoch、撤销该subject全部session并写审计；disable保留owner，不能把username交给另一subject。失败事务不得部分更新。
+TOTP固定RFC 6238 HMAC-SHA-1、6位、30秒，服务端接受current±1并选择最接近current且严格大于`last_accepted_step`的step。factor secret同样以`identity_mfa`密封；登录、step-up、factor替换和恢复码重发共用持久replay状态。确认initial/recovery/replace时原子推进generation，替换factor、删除pending/旧恢复码、撤销其他session，并返回一次显示的32字符恢复码；恢复码只保存`local_recovery_code` exact MAC reference。
 
-fresh local部署以maintenance profile显式运行`identity local-bootstrap -input-file ... -request-id <UUID>`。input同文件规则且唯一schema为fixed-order `{"timezone":"<IANA>","username":"…","password":"…"}`；CLI生成org/subject/account UUID。命令只在organization、subject、local account、identity mode及bootstrap receipt全部为空时执行，并在一个事务建立唯一active org、首个active bootstrap subject、local account/credential、mode=`local`、`bootstrap_policy.v1`固定的OrgR/OrgW/PIIR/PIIW capability assignments与对应org/metadata/PII grants、maintenance audit/outbox和command receipt；输入不能指定额外能力/category/purpose。固定集合不含金融、面谈、审计查看、导出或grant管理，所有MFA-required路径仍拒绝。相同request ID和同digest在断连后只返回原安全org/subject/account IDs，异digest冲突；任何其他事实已存在时永久拒绝，不补建、不接管。此命令不依赖IdP/邮件/短信/匿名HTTP，失败全回滚且不输出可登录账号。
+恢复登录必须同时提供密码、恢复码及UUID `Idempotency-Key`。事务在账号锁内消费恢复码、撤销全部session/pending、建立browser-bound `mfa_recovery`受限session及receipt；同request/input在响应丢失后返回同一pending，异input冲突，并发只有一个成功。它不能签business session或`mfa_until`。恢复/替换确认前原active factor仍可登录，但恢复开始前的session已撤销。
 
-后续`identity local-subject create -request-id`可经同类protected file创建无账号的active subject；它不授capability/grant。随后`local-account create`绑定该subject；职责仍必须来自既有批准/provisioning事实，“可登录”不等于管理员。bootstrap最小subject只足以建立初始组织目录/员工；当前需要MFA的grant管理及敏感功能在local模式保持不可用。DEV-030已经批准TOTP＋一次性恢复码及受限`enrollment_required`/recovery状态机；v13已由DEV-034使用，该认证能力必须在后续独立schema版本中通过双方言前向migration实装，不修改冻结v12或当前v13 migration。
+遗失TOTP和恢复码时只允许受保护文件驱动的`identity local-mfa-reset`离线命令；输入为canonical `{"username":"…"}`及明确org/subject/request ID。它把账号切回`enrollment_required`并推进generation，删除factor/recovery/pending/receipt、撤销全部session、推进auth epoch且写审计；同request/input幂等。不存在网页等价入口。维护文件必须是maintenance UID、`0600`、`nlink=1` regular file，无BOM/空白/尾随换行/重复或未知字段。
+
+密码修改保留active factor但撤销全部session；账号disable作废MFA事实。keyd/DB/audit、AAD/tag/key reference任一不可用时不签session、不返回secret并fail closed。二维码、TOTP secret与恢复码不写URL、storage、clipboard自动化、telemetry或日志；HTTP均`no-store`。
 
 ```mermaid
 sequenceDiagram
     actor human as 授权人员
-    participant vue as 浏览器 / Vue
+    participant vue as Vue账号安全页
     participant api as Go identity API
     participant keyd as 本地keyd
-    participant db as 所选DB
-    human->>vue: 输入username/password
-    vue->>api: POST local login（TLS；无模式fallback）
-    api->>keyd: MAC canonical username / active lookup key
-    api->>db: 查询account/credential/throttle与当前subject/epoch
-    api->>keyd: MAC原始password frame / credential pepper version
-    api->>api: Argon2id校验；未知/disabled走fake PHC
-    alt 有效且未限流、subject active、审计可提交
-        api->>db: 原子清失败计数；签8h/30m session＋CSRF＋audit
-        db-->>api: commit
-        api-->>vue: opaque Host cookie；安全subject hint
-    else 任一失败
-        api->>db: 原子失败计数/retry_at＋安全审计
-        api-->>vue: 相同401；基础设施/审计故障才503
+    participant db as SQLite或PostgreSQL v14
+    human->>vue: username＋password
+    vue->>api: POST local/login
+    api->>keyd: username MAC＋password pepper MAC
+    api->>db: account/credential/MFA/throttle/subject
+    alt enrollment_required
+        api->>db: 签10分钟mfa_enrollment受限session
+        api-->>vue: 202 next=enroll＋CSRF
+        vue->>api: POST mfa/enrollment
+        api->>keyd: identity_mfa wrap pending secret
+        api->>db: 保存pending envelope
+        api-->>vue: no-store otpauth URI＋人工密钥
+        human->>vue: 输入验证器TOTP
+        vue->>api: POST mfa/confirm
+        api->>keyd: unwrap＋TOTP verify；恢复码MAC
+        api->>db: 原子factor active＋replay step＋恢复码＋business session
+        api-->>vue: 新cookie/CSRF＋一次显示恢复码
+    else active
+        human->>vue: 密码后输入TOTP
+        vue->>api: POST local/login with totp_code
+        api->>keyd: unwrap factor
+        api->>db: replay CAS＋business session＋10分钟MFA
+        api-->>vue: 新cookie/CSRF；重新加载页面
+    else 使用恢复码
+        vue->>api: POST local/recover＋Idempotency-Key
+        api->>db: 原子消费码＋撤session＋mfa_recovery pending
+        api-->>vue: 202；只允许设置新TOTP
     end
 ```
 
@@ -1112,7 +1133,7 @@ owner-binding的nested CF1只接受下表tags；`U`=UUID、`E`=enum-u16、`D`=di
 
 Payload包=`"TLP1"[4] | format u16=1 | algorithm u8=1 | nonce[12] | ciphertext_len u32 | ciphertext | tag[16]`，无尾随。每payload随机RAW32 DEK只Seal一次；AAD不含KEK版本，rewrap不重加密。错owner/record/version/purpose/schema/dek及非规范frame拒绝。
 
-Wrapper包=`"TLW1"[4] | format u16=1 | domain u16 | kek_uuid[16] | kek_version u32 | dek_uuid[16] | aad_digest[32] | wrapped_len u16 | wrapped`。wrapper domain固定1 PII、2 interview、3 assessment、4 financial、5 identity-transaction、6 identity-mapping、7 backup；已交付MAC domain保持8..14，DEV-019只在末尾追加15 `local_username_lookup`、16 `local_password_pepper`，不得重编号。v1用RFC5649 AES-256-KWP包装64-byte `DEK || aad_digest`，故wrapped_len=72且无尾随。HKDF-SHA-256 salt=`dek_uuid`，info=`"TEAMLEDGER-WRAP\\0"`＋header至aad_digest exact bytes；AAD digest从可信记录重建。
+Wrapper包=`"TLW1"[4] | format u16=1 | domain u16 | kek_uuid[16] | kek_version u32 | dek_uuid[16] | aad_digest[32] | wrapped_len u16 | wrapped`。domain编号不得重排：1..7为PII/interview/assessment/financial/identity-transaction/identity-mapping/backup wrapper，8..14为既有MAC，15为`local_username_lookup` MAC，16为`local_password_pepper` MAC，17为`identity_mfa` wrapper，18为`local_recovery_code` MAC。v1用RFC5649 AES-256-KWP包装64-byte `DEK || aad_digest`，wrapped_len=72且无尾随；HKDF-SHA-256 salt=`dek_uuid`，info为固定prefix＋header至aad_digest。
 
 长期KEK只用于HKDF，派生KWP key只包装一个`dek_id`。payload DEK与keyring更新派生GCM key各只Seal一次，因此v1无usage counter。实现必须固定CF1/TLP1/TLW1 byte-level golden、RFC5649及非规范/跨owner/record/version/purpose/schema/header篡改拒绝向量。
 除代表向量V1外，每个registry schema（含legal-entity label、interview reason及batch import raw/rows）必须有由固定UUID/enum/null生成的AAD golden；逐项错object-kind/purpose/schema/version/owner、raw与rows schema互换及跨wrapper-domain均为拒绝向量。
@@ -1120,6 +1141,8 @@ Wrapper包=`"TLW1"[4] | format u16=1 | domain u16 | kek_uuid[16] | kek_version u
 Key directory内固定`.lock`是keyd UID、regular、`0600`、`nlink=1`的持久inode，初始化后永不rename/unlink。keyd和所有CLI经安全dirfd以`O_RDWR|O_NOFOLLOW|O_CLOEXEC`打开并核对directory entry与FD dev/inode一致，再取得exclusive OFD lock；锁在加载、socket bind及全部发布之前持有到进程退出。keyring不能充当锁。
 
 协议含普通`ready|wrap|unwrap|rewrap|mac|verify`，maintenance UID另有manifest-bound `stage|mac_staging|activate|retire`。artifact验证与A1/A2 receipt由离线`keyctl-local`＋DB maintenance manifest完成，不是keyd网络op。普通wrap/mac只用DB期望active；unwrap/verify可显式历史version。Unix socket以`SO_PEERCRED`和UID/op/domain矩阵约束≤64KiB严格frame；不接受路径/UID/任意purpose/RAW长期key，日志不含秘密。
+
+既有16-domain keyring只能在API/keyd停止且取得同一持久lock后执行`upgrade-domains`：严格核对完整旧inventory，为17/18各生成一个v1 active key，generation＋1并以previous digest链认证、temp＋fsync＋rename原子发布。v14 migration完成后单独启动keyd，再由`acknowledge-domains`核对旧16个active pointer完全相同、只新增17/18、无staged key，并以DB CAS把generation/digest/18-domain map确认到`crypto_control`。完整18-domain重复升级无变化；普通keyd启动和API ready绝不静默补domain。失败保持API停止，禁止清库、替代root或猜active状态。
 
 ### 7.4 轮换与恢复清单
 `identity.mapping.v1`之外，local username source使用同一`identity_mapping` wrapper domain但独立schema `identity.local_username.v1`，owner tags为`1:U=org_id,2:U=subject_id,3:U=account_id`；两种schema不得互换。
@@ -1266,7 +1289,7 @@ result draft→published/discarded/invalidated；published→invalidated（由so
 | 部署/类型 | 同机持久盘单API owner，STRICT tables；UUID规范TEXT、密文BLOB | 一/多API，UUID原生或适配为同规范ID、密文BYTEA |
 | 日期/时间/布尔 | 日期TEXT校验；UTC微秒INTEGER；boolean INTEGER CHECK | DATE/TIMESTAMPTZ，保存到微秒；BOOLEAN；另存IANA zone而非TIMESTAMPTZ当zone |
 | JSON/金额 | 非敏感规范JSON TEXT；不可把NUMERIC当exact Money | 非敏感JSON/JSONB显式使用；共同密文schema内Money；不互搬两库binary JSON |
-| 每连接设置 | **只在§9.3只读preflight确认exact v12升级源或exact v13后**才以正常连接启用foreign_keys、busy_timeout、synchronous与WAL；拒绝目标不得切journal/create sidecar | preflight只读role/transaction先识别目标；exact v12/v13后业务或migration role启TLS/pool/statement/lock timeout与UTC |
+| 每连接设置 | **只在§9.3只读preflight确认exact v12/v13升级源或exact v14后**才以正常连接启用foreign_keys、busy_timeout、synchronous与WAL；拒绝目标不得切journal/create sidecar | preflight只读role/transaction识别目标；exact v12/v13/v14后业务或migration role启TLS/pool/statement/lock timeout与UTC |
 | 锁/事务 | 开始Tx后第一条guard写取得单writer；短Tx、writer pool建议1，读池有界；BUSY取消映射安全503 | guard `FOR UPDATE`＋CAS，默认Read Committed也必须遵循guard；不让无锁跨行SELECT决定批准 |
 | 索引 | 第4节unique/复合FK所需父key与子反查、org-leading keyset/窗口/lease索引；尽量共同能力 | 同逻辑索引；partial/exclusion/RLS可选纵深，不能替代共同应用不变量 |
 | 持久化运维 | WAL/checkpoint/磁盘FULL与空间监控；不放共享网络盘 | pool、主从/故障/备份由选定部署能力明确；不默认已HA |
@@ -1275,11 +1298,11 @@ result draft→published/discarded/invalidated；published→invalidated（由so
 
 ### 9.2 迁移与备份
 
-当前v13 binary分四路：①拒绝预检：现有v1-v11/未知版本/checksum drift只读识别后`SCHEMA_VERSION_UNSUPPORTED`，零DDL/bootstrap/cleanup；②fresh安装：SQLite目标path必须不存在，PG专用schema/database必须为空，由installer顺序安装至v13；③升级：仅exact v12执行SQLite/PostgreSQL v12→v13 migration，保留全部既有行/密文并追加批次header结构；④正常启动：exact v13即使已有业务数据也正常打开，绝不因“非空”拒绝。
+当前v14 binary分四路：①拒绝预检：v1-v11/未知版本/checksum drift只读识别后`SCHEMA_VERSION_UNSUPPORTED`，零DDL/bootstrap/cleanup；②fresh安装：SQLite path必须不存在、PG专用schema/database必须为空，顺序安装至v14；③升级：exact v12顺序执行v13/v14，或exact v13只执行v14，保留全部业务行/密文；④正常启动：exact v14即使已有业务数据也正常打开。
 
-v12 baseline bytes/checksum继续作为兼容源冻结；v13 migration同样一经发布即冻结。升级前必须有绑定源/目标版本的已验证备份恢复和停写；验证原事实/密文/key metadata/receipt/grant/audit、migration中断回滚、重启及升级后API行为。未知source、漂移或缺恢复条件阻止升级，不能自动drop/重建、fallback空库或把手工重导冒充migration。v1-v11仍仅是通知前历史证据，不进入支持矩阵。
+v12 baseline与v13 migration bytes/checksum继续冻结；v14发布后同样冻结。升级前必须停写并验证绑定源/目标版本的数据库备份和keyring双介质副本。v13→v14还必须先在keyd停止时显式16→18 domain升级，migration后单独启动keyd并ack DB，再开放API；中断、未知source、漂移或缺恢复条件保持阻塞，不能drop/重建、fallback空库或手工重导冒充migration。
 
-v13只追加批次header payload/ref及相关约束；SQLite migration在事务内改表/建表并更新version，PostgreSQL使用等价DDL/约束。既有v12批次不解密改写、不需要keyd，header ref保持null并由应用返回明确legacy投影；新批次必须有header。永久migration测试核对v12表/行保留、旧batch可读、v13新header不可变及重启checksum；本次环境已实跑SQLite，PostgreSQL路径因无真实DSN只完成代码/契约编译，不能标记运行通过。
+v14 migration为active本地账号建立`enrollment_required`并撤销对应旧session，OIDC session和业务数据不变；永久测试覆盖fresh、v13样本、OIDC/local会话边界、失败回滚和重启checksum。SQLite已实际运行；PostgreSQL DDL/契约已编译和实现，但当前工作站无真实DSN，不标记运行通过。
 
 R3只新增v6，两方言扩有限typed面谈对象/source批准、事件/密文/receipt及OIDC intent；必要SQLite旧表copy/rebuild完整保旧列，PG按真实v5约束名变更，不改v1-v5 bytes/checksum。有数据v5→v6、原KMS/receipt、真实CHECK/FK/schema漂移/回滚/多连接消费者及最新464.45s all/race/vet绿；四最终binary已build，双库compiled migrate/API原DB重启、精确版本head裁剪/导出/撤权成品及175 Vue已验。此前完整身份CLI bind/unbind与有限敏感扫描保持各自证据边界。标准PG并发all+race曾原生out-of-shared-memory，失败不记绿；最终串行`-p 2`，不减native约束、不加应用重试或调PG容量掩盖。
 
@@ -1292,7 +1315,7 @@ SQLite备份使用一致Backup API/VACUUM INTO等机制，不能复制活main.db
 
 目标配置保留backend、public origin、OIDC、audit、worker/provider；API只配置`TEAMLEDGER_KEYD_SOCKET`、预期peer UID和获准domain，keyd配置绝对key directory、socket、API/maintenance UID矩阵。API不得获得root/keyring路径；不接受生产KMS URL/token/CA或独立对称key file。
 
-首部署按identity mode分流：`oidc`仍先由受控维护流程建立approved active subject并bind可信issuer/sub；`local`不依赖IdP，必须按§7.1.2运行fresh空库一次性`local-bootstrap`，得到首个最小组织维护subject/account后才启动API。两者都不经匿名HTTP建管理员，不从email/title/group推断能力；local固定bootstrap policy不解锁MFA-required操作。
+首部署按identity mode分流：`oidc`先经维护流程建立active subject并绑定可信issuer/sub；`local`不依赖IdP，运行一次`local-bootstrap`得到首个最小组织维护subject/account，再以密码进入受限页登记TOTP。两者都不经匿名HTTP建管理员，不从email/title/group推断能力；bootstrap policy本身不授金融、grant管理或导出能力，完成MFA也不能创造这些权限。
 
 启动分相：keyd安全遍历并锁定持久`.lock`，验证root/keyring后ready返回material generation/digest及包装/MAC状态。API零写DB preflight比较`crypto_control`和peer/socket；maintenance或不符时not-ready，不自动建key/猜active/切外部KMS。
 
@@ -1300,7 +1323,7 @@ SQLite备份使用一致Backup API/VACUUM INTO等机制，不能复制活main.db
 
 历史R3/R7外部Transit URL/token/CA只保留为固定代码证据；DEV-018已迁移生产调用者并删除外部KMS生产路径/secret，不得回退。
 
-DEV-019当前组合根只接受`TEAMLEDGER_IDENTITY_MODE=local|oidc`，删除`disabled`模式。`local`拒绝任何OIDC变量并经keyd提供username/password domain，当前没有MFA；`oidc`要求完整`TEAMLEDGER_OIDC_ISSUER`/`CLIENT_ID`/`CLIENT_SECRET_FILE`/`MFA_ACR`/`MFA_AMR`及可选`CA_FILE`。redirect由已校验PUBLIC_ORIGIN固定`/api/v1/auth/callback`，须在实际IdP精确注册；仅RS256，HTTPS discovery/JWKS/token、TLS≥1.2、无redirect/不安全TLS/代理fallback、有界timeout。已批准local TOTP将新增独立MFA key domain和v13状态，不得提前用配置布尔值解锁。
+组合根只接受`TEAMLEDGER_IDENTITY_MODE=local|oidc`。`local`拒绝OIDC变量，经keyd使用username、password pepper、`identity_mfa`与`local_recovery_code` domain，TOTP验证不调用外部服务。`oidc`要求完整issuer/client secret/MFA ACR/AMR及可选CA；redirect固定为已校验PUBLIC_ORIGIN下callback，只允许RS256和TLS code flow。身份模式配置不是MFA绕过开关。
 
 OIDC client secret及非对称信任继续使用受保护配置文件；identity lookup、transaction envelope、CSRF、receipt/generation及cursor长期对称key均由keyring/keyd提供。历史client secret之外的identity/transaction RAW32 key-file配置已删除且无fallback；session opaque token仍只存SHA-256 hash，无session key。
 
@@ -1342,8 +1365,8 @@ PG身份维护窄入口直接以同descriptor已检查的完整PEM CA bytes构�
 | F-COMP-001 / compensation | CNY/JPY scale0规范整数、HALF_UP边界/溢出、同Branch混币；个人显式换币correction完整闭包；range区间唯一；batch header/reference budget、Staff Code preview、工资差异确认及先纠正后调薪；全批increase分币种摘要、无FX/grand total | 双库/API：manual/XLSX同构candidate、Text-cell exact与numeric拒绝、旧term/event保留、纠正不计次数、固定service零部分写、range重叠拒绝；Vue默认3行/警告确认/预算对照/局部横向滚动及真实浏览器smoke |
 | F-BONUS-001 / compensation | target/award/payment分列、crossorg refs、异常事实、reversal累计、永久业务key、extension拒绝 | 双库异常/冲销/幂等/atomic rollback、UI不跨币种假余额 |
 | F-AI-001 / assessment | 日历/DST/unknown/partial、source digest/交集ACL、lease fencing、provider失败、人工publish重验 | 双库真实job竞争；可控provider边界；真实provider/model/合同与人审质量另验，不pin自然文案 |
-| F-SEC-001 / identity/authz/sensitive/audit | 授权先于keyd；openat2/no-replace/持久lock；规范byte grammar/AAD/KWP context；inventory；A1/A2/DB ack；MAC staging/index CAS | 两进程/双启动/CLI竞争；inventory probe；byte-level golden与错owner/version/schema；全部轮换崩溃点、重启/rewrap；DB不含keys；旧恢复key只decrypt；真实IdP/审计另验 |
-| F-DB-001 / adapters/ops | PK/FK/owner/CAS/失败回滚、每连接FK、busy/死锁、v12/v13 checksum及前向migration | SQLite新文件＋PG空schema安装至v13；v11/未知目标拒绝零写入；exact v12保留数据升级至v13；exact v13正常重启；备份恢复、生产构建API/UI smoke与负载目标 |
+| F-SEC-001 / identity/authz/sensitive/audit | 授权先于keyd；本地TOTP/recovery受限session；持久replay；openat2/no-replace/lock；AAD/KWP；18-domain inventory与DB ack；MAC staging | RFC向量、登记/登录/step-up/替换/恢复/离线reset；同step与恢复码并发单赢家；受限session直达业务拒绝；16→18中断/幂等；secret不入DB明文/日志；真实OIDC/介质责任另验 |
+| F-DB-001 / adapters/ops | PK/FK/owner/CAS/失败回滚、每连接FK、busy/死锁、v12/v13/v14 checksum及前向migration | SQLite/PG空schema安装至v14；v1-v11/未知目标拒绝零写入；exact v12顺序升v14、exact v13升v14、exact v14重启；备份恢复、生产构建API/UI smoke与负载目标 |
 
 纵向实施顺序与功能规范一致：安全/双库最小真实读写→组织历史→分区面谈/交接→薪资批准纠错→奖金事实→确定规则/AI人审→生产运行启用门禁；每片已有真实界面/API/存储/授权，不先堆空package再宣称功能。安全与恢复从相关切片落实，末项是上线验收不是此前许可忽略。Go行为table/fuzz/race、双库真实集成、Vue/Vitest和关键浏览器E2E各自证据不互替；分工不跑检查，集成负责人统一验证最终候选，整体task两轮串行实际luna review。
 

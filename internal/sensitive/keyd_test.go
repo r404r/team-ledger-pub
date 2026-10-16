@@ -124,6 +124,22 @@ func TestKeydInitLockSocketWrapMACAndRestart(t *testing.T) {
 		t.Fatal("open", err)
 	}
 	clear(opened)
+	mfaWrapper, err := NewKeydWrapper(client, DomainIdentityMFA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mfaBinding := Context{OrgID: binding.OrgID, RecordID: binding.RecordID, VersionID: binding.VersionID, ObjectKind: "local_mfa_enrollment", Purpose: "identity", SchemaType: "identity.local_mfa_enrollment.v1", SchemaVersion: 1}
+	mfaCipher := Cipher{Wrapper: mfaWrapper}
+	mfaPlain := []byte("SYNTHETIC-TOTP-SEED")
+	mfaEnvelope, err := mfaCipher.Seal(context.Background(), mfaBinding, mfaPlain)
+	if err != nil {
+		t.Fatal("identity MFA seal", err)
+	}
+	mfaOpened, err := mfaCipher.Open(context.Background(), mfaBinding, mfaEnvelope)
+	if err != nil || !bytes.Equal(mfaOpened, mfaPlain) {
+		t.Fatal("identity MFA open", err)
+	}
+	clear(mfaOpened)
 	tampered := envelope
 	tampered.Key.Data = bytes.Clone(envelope.Key.Data)
 	tampered.Key.Data[len(tampered.Key.Data)-1] ^= 1

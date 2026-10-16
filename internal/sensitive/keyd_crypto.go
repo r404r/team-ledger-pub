@@ -132,7 +132,7 @@ func encodeTLWDigest(domain KeyDomain, keyID string, version uint32, dekID strin
 	number, ok := domainNumber(domain)
 	keyUUID, keyOK := uuidBytes(keyID)
 	dekUUID, dekOK := uuidBytes(dekID)
-	if !ok || number > 7 || !keyOK || !dekOK || version == 0 || len(digest) != 32 || len(dek) != 32 || len(material) != 32 {
+	if !ok || !wrapperDomain(domain) || !keyOK || !dekOK || version == 0 || len(digest) != 32 || len(dek) != 32 || len(material) != 32 {
 		return nil, ErrInvalid
 	}
 	header := make([]byte, 0, 78)

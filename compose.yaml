@@ -72,6 +72,50 @@ services:
       - no-new-privileges:true
     restart: "no"
 
+  key-upgrade:
+    <<: *team-ledger-image
+    profiles: ["key-upgrade"]
+    user: "${TEAMLEDGER_KEYD_UID:?set TEAMLEDGER_KEYD_UID}:${TEAMLEDGER_GID:?set TEAMLEDGER_GID}"
+    command: ["/app/teamledger-keyctl-local", "upgrade-domains", "-dir", "/var/lib/teamledger-keys/material"]
+    depends_on:
+      data-init:
+        condition: service_completed_successfully
+    volumes:
+      - team-ledger-keys:/var/lib/teamledger-keys
+    restart: "no"
+
+  key-domain-ack:
+    <<: *team-ledger-image
+    profiles: ["key-domain-ack"]
+    user: "${TEAMLEDGER_MAINTENANCE_UID:?set TEAMLEDGER_MAINTENANCE_UID}:${TEAMLEDGER_GID:?set TEAMLEDGER_GID}"
+    command:
+      - /app/teamledger-keyctl-local
+      - acknowledge-domains
+      - -socket
+      - /run/teamledger-keyd/keyd.sock
+      - -backend
+      - sqlite
+      - -dsn-file
+      - /run/teamledger-maintenance/sqlite-dsn
+      - -request-id
+      - "${TEAMLEDGER_KEY_DOMAIN_ACK_REQUEST_ID:-}"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      keyd:
+        condition: service_healthy
+    volumes:
+      - team-ledger-data:/var/lib/teamledger
+      - team-ledger-run:/run/teamledger-keyd
+      - ./docker/maintenance:/run/teamledger-maintenance:ro
+    read_only: true
+    tmpfs:
+      - /tmp:mode=0700,uid=${TEAMLEDGER_MAINTENANCE_UID:?set TEAMLEDGER_MAINTENANCE_UID},gid=${TEAMLEDGER_GID:?set TEAMLEDGER_GID}
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
   key-check:
     <<: *team-ledger-image
     user: "${TEAMLEDGER_KEYD_UID:?set TEAMLEDGER_KEYD_UID}:${TEAMLEDGER_GID:?set TEAMLEDGER_GID}"

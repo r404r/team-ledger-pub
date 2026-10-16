@@ -196,10 +196,67 @@ curl --fail --cacert docker/secrets/tls-cert.pem \
 https://localhost:8443
 ```
 
-使用`admin.user`及刚才保存的密码登录。因为是本机自签名证书，浏览器会提示证书不受公开CA信任；核对地址确实是`https://localhost:8443`后，仅在该本机安装中继续访问。不要把这个做法用于公网生产环境。
+使用`admin.user`及刚才保存的密码登录。首次密码验证只会进入“设置 TOTP 验证器”受限页面，不会开放员工或薪资数据：
 
-#### 1.6 日常停止、重启和更新
+1. 在手机或其他独立设备安装任一支持标准TOTP的离线Authenticator；TeamLedger不要求连接外部MFA服务。
+2. 扫描页面二维码；不能扫描时，手工输入页面显示的Base32密钥。
+3. 输入验证器当前显示的6位验证码并启用。
+4. 页面随后只显示一次账号恢复码。把它抄写到受控离线介质，勾选“已保存”后才能进入工作区；不要放入聊天、截图或共享文档。
+5. 后续登录使用密码＋TOTP。敏感操作要求近期MFA时，在“会话与安全”中重新输入当前密码＋TOTP；系统不会自动重放刚才的业务操作。
 
+浏览器使用本机自签名证书时会提示证书不受公开CA信任；核对地址确实是`https://localhost:8443`后，仅在该本机安装中继续访问。不要把这个做法用于公网生产环境。
+#### 1.6 从schema v13升级到v14（仅既有安装执行一次）
+
+v14新增本地TOTP和两个独立key domain。既有v13安装不能直接执行普通`git pull && up`：旧keyring只有16个domain，新keyd会按设计拒绝启动。该升级保留业务数据，但会撤销既有本地账号会话，并要求每个active本地账号在下次密码登录时登记TOTP。
+
+先完成并验证一次数据库备份和§3.1所述旧keyring双介质离线副本。保持当前`TEAMLEDGER_*_VOLUME`名称不变，然后严格按顺序执行：
+
+```bash
+set -eu
+cd ~/team-ledger
+set -a; . ./.env.docker; set +a
+docker compose --env-file .env.docker down
+
+# 此时先按§3.1完成并验证旧generation离线副本，再继续。
+git pull --ff-only
+docker compose --env-file .env.docker build
+
+ack_request_id="$(cat /proc/sys/kernel/random/uuid)"
+if grep -q '^TEAMLEDGER_KEY_DOMAIN_ACK_REQUEST_ID=' .env.docker; then
+  sed -i "s/^TEAMLEDGER_KEY_DOMAIN_ACK_REQUEST_ID=.*/TEAMLEDGER_KEY_DOMAIN_ACK_REQUEST_ID=$ack_request_id/" .env.docker
+else
+  printf 'TEAMLEDGER_KEY_DOMAIN_ACK_REQUEST_ID=%s\n' "$ack_request_id" >> .env.docker
+fi
+unset ack_request_id
+
+# API和keyd保持停止；把完整旧16-domain keyring原子扩展到18-domain。
+docker compose --env-file .env.docker --profile key-upgrade run --rm key-upgrade
+
+# 先安装v14数据库migration；此时仍不启动API。
+docker compose --env-file .env.docker up \
+  --abort-on-container-exit --exit-code-from migrate migrate
+
+# 单独启动新keyd，再把同一18-domain generation严格确认到数据库。
+docker compose --env-file .env.docker up -d --wait keyd audit-receiver
+docker compose --env-file .env.docker --profile key-domain-ack run \
+  --rm --no-deps key-domain-ack
+
+# 确认成功后才开放API和其余服务。
+docker compose --env-file .env.docker up -d --wait
+docker compose --env-file .env.docker ps
+curl --fail --cacert docker/secrets/tls-cert.pem \
+  https://localhost:8443/health/ready
+```
+
+`key-upgrade`只接受完整旧16-domain或完整新18-domain inventory；重复执行完整18-domain不会再生成key。`key-domain-ack`以`.env.docker`中保存的同一request ID幂等重试，不能换ID猜测成功。任一步失败时保持API停止，保留错误输出和原数据/key volume；不要清库、重跑bootstrap、生成替代root或执行`down -v`。
+
+成功后：
+
+1. 用原账号密码登录，按§1.5登记TOTP并保存一次性恢复码。
+2. 再按§3.1制作并验证包含18-domain新generation的双介质离线副本；旧副本继续按保留政策保存，不能冒充新副本。
+3. 确认所有账号完成登记前，不要删除原数据库备份。
+
+#### 1.7 日常停止、重启和更新
 普通停止不会删除数据：
 
 ```bash
@@ -225,7 +282,7 @@ docker compose --env-file .env.docker up -d --wait
 
 不要重跑key、audit或identity bootstrap。普通启动会运行必要的database migration并复用既有named volumes。
 
-#### 1.7 数据不会放在哪里、哪些命令不能用
+#### 1.8 数据不会放在哪里、哪些命令不能用
 
 业务数据库、keyd材料和audit材料不在容器临时层，而在三个Docker named volumes。`down`、重建image和电脑重启不会删除它们。查看实际名称：
 
@@ -245,7 +302,7 @@ docker system prune --volumes
 
 Named volume不是备份。正式使用前必须按§5建立业务数据库加密备份，并按§3.1把root/keyring保存到两个不同离线介质；数据库备份、key材料和audit材料必须分开保管。
 
-#### 1.8 常见问题
+#### 1.9 常见问题
 
 长期服务或migration失败时运行：
 
@@ -268,6 +325,8 @@ docker compose --env-file .env.docker logs --tail=200 \
 | 重跑bootstrap时报“已存在”或`key control failed` | 先回看第一次执行结果：只有明确看到`key directory initialized`或对应bootstrap成功退出才可视为已完成并继续下一步。首次失败不得猜测成功、删除volume或覆盖key；保存错误并按上段只重试失败命令。 |
 | 忘记初始密码 | 不要重做安装；使用后文maintenance profile的`local-account-reset`受控重置账号。 |
 | curl报告证书错误 | 必须保留`--cacert docker/secrets/tls-cert.pem`，URL必须是证书覆盖的`localhost`或`127.0.0.1`。 |
+| TOTP设备遗失，但恢复码仍在 | 在登录页选择“使用恢复码”，输入username、当前密码和一次性恢复码，只进入受限恢复页；设置新验证器并保存新的恢复码。恢复码不能直接进入业务页面。 |
+| TOTP设备和恢复码都遗失 | 不能从网页关闭MFA或绕过第二因素；由有权维护者按下述“离线MFA重置”操作。 |
 
 只有在**确认是全新测试安装且所有数据都可以永久删除**时，才能彻底重置：
 
@@ -278,6 +337,33 @@ rm -f .env.docker
 ```
 
 然后从§1.3重新开始。该操作不可恢复，不适用于任何重要环境。
+
+离线MFA重置保留MFA强制要求，只删除旧因子并把账号恢复为`enrollment_required`。准备bootstrap时保存的`org_id`、`subject_id`，把示例username替换为目标账号；canonical JSON不能有末尾换行：
+
+```bash
+set -eu
+set -a; . ./.env.docker; set +a
+printf '%s' '{"username":"admin.user"}' \
+  > docker/maintenance/local-mfa-reset.json
+sudo chown "$TEAMLEDGER_MAINTENANCE_UID:$TEAMLEDGER_GID" \
+  docker/maintenance/local-mfa-reset.json
+sudo chmod 0600 docker/maintenance/local-mfa-reset.json
+reset_request_id="$(cat /proc/sys/kernel/random/uuid)"
+docker compose --env-file .env.docker --profile maintenance run \
+  --rm --no-deps maintenance \
+  /app/teamledger-identity local-mfa-reset \
+  -backend sqlite \
+  -dsn-file /run/teamledger-maintenance/sqlite-dsn \
+  -keyd-socket /run/teamledger-keyd/keyd.sock \
+  -input-file /run/teamledger-maintenance/local-mfa-reset.json \
+  -org-id '替换为org_id' \
+  -subject-id '替换为subject_id' \
+  -request-id "$reset_request_id"
+sudo rm -f docker/maintenance/local-mfa-reset.json
+unset reset_request_id
+```
+
+只有命令成功后才删除输入文件。网络或终端结果不确定时，用**相同**request ID和相同文件重试；不得换ID。成功会撤销该账号全部会话、旧TOTP、恢复码和pending登记并写审计。用户随后以现有密码登录，只能重新登记TOTP，不能以密码单独进入工作区。
 
 ### 2. 构建、启动与健康检查
 
@@ -454,7 +540,7 @@ docker compose --env-file .env.docker --profile bootstrap run --rm --no-deps \
 docker compose --env-file .env.docker up -d --wait audit-receiver audit-forwarder
 ```
 
-Compose默认SQLite，不承诺数据库角色隔离。PostgreSQL部署由当前v13 schema owner执行`docker/postgres/audit_roles.sql`，再由部署系统为四个NOLOGIN角色配置本地LOGIN凭据/成员关系和强制TLS；runtime不得使用schema owner。receiver只获`schema_version`和receiver chain/ledger所需权限，forwarder获`audit_event/audit_outbox`读取、outbox更新及receiver status heartbeat写入，离线maintainer只获ledger/outbox SELECT，API login只继承`teamledger_audit_api_status`读取receiver status。v12部署升级到v13后必须由schema owner重新执行该幂等脚本再切runtime。
+Compose默认SQLite，不承诺数据库角色隔离。PostgreSQL部署由当前v14 schema owner执行`docker/postgres/audit_roles.sql`，再由部署系统为四个NOLOGIN角色配置本地LOGIN凭据/成员关系和强制TLS；runtime不得使用schema owner。receiver只获`schema_version`和receiver chain/ledger所需权限，forwarder获`audit_event/audit_outbox`读取、outbox更新及receiver status heartbeat写入，离线maintainer只获ledger/outbox SELECT，API login只继承`teamledger_audit_api`。角色本身不创建LOGIN、不分发凭据、不完成生产身份认证。
 
 ### 5. 备份与恢复
 

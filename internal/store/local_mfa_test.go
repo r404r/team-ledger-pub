@@ -83,10 +83,16 @@ func TestLocalMFAEnrollmentLoginStepUpAndRecovery(t *testing.T) {
 	if _, err = repo.Security(ctx, restricted, "", ""); err != fault.Unauthenticated {
 		t.Fatal("restricted session entered business authorization", err)
 	}
+	clockCalls := 0
+	service.Now = func() time.Time {
+		clockCalls++
+		return now.Add(time.Duration(clockCalls) * time.Microsecond)
+	}
 	pending, err := service.LocalMFABegin(ctx, restricted, identity.LocalMFAReplaceRequest{SessionHash: restricted, RequestID: value.NewID()})
 	if err != nil || pending.Mode != "initial" || pending.Secret == "" {
 		t.Fatal("initial enrollment did not start", pending, err)
 	}
+	service.Now = func() time.Time { return now }
 	confirmed, err := service.LocalMFAConfirm(ctx, restricted, testTOTP(t, pending.Secret, now), value.NewID())
 	if err != nil || confirmed.RecoveryCode == "" {
 		t.Fatal("initial TOTP confirmation failed", err)

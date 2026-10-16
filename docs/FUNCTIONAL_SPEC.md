@@ -1,8 +1,8 @@
 # FUNCTIONAL_SPEC · TeamLedger 全量功能规范
 
 - 当前修订日期：**2026-10-16**。本文件与源码同属 `team-ledger`，是当前功能、页面、数据流和验收语义的唯一公开说明。
-- 当前追溯规模：7 feature、9页面、51个稳定OP ID（v13可调用49项；OP-ORG-02/03为退休ID）、59 AC。
-- DEV-015至DEV-034已交付员工主数据、业务化调薪批次、canonical授权、本地keyd、内置账号、独立audit receiver、离线key副本及长期MAC/index安全边界；这不等于生产身份、真实介质责任、AI provider或生产发布批准。
+- 当前追溯规模：7 feature、9页面、51个稳定OP ID（v14可调用49项；OP-ORG-02/03为退休ID）、59 AC。
+- DEV-015至DEV-035已交付员工主数据、业务化调薪批次、canonical授权、本地keyd、内置账号＋TOTP、独立audit receiver、离线key副本及长期MAC/index安全边界；这不等于生产OIDC身份、真实介质责任、AI provider或生产发布批准。
 - 历史Task ID仅用于说明实现阶段；历史私有计划、审查会话和本机验证路径不属于public文档。可执行事实以本仓库源码、迁移、测试及当前文档为准。
 
 ## 0. 全量功能地图与跨模块数据流
@@ -20,8 +20,8 @@ flowchart TB
     comp["F-COMP-001 薪资<br/>R4个人条款/审批/完整纠错已交付<br/>DEV-034业务化normal/special批次已实装<br/>Staff Code多行预览、参考预算、历史纠正与整批激活"]
     bonus["F-BONUS-001 奖金；R5固定代码C已验<br/>目标、奖励/独立审批、支付与冲销<br/>匹配余额/异常、有限敏感扩展"]
     ai["F-AI-001 面谈跟进；R6b受控机制已实装<br/>确定规则、批准最小输入、持久任务<br/>受限worker、加密草稿与人审发布"]
-    sec["F-SEC-001 安全横切<br/>R7＋DEV-018至022已固定：OIDC/local、scope/grant/purpose、审计read<br/>本地root/keyd、A1/A2 DB ack、用途分离KEK/MAC/backup<br/>长期index重建与CSRF撤session已实装；pepper无generic rotation"]
-    db["F-DB-001 数据横切；当前schema v13<br/>SQLite 或 PostgreSQL互斥部署；v12可前向升级<br/>共同事务/版本/receipt/lease<br/>一致snapshot、认证加密包与隔离恢复"]
+    sec["F-SEC-001 安全横切<br/>OIDC/local、scope/grant/purpose、审计read<br/>本地root/keyd、TOTP＋恢复码、A1/A2 DB ack<br/>用途分离KEK/MAC/backup；pepper无generic rotation"]
+    db["F-DB-001 数据横切；当前schema v14<br/>SQLite 或 PostgreSQL互斥部署；v13可前向升级<br/>共同事务/版本/receipt/lease<br/>一致snapshot、认证加密包与隔离恢复"]
     org -->|"同org的employee_id、可见结构事实"| interview
     org -->|"同org的employee_id；关系不授财务权"| comp
     org -->|"同org的employee_id；关系不授财务权"| bonus
@@ -48,15 +48,15 @@ ORG是共享员工身份/组织事实的来源，不是所有敏感权限的来�
 
 ### 0.2 业务读写、持久化与结果流向
 
-ORG/INT/COMP/BONUS/AI业务机制保持；R7已有审计、有限导出、KEK rewrap和恢复机制。DEV-018把生产密钥边界切换为同部署包的本地keyd＋受保护root/keyring，数据库仍只保存密文/wrapped DEK，API不挂载密钥卷。DEV-019内置账号/密码、双库与fresh Docker bootstrap/restart已固定代码并push；DEV-020已固定Compose同库独立audit receiver；DEV-021已实装双份离线密钥介质、pair只读验证与隔离恢复。AI provider仍是可选外部未决边界。
+ORG/INT/COMP/BONUS/AI业务机制保持；R7已有审计、有限导出、KEK rewrap和恢复机制。DEV-018把生产密钥边界切换为同部署包的本地keyd＋受保护root/keyring，数据库仍只保存密文/wrapped DEK，API不挂载密钥卷。DEV-019内置账号/密码、双库与fresh Docker bootstrap/restart已固定；DEV-020已固定Compose同库独立audit receiver；DEV-021已实装双份离线密钥介质、pair只读验证与隔离恢复；DEV-035在v14加入完全本地的TOTP、一次性恢复码和敏感操作step-up。AI provider仍是可选外部未决边界。
 
 ```mermaid
 flowchart TB
     person["授权人员"]
     identity{"部署固定identity mode"}
-    local["local账号/密码<br/>Argon2id＋keyd pepper；当前无MFA<br/>DEV-030批准TOTP＋恢复码，待后续schema版本"]
-    oidc["可选受信OIDC IdP<br/>当前唯一step-up/MFA来源"]
-    session["8h absolute / 30m idle会话<br/>登录不创建grant"]
+    local["local账号/密码＋TOTP<br/>Argon2id＋keyd pepper；RFC 6238<br/>受限登记/恢复＋一次性恢复码"]
+    oidc["可选受信OIDC IdP<br/>由实际IdP提供可信MFA"]
+    session["business或受限账号安全session<br/>business为8h absolute / 30m idle<br/>登录不创建grant"]
     command["授权人员的显式业务命令"]
     gate["F-SEC-001 当前命令授权<br/>能力、scope、类别、grant、purpose<br/>必要MFA；版本/当前资格"]
     domain["主应用领域校验<br/>ORG、INT、COMP、BONUS、规则与AI<br/>SEC审计查询/有限导出"]
@@ -65,7 +65,7 @@ flowchart TB
     keyfiles[("独立持久key volume<br/>RAW32 root＋认证keyring＋持久lock<br/>不进入DB或DB backup")]
     offline["两份分离AES-256-GCM可移动介质<br/>同export完整inventory；pair只读verify<br/>DEV-021已实装；非完整灾备"]
     tx["短业务事务<br/>重验当前授权/版本、guard/CAS<br/>原子写policy/window/receipt/审计"]
-    store[("F-DB-001 单一持久后端<br/>SQLite 或 PostgreSQL；当前schema v13<br/>业务事实、密文、audit event/outbox<br/>及receiver ledger")]
+    store[("F-DB-001 单一持久后端<br/>SQLite 或 PostgreSQL；当前schema v14<br/>业务事实、MFA密文/MAC、audit event/outbox<br/>及receiver ledger")]
     receipt["已提交事实与安全回执<br/>不确定结果只确认原命令"]
     query["授权人员的查询<br/>as_of业务投影；历史UTC录入窗口"]
     readgate["当前组织日查询授权<br/>exact department/employee与typed assignment/reporting<br/>先scope再分页；独立敏感读权成立才解密"]
@@ -203,7 +203,7 @@ flowchart TB
 
 ### 0.5 组织与历史：三种时间、当前scope和PII释放
 
-下图以当前v13为准。`as_of`只投影业务有效期；历史`from/to`只筛UTC `recorded_at`；授权始终使用服务端捕获的集团IANA当前业务日。v12是通知时登记的首个部署baseline；v13提供SQLite/PostgreSQL前向迁移并保留v12全部既存数据，v1-v11仍不受支持。未来变化必须继续前向迁移，不得以清库代替。
+下图以当前v14为准。`as_of`只投影业务有效期；历史`from/to`只筛UTC `recorded_at`；授权始终使用服务端捕获的集团IANA当前业务日。v12是通知时登记的首个部署baseline；v13保留员工模型并加入调薪批次，v14从合法v13前向迁移并加入本地MFA。v1-v11仍不受支持；不得以清库代替升级。
 
 ```mermaid
 flowchart TB
@@ -286,8 +286,8 @@ flowchart TB
 | F-COMP-001 | 个人薪资条款/纠错、salary range、年度normal/special业务批次录入/预览/显式提交/原子激活及历史 | DES-003/005/006；DEV-034已交付 | 个人5 OP保持；业务header、默认3行、Staff Code解析、手工/XLSX同构candidate、参考预算、工资差异确认、历史纠正及整批activation已实装 | 当前源码、v13迁移、永久测试及真实页面smoke |
 | F-BONUS-001 | 奖金目标、批准奖励、支付记录与敏感扩展 | DES-001/002；业务口径须显式批准 | 8 OP、P-BONUS-01、目标/奖励/批准、支付/冲销/异常、有限扩展、签名游标及受控HMAC维护已实装 | 固定代码C [`1c769d0`](https://github.com/r404r/team-ledger-pub/commit/1c769d0d5781eaf6cc797c46ab4ffc11d3940c95) |
 | F-AI-001 | 定期面谈状态、依据草稿、人审发布、过期/失败处理 | DES-001/002；真实外传政策待批准 | 确定规则、人工proposed→独立approve、standing policy、稳定调度、持久queue/lease/fence/receipt、受限worker、加密draft及人审发布已实装；真实provider质量/外传未验 | 当前源码、v9/v10迁移和永久测试 |
-| F-SEC-001 | 敏感内容库内密文、特殊权限、授权先于解密、密钥/审计/恢复 | DES-001/002/007/008；机制已交付 | 本地root/keyring、local/OIDC身份、同库独立receiver、双介质离线副本、长期MAC/index、identity canonical source及CSRF换键撤session已实装；不防host root | 当前源码、v13迁移、README runbook和永久测试 |
-| F-DB-001 | SQLite/PostgreSQL共同业务语义、对应迁移、冲突及原子性 | DES-001/002；v12→v13前向迁移已验证 | 审计/outbox/export/rewrap/restore事实、SQLite一致snapshot、PG exported snapshot/custom dump及keyd backup domain已实装 | 当前源码与双数据库永久测试；容量、PITR、RPO/RTO和生产切流另行批准 |
+| F-SEC-001 | 敏感内容库内密文、特殊权限、授权先于解密、密钥/审计/恢复 | DES-001/002/007/008；机制已交付 | 本地root/keyring、local密码＋TOTP/OIDC身份、同库独立receiver、双介质离线副本、长期MAC/index、identity canonical source及CSRF换键撤session已实装；不防host root | 当前源码、v14迁移、README runbook和永久测试 |
+| F-DB-001 | SQLite/PostgreSQL共同业务语义、对应迁移、冲突及原子性 | DES-001/002；v13→v14前向迁移已实装 | 审计/outbox/export/rewrap/restore事实、SQLite一致snapshot、PG exported snapshot/custom dump及keyd backup/MFA domain已实装 | 当前源码与永久测试；本次PG v14运行验证因无DSN待补，容量/PITR/RPO/RTO另行批准 |
 
 “已接受”需要实际决策记录；“已实现/已验证”须由本仓库源码、迁移、永久测试及实际运行证据支持；“生产发布”还需要真实部署与责任人批准。历史Task ID和commit只说明演进阶段，不替代当前行为检查。
 
@@ -540,7 +540,7 @@ P-ORG-03资料页标`as_of`与当前授权判断日；profile是当前获准版�
 
 ### 权限与验收
 
-以下为F-ORG-001唯一验收登记；场景以v12引入的员工模型和当前v13 schema执行。员工主数据及canonical授权切换均已实装，但不外推生产启用。
+以下为F-ORG-001唯一验收登记；场景以v12引入的员工模型和当前v14 schema执行。员工主数据及canonical授权切换均已实装，但不外推生产启用。
 
 | 验收 ID | 页面 / 操作 | 合成输入、动作与可观察结果 | 当前覆盖 / 未决 |
 | --- | --- | --- | --- |
@@ -553,7 +553,7 @@ P-ORG-03资料页标`as_of`与当前授权判断日；profile是当前获准版�
 | AC-ORG-07 | P-ORG-03；OP-ORG-05/06/08 | 创建双语profile、Staff Code及可选直属主管后重读权威详情；再以profile revision完整更正，追加加密历史/审计。创建任一identifier/manager失败零部分员工；同旧更正版本最多一成功，越权/未知字段拒绝；创建非upsert | DEV-015 profile v2密文/API；DEV-028原子创建SQLite API/UI已验，PostgreSQL待真实DSN |
 | AC-ORG-08 | P-ORG-02/03；OP-ORG-05/06/07/10 | 原子创建本地姓名“合成员工甲”＋英文名“Example A”及文本工号`\"0007\"`；两姓名和工号独立往返。该员工换为`\"0008\"`后rehire可重新启用本人旧`\"0007\"`，但另一employee在任何日期取得`\"0007\"`均整组拒绝；姓名不参与身份匹配，缺PII权不显示/解析工号 | DEV-015候选双库/API/UI及PII拒绝；DEV-028创建组合SQLite回归已验，PostgreSQL待真实DSN |
 | AC-ORG-09 | P-ORG-03；OP-ORG-06/07/09/10 | employee先hire到`法分公司`/Shanghai，结束后rehire到`法分公司`/Tokyo；指定日期投影唯一并保留全部spell。Wuxi可选，未知Location或非`法分公司`Branch拒绝；first/current employment dates分别可解释 | DEV-015候选双库/API/UI已验 |
-| AC-ORG-10 | P-ORG-01/02/03；OP-ORG-01/04/07/09/10 | SQLite新文件和PG空schema分别安装至当前v13，合成建立BG→Division→Department并写一个canonical assignment；schema/API不存在team第四层、team scope/ref、OP-ORG-02/03 writer。以v11 DB启动须明确`SCHEMA_VERSION_UNSUPPORTED`且零写入；既有合法v12经v13 migration保留员工数据后真实API/UI成功 | DEV-015员工模型；v13 SQLite migration实跑通过，PostgreSQL migration/contract已实装但本次缺真实DSN runtime |
+| AC-ORG-10 | P-ORG-01/02/03；OP-ORG-01/04/07/09/10 | SQLite新文件和PG空schema分别安装至当前v14，合成建立BG→Division→Department并写一个canonical assignment；schema/API不存在team第四层、team scope/ref、OP-ORG-02/03 writer。以v11 DB启动须明确`SCHEMA_VERSION_UNSUPPORTED`且零写入；合法v12顺序升级至v13、合法v13再升级v14均保留员工数据 | DEV-015员工模型；v13/v14 SQLite migration实跑通过，PostgreSQL migration/contract已实装但本次缺真实DSN运行证据 |
 | AC-ORG-11 | P-ORG-03；OP-ORG-06/07/09/10 | 先记录Bachelor，再记录日期更早的Master和日期更晚的Diploma，Highest Education为Master；未知level拒绝。Direct Manager与HOD读出同一administrative reporting fact且不授financial；独立HOD kind或不同人员拒绝。新assignment含canonical position payload，department不一致/secondary/并发旧revision整组拒绝 | DEV-015候选双库/API/UI已验 |
 | AC-ORG-12 | P-ORG-03；OP-ORG-07/09/10、OP-SEC-02/03/06 | 单个OP-ORG-10命令结束旧employment/assignment/reporting并新增合法后继，facts/projection/revisions/epochs/receipt/audit同Tx；任一目录、Staff Code owner、manager endpoint、单一任职或授权失败时SQLite/PG零部分事实。新grant只接受org/department/employee scope与reporting_line/job_assignment ref，team/team_membership类型一律拒绝；assignment结束后successor/rehire不复活绑定grant | 双库/API/UI永久测试覆盖组合写、旧team输入拒绝、department scope、job_assignment relation-bound、业务日coverage、DB kind/owner约束及end/replace不复活 |
 
@@ -978,15 +978,24 @@ flowchart TB
     transient["MAC结果<br/>持久generation／command receipt带exact reference且固定domain<br/>15分钟cursor／CSRF key ID+version"]
     password["Argon2id结果"]
     pepper["credential exact pepper key ID+version<br/>历史verify；generic rotation拒绝"]
-    keyd["本地teamledger-keyd<br/>active mac／历史verify／staged mac"]
+    totp["TOTP factor/enrollment secret<br/>identity_mfa KEK密封＋owner/generation AAD<br/>持久last accepted step防replay"]
+    recovery["一次性恢复码<br/>local_recovery_code MAC<br/>原文只显示一次"]
+    restricted["10分钟受限登记/恢复session<br/>不能访问/session或业务API"]
+    keyd["本地teamledger-keyd<br/>active mac／历史verify／wrap/unwrap"]
     business["员工、调薪、奖金<br/>按exact key ID/version查询"]
-    session["OIDC/local登录与session"]
+    session["OIDC或local business session<br/>local AMR=pwd＋otp；MFA 10分钟"]
     source --> index --> business
     request --> transient --> session
     password --> pepper --> session
+    password --> restricted
+    recovery --> restricted
+    restricted -->|"确认新TOTP"| totp
+    totp -->|"登录／step-up／替换"| session
     keyd --> index
     keyd --> transient
     keyd --> pepper
+    keyd --> totp
+    keyd --> recovery
 ```
 
 3. 特殊授权有批准、范围、目的、有效/撤销状态，权限变更、敏感读取/修改/导出及授权拒绝按最小必要信息审计；审计不得记录工资数值、面谈正文或模型prompt。
@@ -995,12 +1004,14 @@ flowchart TB
 6. staged和activated generation各有独立验证artifact；A2、keyd active map与DB ack一致后才写。恢复旧包装active先转decrypt-only。
 7. 本地文件方案支持无人值守启动且阻止API UID直接读取长期key；但获准API进程被攻陷后可通过窄接口取得其允许domain明文。方案不抵御host root、离线副本持有人或该授权调用方，不把keyd冒充业务授权边界。
 8. 部署必须选择且只能选择`local`或`oidc`身份模式；首次bootstrap后模式固定入库，配置不符不ready。切换是显式维护动作，会撤销全部会话并审计；登录失败不尝试另一模式。
-9. `local`模式无公开注册：fresh空库由maintenance profile一次性创建唯一集团、首个active subject/account及固定`bootstrap_policy.v1`最小组织/PII维护权；输入不能选择金融、面谈、审计、导出或grant管理权。其后维护者只把唯一username绑定既有active subject；后续subject创建本身不授职责。登录错误、未知或停用账号给相同提示并指数延迟；密码更改/重置/停用撤销该主体全部会话。正常登录只建立会话，不创建角色、grant或员工绑定。
-10. `local`模式当前没有MFA/step-up，所有要求MFA的授权管理、敏感导出等操作保持`MFA_REQUIRED`不可用；不得用再次输入密码或bootstrap身份冒充第二因素。DEV-030已批准由TeamLedger独立完成的TOTP＋一次性恢复码，但v13已由DEV-034占用，TOTP必须通过后续独立schema版本和双数据库migration交付；当前页面明确显示“MFA未提供”，不提供伪开关。
-11. Compose内置receiver是独立进程但与业务共用DB：业务事务先原子写安全事件/outbox，forwarder以mTLS投递；receiver先构造/签名receipt，再将ledger与完整signed receipt在同一事务INSERT/commit，commit后才返回，forwarder验签才确认outbox。服务中断保留事件重试，同event/digest逐byte返回已持久化原receipt；forwarder另以5秒mTLS探测写单例heartbeat，API仅接受本部署ID且成功状态不老于15秒。此同库方案不宣称抵御DBA/host root。
-12. root/keyring离线副本每次同时导出到两份分别加密、分离保管的可移动介质；停止写入并锁定同一generation，inventory包含全部active/staged/decrypt-only/verify-only key entry状态与每domain active pointer，A/B都经隔离只读hash/auth/完整probe后才登记成功。副本不含DB或audit/OIDC私钥，不是完整灾备，当前不承诺RPO/RTO。
+9. `local`模式无公开注册：fresh空库由maintenance profile一次性创建唯一集团、首个active subject/account及固定`bootstrap_policy.v1`最小组织/PII维护权；输入不能选择金融、面谈、审计、导出或grant管理权。其后维护者只把唯一username绑定既有active subject；后续subject创建本身不授职责。登录错误、未知或停用账号给相同提示并指数延迟；密码更改/重置/停用撤销该主体全部会话。登录不创建角色、grant或员工绑定。
+10. `local`模式由TeamLedger独立验证密码＋TOTP，不依赖外部IdP或网络MFA服务。新建及v13迁移的active账号进入`enrollment_required`：正确密码只签发10分钟受限登记session，不能访问`/session`或业务API。TOTP为RFC 6238 SHA-1/6位/30秒、允许±1窗口，并以持久`last_accepted_step`拒绝登录和step-up间的重复验证码。
+11. TOTP secret和pending secret使用独立`identity_mfa` KEK密封；二维码及人工密钥仅在当前页面内存显示。确认后生成一次显示恢复码，数据库只保存独立`local_recovery_code` MAC。恢复码必须与当前密码一起原子消费，只能进入受限新TOTP登记；同请求响应丢失可用同一幂等键恢复pending，并发消费仅一方成功。
+12. 本地敏感step-up重新验证当前密码＋TOTP，轮换session/CSRF并签发10分钟`mfa_until`，但不自动执行先前业务命令。主动替换TOTP和重发恢复码同样要求当前密码＋未重放TOTP；遗失全部因子只能用离线CLI重置，网页不能关闭或绕过MFA。
+13. Compose内置receiver是独立进程但与业务共用DB：业务事务先原子写安全事件/outbox，forwarder以mTLS投递；receiver先构造/签名receipt，再将ledger与完整signed receipt在同一事务INSERT/commit，commit后才返回，forwarder验签才确认outbox。服务中断保留事件重试，同event/digest逐byte返回已持久化原receipt；forwarder另以5秒mTLS探测写单例heartbeat，API仅接受本部署ID且成功状态不老于15秒。此同库方案不宣称抵御DBA/host root。
+14. root/keyring离线副本每次同时导出到两份分别加密、分离保管的可移动介质；停止写入并锁定同一generation，inventory包含全部active/staged/decrypt-only/verify-only key entry状态与每domain active pointer，A/B都经隔离只读hash/auth/完整probe后才登记成功。副本不含DB或audit/OIDC私钥，不是完整灾备，当前不承诺RPO/RTO。
 
-输入为互斥identity mode、认证身份、授权条件、敏感对象/版本和受控运维动作；输出为local或OIDC会话、授权内容或安全失败，以及无正文审计/恢复状态。DEV-019 local身份固定代码C [`c8b4da4`](https://github.com/r404r/team-ledger-pub/commit/c8b4da4e93920e272bec7a0462f3ccbfe797aaa9)已完成真实双库/API/Docker验证并push；DEV-020同库receiver已固定交付；DEV-021双份离线密钥介质已实装真实CLI export→pair verify→isolated restore→恢复keyd ready，交付固定中。OIDC客户端和在线keyring lifecycle继续保留。
+输入为互斥identity mode、认证身份、授权条件、敏感对象/版本和受控运维动作；输出为local或OIDC会话、授权内容或安全失败，以及无正文审计/恢复状态。DEV-019至DEV-022交付本地身份、receiver、离线密钥与长期MAC；DEV-035交付v14本地TOTP/恢复码、18-domain keyring升级及离线MFA重置。OIDC客户端和在线keyring lifecycle继续保留。
 
 ### 边界、状态与错误
 
@@ -1037,9 +1048,10 @@ P-SEC-02 通过 OP-SEC-04 按时间窗口、actor/object/action/purpose/结果�
 | future / effective grant | 当前日跨有效期边界 | 每次请求按当前日检查 | 未生效/expired不可用；不依赖scheduler | as_of旧日、历史身份不能绕过 |
 | 无导出 | export / OP-SEC-05 | 当前read＋export/purpose/MFA、限量对象、审计可记 | 仅本次获准数据释放，记录安全结果 | 无权/缺MFA/不可用先拒绝；已下载不能撤回 |
 | 恢复待核对 | 受控运维核对 | DB包＋独立root/keyring artifact、完整inventory、非对称清单、授权/撤权 | 隔离逐项probe；旧包装key只decrypt；A1/A2＋DB ack后开放写 | keys随DB包、缺artifact/generation、猜active、旧grant复活或失败目标接流量 |
-| fresh local空库 | one-time local-bootstrap | maintenance protected file＋request ID；DB无org/subject/account/mode/receipt | 原子创建唯一org、首subject/account、mode、固定OrgR/OrgW/PIIR/PIIW最小能力/grants及审计；断连同key返回原安全IDs | 任一事实已存在、输入自选权限、匿名HTTP或部分提交拒绝；不解锁MFA路径 |
-| 无local credential | subject/account create/reset/disable/password change | maintenance受控文件或当前会话；非bootstrap账号须既有active subject；username唯一；审计可写 | subject create不授职责；credential绑定owner；reset/change/disable撤全部会话 | argv/env/stdin密码、账号转移、公开注册、隐式grant、部分提交一律拒绝 |
-| 无会话 | local login | 部署mode=local；原始密码满足格式；keyd/DB/audit可用且未限流 | 只建立8h/30m opaque session；不创建grant；成功可升级credential参数 | 未知/停用/错误统一401；mode不符不fallback；依赖失败503 |
+| fresh local空库 | one-time local-bootstrap | maintenance protected file＋request ID；DB无org/subject/account/mode/receipt | 原子创建唯一org、首subject/account、mode、固定OrgR/OrgW/PIIR/PIIW最小能力/grants、`enrollment_required` MFA状态及审计；断连同key返回原安全IDs | 任一事实已存在、输入自选权限、匿名HTTP或部分提交拒绝；密码登录仍只能先登记TOTP |
+| 无local credential | subject/account create/reset/disable/password change | maintenance受控文件或当前会话；非bootstrap账号须既有active subject；username唯一；审计可写 | subject create不授职责；新账号为`enrollment_required`；reset/change/disable撤全部会话，disable另作废MFA事实 | argv/env/stdin密码、账号转移、公开注册、隐式grant、部分提交一律拒绝 |
+| 无会话 | local login / recovery | 部署mode=local；密码及TOTP或一次恢复码；keyd/DB/audit可用且未限流 | 待登记账号只签受限session；active账号密码＋TOTP签8h/30m business session；密码＋恢复码只进入受限恢复登记 | 未知/停用/错误统一拒绝；受限session访问业务API拒绝；TOTP replay、恢复码重用、mode fallback或依赖降级均拒绝 |
+| local business session | step-up / factor replace / recovery-code regenerate | 当前密码＋未重放TOTP、CSRF/Origin及当前session | 轮换session/CSRF；step-up签10分钟MFA且不重放业务命令；替换factor推进generation；恢复码原文仅一次 | 旧验证码/旧factor/旧恢复码/其他session不可复活；遗失全部因子只能离线重置 |
 | pending audit outbox | receiver投递/重放 | forwarder mTLS、event digest、receiver ledger/signer可用 | frame签名＋ledger/完整receipt同Tx commit；commit后返回；同event同digest逐byte返回原receipt；验签后CAS ack | 同ID异digest、签名/commit失败、损坏原receipt、旧claim或伪receipt拒绝；达到backlog门限暂停敏感操作 |
 | 在线root/keyring | 双介质export/isolated restore | 停止writer、取得持久lock；两份加密介质与分离口令保管 | 同export UUID/generation及完整key entry/state/active pointer inventory；A/B隔离只读验证后登记 | 单份成功、遗漏历史/暂存entry、hash/probe不符、覆盖既有目标、DB generation不匹配均不ready |
 
@@ -1053,7 +1065,7 @@ F-SEC-001唯一验收登记：本地root/keyring、包装生命周期、Docker�
 | --- | --- | --- |
 | AC-SEC-01 | 敏感写入与DB/备份观察 | 合成marker写入后DB/WAL/DB backup无敏感明文、root或keyring；必要metadata如实存在 |
 | AC-SEC-02 | 授权＋keyd unwrap | 无权者在keyd停止时仍先拒绝；API不能读key files，但攻陷获准API可取得其domain明文 |
-| AC-SEC-03 | local/OIDC登录、bootstrap、MFA、批准、导出 | fresh local空库无需IdP即可一次性生成首subject/account与固定最小权，断连幂等；任一既有事实/自选扩权拒绝。mode入库且不匹配拒启动；local正确credential签有限session，未知/disabled/错误响应一致并限流，reset/disable/change撤全会话；OIDC不fallback local。local无MFA时所有MFA操作稳定拒绝 |
+| AC-SEC-03 | local/OIDC登录、bootstrap、MFA、批准、导出 | fresh local空库无需IdP即可创建首subject/account与固定最小权并进入受限TOTP登记；密码不能访问业务API。确认后恢复码只显示一次；密码＋TOTP登录/step-up轮换session和CSRF、同step replay拒绝；密码＋恢复码只进入受限恢复，同请求幂等且并发单赢家；替换、重发、disable和离线reset按generation撤销。未知/disabled/错误响应一致并限流；OIDC不fallback local |
 | AC-SEC-04 | 文件/包失败 | symlink/hardlink/owner/mode/size、并发init、lock竞争及非规范frame/AAD/KWP篡改均拒绝 |
 | AC-SEC-05 | 协议/inventory | 未知peer/op/domain拒绝；每个key family固定caller/probe/version/retire，所有必需加密payload均命中唯一schema/AAD owner registry。日志无key/password/MAC输入/正文 |
 | AC-SEC-06 | receiver与隔离恢复 | receiver签名frame与ledger/完整receipt同Tx commit，commit后返回；同ID重放原bytes，异digest/签名或commit失败/伪签名/旧claim拒绝。双介质inventory覆盖全部key entry/state/active pointers并逐项probe；缺任一介质验证、历史key、A2/generation或DB/非对称资产拒切流；不声称RPO/RTO |
@@ -1077,7 +1089,7 @@ F-SEC-001唯一验收登记：本地root/keyring、包装生命周期、Docker�
 
 输入为部署选择、版本/迁移、与其他feature相同命令和查询；输出为相同业务对象/状态/错误类别及迁移核对结果。备份和运维各按后端实际机制，不要求两种数据库底层锁/SQL完全相同。
 
-**当前兼容政策**：现行程序只接受当前v13 exact checksum，或接受登记的exact v12并执行一次SQLite/PostgreSQL v12→v13前向migration。v12 migration bytes/checksum保持冻结；迁移精确保留全部既有数据，追加加密批次header并让既有batch以明确legacy header读取。v1-v11、未知版本、checksum drift、只读preflight失败或未完成备份恢复验证时保持阻塞，绝不自动清空。下一项schema/AAD/index-key/持久化语义变化必须新建v14或更高版本。
+**当前兼容政策**：现行程序只接受当前v14 exact checksum，或接受登记的exact v13并执行一次SQLite/PostgreSQL v13→v14前向migration；空库按冻结顺序安装到v14。v12须先经冻结的v12→v13迁移。v14为既有active本地账号建立`enrollment_required`、撤销其旧session，并保留OIDC session及全部业务数据；同时新增受限session、factor/enrollment/recovery/receipt事实。v13 migration bytes/checksum保持冻结。v1-v11、未知版本、checksum drift、只读preflight失败或未完成备份恢复验证时保持阻塞，绝不自动清空。
 
 **R2当前数据库状态**：双方言只新增v5迁移、v1-v4 bytes/checksum不改。真实有数据v4→v5两库核对17旧表67原行所有旧列精确一致，原profile/KMS解密和原receipt确认保持；v5追加team/关系/lifecycle/结构change与密文载荷、typed scope/任期grant、不可改绑subject_employee、结构receipt及target_employee审计。全窗口拟图校验＋per-owner当前权＋graph CAS、epoch、事实/receipt/audit同短Tx；SQL目录当前scope在LIMIT前、窄GraphState查询。两库重启后未来事实/录入历史/撤权保持；九个原敏感marker及最终三个姓名/title/code markers在各29原生表无明文/hex镜像，SQLite physical DB/WAL亦未见、API log为空。以上是DEV-007受控观察，两轮审查闭环且固定代码C已push，不代全产品换库、备份恢复、生产批准或容量证明。
 
@@ -1107,16 +1119,16 @@ P-ORG-01 的图冲突、P-INT-01 的 head 冲突、P-COMP-01 的 basis 冲突、
 
 ### 权限与验收
 
-以下为F-DB-001唯一验收登记；全产品仍需两后端分别运行。R2-R7可达机制、v12员工主数据及v13业务化normal/special调薪批次均已实装；本次v13 SQLite migration已实跑，PostgreSQL路径完成代码/契约编译但缺本地真实DSN运行证据。这不等于真实生产设施、身份、介质责任、容量或恢复目标已批准。每项覆盖状态以§1.1、当前迁移、源码与永久测试为准。
+以下为F-DB-001唯一验收登记；全产品仍需两后端分别运行。R2-R7可达机制、v12员工主数据、v13业务化normal/special调薪批次及v14本地MFA迁移均已实装；v13→v14 SQLite migration已实跑，PostgreSQL路径完成代码/契约编译但缺本地真实DSN运行证据。这不等于真实生产设施、介质责任、容量或恢复目标已批准。每项覆盖状态以§1.1、当前迁移、源码与永久测试为准。
 
 | 验收 ID | 页面 / 操作 | 合成输入、动作与可观察结果 |
 | --- | --- | --- |
-| AC-DB-01 | 全部业务页；全部适用OP | 同一v13合成fixture在SQLite新文件和PG空schema分别得到相同正常/拒绝/权限/历史结果；缺一后端不得skip/fallback算通过 |
+| AC-DB-01 | 全部业务页；全部适用OP | 同一v14合成fixture在SQLite新文件和PG空schema分别得到相同正常/拒绝/权限/历史结果；缺一后端不得skip/fallback算通过 |
 | AC-DB-02 | P-ORG-01/P-COMP-01/P-SEC-01；OP-ORG-09/10、OP-COMP-05、OP-SEC-03 | 原子变更注入取消/失败，两库均无半对象/条款/grant/audit；UI不显示成功 |
 | AC-DB-03 | P-ORG-01/P-INT-01/P-COMP-01；OP-ORG-09/10、OP-INT-05、OP-COMP-05 | 两真实连接争同旧revision/相冲突关系/薪资基准，过时请求拒绝且成功事实不覆盖 |
 | AC-DB-04 | P-COMP-01/P-BONUS-01/P-ORG-01；OP-COMP-01、OP-BONUS-01、OP-ORG-01 | `9007199254740993`金额、精确费率、相邻区间及未来生效在两库一致 |
 | AC-DB-05 | P-ORG-03/P-INT-01；OP-ORG-09/10、OP-INT-06 | 跨org/FK、自环/中间窗口环、无效区间及错误AAD/tag均真实拒绝，不以源码关键词代替 |
-| AC-DB-06 | 所有业务页；v13 startup/readiness | v11/未知目标两端只读preflight后`SCHEMA_VERSION_UNSUPPORTED`且文件/catalog/sidecar零变化；不存在SQLite path或空PG目标可安装至v13；已有业务数据但version/checksum合法的v12只能经顺序migration升级并保留数据，合法v13可正常重启 |
+| AC-DB-06 | 所有业务页；v14 startup/readiness | v11/未知目标两端只读preflight后`SCHEMA_VERSION_UNSUPPORTED`且文件/catalog/sidecar零变化；不存在SQLite path或空PG目标可安装至v14；合法v12顺序升v13、合法v13升v14均保留业务数据；v14迁移撤销旧local session并要求TOTP登记，保留OIDC session；合法v14可正常重启 |
 | AC-DB-07 | 所有业务页；受影响读写OP | 写锁忙、断连、baseline安装中断、备份恢复绑定代码/schema：无半写、未验证目标不接流量；双库smoke不替代完整验收 |
 
 ## 9. 全量验收、文档与证据协作
@@ -1134,7 +1146,7 @@ P-ORG-01 的图冲突、P-INT-01 的 head 冲突、P-COMP-01 的 basis 冲突、
 | 既有顺序 / feature | 最窄可交付纵向行为与页面/OP | 退出证据（当前覆盖见§1.1，未来部分仍须提供） |
 | --- | --- | --- |
 | 1 / F-SEC-001＋F-DB-001，复用最小 F-ORG-001 对象 | 一名获准者在 P-SEC-01 用 OP-SEC-06 查询委派范围、OP-SEC-02 明确授权，在 P-ORG-02/03 用 OP-ORG-05/06 持久化/重载最小加密资料；另一身份拒绝。不是全量人员模块 | 同一行为真实RED/GREEN；先授权/错上下文/keyd不可用/超委派列表拒绝；真实SQLite文件与PG契约/迁移；最小Vue行为＋真实程序/页面smoke，无明文marker。本地keyd、实际IdP/独立审计生产验收仍需第7项，前期机制不冒充通过 |
-| 2 / F-ORG-001 | 以当前v13空库实现固定BG→Division→Department，再做全集团Staff Code、法分公司/三地点、employment、三档education、单一job assignment与直属主管/HOD同事实；OP-ORG-01/04..10，OP-ORG-02/03移除 | v11库启动明确拒绝且不升级/merge；合法v12前向升级到v13并精确保留数据；两库空安装、固定目录/最高学历/双语姓名、换号/同employee rehire复用、跨employee永不复用、HOD同事实、全窗口及组合写原子失败；真实API/资料页且不用真实员工 |
+| 2 / F-ORG-001 | 以当前v14空库实现固定BG→Division→Department，再做全集团Staff Code、法分公司/三地点、employment、三档education、单一job assignment与直属主管/HOD同事实；OP-ORG-01/04..10，OP-ORG-02/03移除 | v1-v11启动明确拒绝且不升级/merge；合法v12→v13→v14和v13→v14前向迁移精确保留员工数据；两库空安装、固定目录/最高学历/双语姓名、换号/同employee rehire复用、跨employee永不复用、HOD同事实、全窗口及组合写原子失败；真实API/资料页且不用真实员工 |
 | 3 / F-INT-001 | 先P-INT-01一份shared新版本保存/重载，再三分区、行动与限定交接；OP-INT-02/05/04/06/07/08、OP-SEC-02/03 | 旧版冲突、分区直达拒绝、完成仍逾期、旧经理撤权/在途响应不复活；真实API＋双库＋Vue交互/交接E2E，不能只测隐藏按钮 |
 | 4 / F-COMP-001 | 个人initial/adjustment/correction保持；DEV-034已实现业务header、默认3行、Staff Code回填、手工/XLSX preview、参考预算、工资差异确认/历史纠正及整批activation；OP-COMP-01..11 | Text exact解析、混币increase分组和同币种预算参考、全批授权、固定service冲突零部分写、工资差异先纠正后调薪且旧史保留、range重叠拒绝；Compa Ratio不计算/不返回；双库API及真实页面 |
 | 5 / F-BONUS-001 | 先P-BONUS-01目标→award批准→一真实payment，再异常/冲销/幂等与有限扩展；OP-BONUS-01至OP-BONUS-08 | 目标/批准/支付分离，部分支付/超额/异币种/未匹配不藏事实，同键冲突、冲销边界，扩展allowlist；API双库＋Vue精确往返/失败反馈 |
