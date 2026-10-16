@@ -1,6 +1,7 @@
 package httpapi_test
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"testing"
@@ -42,6 +43,25 @@ func TestAPIPersonnelImportTemplateAndPreviewAreAuthorizedAndReadOnly(t *testing
 			apiSend(t, f, request, http.StatusOK, &preview)
 			if preview.RowCount != 1 || len(preview.Rows) != 1 || len(preview.Errors) != 0 || preview.CatalogRevision != "3" || preview.GraphRevision != "3" || preview.Rows[0].StaffCode != "EMP-IMPORT-001" || preview.Rows[0].BranchID != catalogs.Items[0].ID || preview.Rows[0].DepartmentID != catalogs.Items[3].ID || preview.Rows[0].JobFamilyID != catalogs.Items[4].ID || preview.Rows[0].CareerLevelID != catalogs.Items[5].ID || f.Count(t, "employee") != 0 {
 				t.Fatalf("read-only preview = %#v employees=%d", preview, f.Count(t, "employee"))
+			}
+
+			headers[0] = "旧版工号表头"
+			invalidWorkbook := batchWorkbook(t, headers, row)
+			invalidRequest := apiRequest(t, f, f.Owner, http.MethodPost, previewPath, string(invalidWorkbook), "")
+			invalidRequest.Header.Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+			invalidResponse, requestErr := f.Server.Client().Do(invalidRequest)
+			if requestErr != nil {
+				t.Fatal(requestErr)
+			}
+			var invalidBody struct {
+				Code          string                                         `json:"code"`
+				RequestID     string                                         `json:"request_id"`
+				WorkbookError organization.PersonnelImportWorkbookDiagnostic `json:"workbook_error"`
+			}
+			decodeErr := json.NewDecoder(invalidResponse.Body).Decode(&invalidBody)
+			_ = invalidResponse.Body.Close()
+			if decodeErr != nil || invalidResponse.StatusCode != http.StatusUnprocessableEntity || invalidBody.Code != "INVALID_INPUT" || !value.ValidID(invalidBody.RequestID) || invalidBody.WorkbookError.Sheet != "Employees" || invalidBody.WorkbookError.Cell != "A1" || invalidBody.WorkbookError.Code != "header_mismatch" {
+				t.Fatalf("workbook diagnostic status=%d body=%#v err=%v", invalidResponse.StatusCode, invalidBody, decodeErr)
 			}
 
 			crossSite := apiRequest(t, f, f.Owner, http.MethodPost, previewPath, string(workbook), "")

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -62,6 +63,17 @@ func (h *handler) personnelImportRoute(w http.ResponseWriter, r *http.Request, r
 	defer clear(raw)
 	preview, err := h.service.PreviewPersonnelImport(r.Context(), request, parts[1], raw)
 	if err != nil {
+		var workbookErr *organization.PersonnelImportWorkbookError
+		if errors.As(err, &workbookErr) {
+			log.Printf("PERSONNEL_IMPORT_REJECTED request_id=%s sheet=%q cell=%q code=%s", request.RequestID, workbookErr.Diagnostic.Sheet, workbookErr.Diagnostic.Cell, workbookErr.Diagnostic.Code)
+			h.reply(w, fault.Invalid.Status, struct {
+				Code          string                                         `json:"code"`
+				RequestID     string                                         `json:"request_id"`
+				Reason        string                                         `json:"reason"`
+				WorkbookError organization.PersonnelImportWorkbookDiagnostic `json:"workbook_error"`
+			}{fault.Invalid.Code, request.RequestID, fault.Invalid.Reason, workbookErr.Diagnostic})
+			return true
+		}
 		h.fail(w, err, request.RequestID)
 		return true
 	}

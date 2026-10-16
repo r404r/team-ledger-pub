@@ -3,6 +3,7 @@ package xlsx
 import (
 	"archive/zip"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -89,6 +90,21 @@ func TestReadFirstSheetDistinguishesTextFromNumericCells(t *testing.T) {
 	}
 	if !rows[0].Cells[1].IsText || rows[0].Cells[1].Text != "001" || rows[0].Cells[2].IsText {
 		t.Fatalf("cell types were not preserved: %#v", rows[0].Cells)
+	}
+}
+
+func TestReadFirstSheetReportsSafeSheetAndCellAndAcceptsExplicitNumericType(t *testing.T) {
+	numeric := workbook(t, map[string]string{"xl/worksheets/sheet1.xml": sheet(`<c r="A1" t="n"><v>46000</v></c>`)})
+	rows, err := ReadFirstSheet(numeric, testLimits)
+	if err != nil || len(rows) != 1 || rows[0].Cells[1].Text != "46000" || rows[0].Cells[1].IsText {
+		t.Fatalf("explicit numeric cell: rows=%#v err=%v", rows, err)
+	}
+
+	formula := workbook(t, map[string]string{"xl/worksheets/sheet1.xml": sheet(`<c r="B1" t="str"><f>1+1</f><v>2</v></c>`)})
+	_, err = ReadFirstSheet(formula, testLimits)
+	var diagnostic *ParseError
+	if !errors.As(err, &diagnostic) || diagnostic.Code != "formula_not_allowed" || diagnostic.Sheet != "Employees" || diagnostic.Cell != "B1" {
+		t.Fatalf("formula diagnostic = %#v err=%v", diagnostic, err)
 	}
 }
 

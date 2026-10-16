@@ -36,10 +36,12 @@ func TestParsePersonnelWorkbookReportsDuplicateCycleAndTypedDate(t *testing.T) {
 		t.Fatal(err)
 	}
 	codes := map[string]int{}
+	typedCell := false
 	for _, issue := range preview.Errors {
 		codes[issue.Code]++
+		typedCell = typedCell || issue.Code == "text_required" && issue.Sheet == "Employees" && issue.Cell == "J5" && issue.Field == "hire_date"
 	}
-	if codes["duplicate_staff_code"] != 2 || codes["manager_cycle"] != 2 || codes["text_required"] != 1 || codes["invalid_employment_dates"] != 1 {
+	if codes["duplicate_staff_code"] != 2 || codes["manager_cycle"] != 2 || codes["text_required"] != 1 || codes["invalid_employment_dates"] != 1 || !typedCell {
 		t.Fatalf("issues = %#v", preview.Errors)
 	}
 }
@@ -97,7 +99,7 @@ func personnelWorkbook(t *testing.T, rows [][]string, numericColumn int) []byte 
 		_, _ = fmt.Fprintf(entry, `<row r="%d">`, rowIndex+2)
 		for column, value := range row {
 			if rowIndex == len(rows)-1 && column == numericColumn && value != "" {
-				_, _ = fmt.Fprintf(entry, `<c r="%c%d"><v>%s</v></c>`, 'A'+column, rowIndex+2, value)
+				_, _ = fmt.Fprintf(entry, `<c r="%c%d" t="n"><v>%s</v></c>`, 'A'+column, rowIndex+2, value)
 			} else {
 				_, _ = fmt.Fprintf(entry, `<c r="%c%d" t="inlineStr"><is><t>%s</t></is></c>`, 'A'+column, rowIndex+2, value)
 			}

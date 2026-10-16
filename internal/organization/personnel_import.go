@@ -2,6 +2,8 @@ package organization
 
 import (
 	"context"
+	"errors"
+	"strconv"
 	"strings"
 
 	"github.com/r404r/team-ledger/internal/fault"
@@ -75,8 +77,55 @@ type PersonnelImportRow struct {
 
 type PersonnelImportIssue struct {
 	RowNumber int    `json:"row_number"`
+	Sheet     string `json:"sheet"`
+	Cell      string `json:"cell,omitempty"`
 	Field     string `json:"field"`
 	Code      string `json:"code"`
+}
+
+type PersonnelImportWorkbookDiagnostic struct {
+	Sheet string `json:"sheet,omitempty"`
+	Cell  string `json:"cell,omitempty"`
+	Code  string `json:"code"`
+}
+
+type PersonnelImportWorkbookError struct {
+	Diagnostic PersonnelImportWorkbookDiagnostic
+}
+
+func (e *PersonnelImportWorkbookError) Error() string { return e.Diagnostic.Code }
+func (e *PersonnelImportWorkbookError) Unwrap() error { return fault.Invalid }
+
+func personnelWorkbookError(code, sheet, cell string) error {
+	return &PersonnelImportWorkbookError{Diagnostic: PersonnelImportWorkbookDiagnostic{Sheet: sheet, Cell: cell, Code: code}}
+}
+
+func personnelImportIssue(row int, field, code string) PersonnelImportIssue {
+	column := 0
+	for index, name := range personnelImportFields {
+		if name == field {
+			column = index + 1
+			break
+		}
+	}
+	if field == "profile" {
+		column = 2
+	}
+	cell := ""
+	if column > 0 {
+		cell = personnelCellReference(column, row)
+	}
+	return PersonnelImportIssue{RowNumber: row, Sheet: "Employees", Cell: cell, Field: field, Code: code}
+}
+
+func personnelCellReference(column, row int) string {
+	letters := ""
+	for column > 0 {
+		column--
+		letters = string(rune('A'+column%26)) + letters
+		column /= 26
+	}
+	return letters + strconv.Itoa(row)
 }
 
 type PersonnelImportPreview struct {
@@ -106,7 +155,7 @@ func (s *Service) PreviewPersonnelImport(ctx context.Context, request Request, o
 	}
 	preview, err := parsePersonnelWorkbook(raw)
 	if err != nil {
-		return PersonnelImportPreview{}, fault.Invalid
+		return PersonnelImportPreview{}, err
 	}
 	if err = s.resolvePersonnelImportCatalogs(ctx, org, &preview); err != nil {
 		return PersonnelImportPreview{}, err
@@ -123,8 +172,18 @@ func parsePersonnelWorkbook(raw []byte) (PersonnelImportPreview, error) {
 		Cells:           (personnelWorkbookRows + 1) * len(personnelImportHeaders),
 		XMLNodes:        20_000,
 	})
-	if err != nil || len(rows) == 0 || rows[0].Number != 1 {
-		return PersonnelImportPreview{}, fault.Invalid
+	if err != nil {
+		var parseErr *xlsx.ParseError
+		if errors.As(err, &parseErr) {
+			return PersonnelImportPreview{}, personnelWorkbookError(parseErr.Code, parseErr.Sheet, parseErr.Cell)
+		}
+		return PersonnelImportPreview{}, personnelWorkbookError("invalid_package", "", "")
+	}
+	if len(rows) == 0 {
+		return PersonnelImportPreview{}, personnelWorkbookError("empty_worksheet", "Employees", "A1")
+	}
+	if rows[0].Number != 1 {
+		return PersonnelImportPreview{}, personnelWorkbookError("header_row_missing", "Employees", "A1")
 	}
 	if err := validatePersonnelHeaders(rows[0]); err != nil {
 		return PersonnelImportPreview{}, err
@@ -135,7 +194,7 @@ func parsePersonnelWorkbook(raw []byte) (PersonnelImportPreview, error) {
 			continue
 		}
 		if len(preview.Rows) >= personnelWorkbookRows {
-			return PersonnelImportPreview{}, fault.Invalid
+			return PersonnelImportPreview{}, personnelWorkbookError("row_limit", "Employees", "")
 		}
 		values := make([]string, len(personnelImportHeaders))
 		for column, limit := range personnelImportFieldLimits {
@@ -144,7 +203,7 @@ func parsePersonnelWorkbook(raw []byte) (PersonnelImportPreview, error) {
 				continue
 			}
 			if len(cell.Text) > limit {
-				preview.Errors = append(preview.Errors, PersonnelImportIssue{RowNumber: source.Number, Field: personnelImportFields[column], Code: "field_too_large"})
+				preview.Errors = append(preview.Errors, personnelImportIssue(source.Number, personnelImportFields[column], "field_too_large"))
 				continue
 			}
 			values[column] = cell.Text
@@ -176,7 +235,7 @@ func parsePersonnelWorkbook(raw []byte) (PersonnelImportPreview, error) {
 		validatePersonnelRow(source, &preview, len(preview.Rows)-1)
 	}
 	if len(preview.Rows) == 0 {
-		return PersonnelImportPreview{}, fault.Invalid
+		return PersonnelImportPreview{}, personnelWorkbookError("empty_worksheet", "Employees", "A2")
 	}
 	validatePersonnelReferences(&preview)
 	preview.RowCount = len(preview.Rows)
@@ -186,13 +245,20 @@ func parsePersonnelWorkbook(raw []byte) (PersonnelImportPreview, error) {
 func validatePersonnelHeaders(row xlsx.Row) error {
 	for column, header := range personnelImportHeaders {
 		cell, ok := row.Cells[column+1]
-		if !ok || !cell.IsText || cell.Text != header {
-			return fault.Invalid
+		reference := personnelCellReference(column+1, 1)
+		if !ok {
+			return personnelWorkbookError("header_missing", "Employees", reference)
+		}
+		if !cell.IsText {
+			return personnelWorkbookError("header_text_required", "Employees", reference)
+		}
+		if cell.Text != header {
+			return personnelWorkbookError("header_mismatch", "Employees", reference)
 		}
 	}
 	for column, cell := range row.Cells {
 		if column > len(personnelImportHeaders) && cell.Text != "" {
-			return fault.Invalid
+			return personnelWorkbookError("unexpected_column", "Employees", personnelCellReference(column, 1))
 		}
 	}
 	return nil
@@ -210,11 +276,11 @@ func rowEmpty(row xlsx.Row) bool {
 func validatePersonnelRow(source xlsx.Row, preview *PersonnelImportPreview, index int) {
 	row := &preview.Rows[index]
 	issue := func(field, code string) {
-		preview.Errors = append(preview.Errors, PersonnelImportIssue{RowNumber: row.RowNumber, Field: field, Code: code})
+		preview.Errors = append(preview.Errors, personnelImportIssue(row.RowNumber, field, code))
 	}
 	for column, cell := range source.Cells {
 		if column > len(personnelImportHeaders) && cell.Text != "" {
-			issue("workbook", "unexpected_column")
+			preview.Errors = append(preview.Errors, PersonnelImportIssue{RowNumber: row.RowNumber, Sheet: "Employees", Cell: personnelCellReference(column, row.RowNumber), Field: "workbook", Code: "unexpected_column"})
 		}
 		if column <= len(personnelImportHeaders) && cell.Text != "" && !cell.IsText {
 			issue(personnelImportFields[column-1], "text_required")
@@ -292,7 +358,7 @@ func (s *Service) resolvePersonnelImportCatalogs(ctx context.Context, org string
 			return fault.Conflict
 		}
 		issue := func(field, code string) {
-			preview.Errors = append(preview.Errors, PersonnelImportIssue{RowNumber: row.RowNumber, Field: field, Code: code})
+			preview.Errors = append(preview.Errors, personnelImportIssue(row.RowNumber, field, code))
 		}
 		for _, entry := range catalogs.LegalEntities {
 			if entry.Active && entry.Code == row.BranchCode {
@@ -390,7 +456,7 @@ func validatePersonnelReferences(preview *PersonnelImportPreview) {
 			continue
 		}
 		for _, index := range indexes {
-			preview.Errors = append(preview.Errors, PersonnelImportIssue{RowNumber: preview.Rows[index].RowNumber, Field: "staff_code", Code: "duplicate_staff_code"})
+			preview.Errors = append(preview.Errors, personnelImportIssue(preview.Rows[index].RowNumber, "staff_code", "duplicate_staff_code"))
 		}
 	}
 
@@ -424,6 +490,6 @@ func validatePersonnelReferences(preview *PersonnelImportPreview) {
 		}
 	}
 	for index := range cycleRows {
-		preview.Errors = append(preview.Errors, PersonnelImportIssue{RowNumber: preview.Rows[index].RowNumber, Field: "manager_staff_code", Code: "manager_cycle"})
+		preview.Errors = append(preview.Errors, personnelImportIssue(preview.Rows[index].RowNumber, "manager_staff_code", "manager_cycle"))
 	}
 }

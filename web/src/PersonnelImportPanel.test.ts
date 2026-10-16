@@ -67,6 +67,32 @@ describe('personnel batch import panel', () => {
     page.unmount()
   })
 
+  it('shows safe sheet/cell diagnostics from both workbook rejection and row preview', async () => {
+    let attempt = 0
+    vi.stubGlobal('fetch', async () => {
+      attempt++
+      if (attempt === 1) return json(422, {
+        code: 'INVALID_INPUT', request_id: ORG,
+        workbook_error: { sheet: 'Employees', cell: 'A1', code: 'header_mismatch' },
+      })
+      return json(200, {
+        row_count: 1, catalog_revision: '4', graph_revision: '9',
+        errors: [{ row_number: 2, sheet: 'Employees', cell: 'J2', field: 'hire_date', code: 'text_required' }],
+        rows: [{ ...workforce, row_number: 2, staff_code: 'AUTO-001', local_name: '自动预览员工', hire_date: '', departure_date: null }],
+      })
+    })
+    const page = mount(PersonnelImportPanel, { props: { session: SESSION, asOf: AS_OF } })
+    await selectAndPreview(page)
+    expect(page.get('[role=alert]').text()).toContain('Employees!A1：表头与最新模板不一致')
+    expect(page.get('[role=alert]').text()).toContain(`请求 ID：${ORG}`)
+
+    await page.findAll('button').find(button => button.text() === '校验并预览')!.trigger('click')
+    await flushPromises()
+    expect(page.text()).toContain('Employees!J2 · hire_date：必须使用文本单元格')
+    expect(page.text()).toContain('请按工作表和单元格定位修正')
+    page.unmount()
+  })
+
   it('replays an uncertain reporting command once, then keeps the completed batch terminal', async () => {
     const requests: { path: string; method: string; headers: Headers; body: unknown }[] = []
     let createCount = 0

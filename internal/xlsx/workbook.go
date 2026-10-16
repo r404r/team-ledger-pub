@@ -21,6 +21,20 @@ type Limits struct {
 	XMLNodes        int
 }
 
+// ParseError reports a safe workbook location and a fixed diagnostic code.
+// It never includes cell contents, formulas, relationship targets, or file paths.
+type ParseError struct {
+	Code  string
+	Sheet string
+	Cell  string
+}
+
+func (e *ParseError) Error() string { return e.Code }
+
+func parseError(code, sheet, cell string) error {
+	return &ParseError{Code: code, Sheet: sheet, Cell: cell}
+}
+
 type Cell struct {
 	Text   string
 	IsText bool
@@ -66,60 +80,62 @@ type relationships struct {
 
 type workbookManifest struct {
 	Sheets []struct {
+		Name           string `xml:"name,attr"`
 		RelationshipID string `xml:"http://schemas.openxmlformats.org/officeDocument/2006/relationships id,attr"`
 	} `xml:"sheets>sheet"`
 }
 
 func ReadFirstSheet(raw []byte, limits Limits) ([]Row, error) {
 	if len(raw) == 0 || limits.CompressedBytes <= 0 || len(raw) > limits.CompressedBytes || limits.ExpandedBytes == 0 || limits.Entries <= 0 || limits.Rows <= 0 || limits.Cells <= 0 || limits.XMLNodes <= 0 {
-		return nil, errors.New("invalid workbook")
+		return nil, parseError("invalid_package", "", "")
 	}
 	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
 	if err != nil || len(zr.File) == 0 || len(zr.File) > limits.Entries {
-		return nil, errors.New("invalid workbook")
+		return nil, parseError("invalid_package", "", "")
 	}
 	var expanded uint64
 	worksheets := 0
 	worksheetName := ""
 	for _, file := range zr.File {
 		if !safeEntryName(file.Name) {
-			return nil, errors.New("invalid workbook entry")
+			return nil, parseError("unsafe_package_entry", "", "")
 		}
 		expanded += file.UncompressedSize64
 		if expanded > limits.ExpandedBytes {
-			return nil, errors.New("expanded workbook is too large")
+			return nil, parseError("expanded_size_limit", "", "")
 		}
 		if strings.HasPrefix(file.Name, "xl/worksheets/") && strings.HasSuffix(file.Name, ".xml") {
 			worksheets++
 			worksheetName = file.Name
 		}
 		if strings.EqualFold(file.Name, "xl/vbaProject.bin") {
-			return nil, errors.New("macros are not accepted")
+			return nil, parseError("macros_not_allowed", "", "")
 		}
 		if strings.HasSuffix(file.Name, ".rels") {
 			var rels relationships
 			if err := decodeZipXML(file, limits.ExpandedBytes, xmlBounds{Nodes: limits.XMLNodes}, &rels); err != nil {
-				return nil, errors.New("invalid workbook relationships")
+				return nil, parseError("invalid_relationships", "", "")
 			}
 			for _, relationship := range rels.Items {
 				if strings.EqualFold(relationship.TargetMode, "External") {
-					return nil, errors.New("external workbook relationships are not accepted")
+					return nil, parseError("external_relationship_not_allowed", "", "")
 				}
 			}
 		}
 	}
 	if worksheets != 1 {
-		return nil, errors.New("workbook must contain exactly one worksheet")
+		return nil, parseError("worksheet_count", "", "")
 	}
 	var manifest workbookManifest
 	workbookFile := zipEntry(zr.File, "xl/workbook.xml")
 	workbookRelsFile := zipEntry(zr.File, "xl/_rels/workbook.xml.rels")
 	if workbookFile == nil || workbookRelsFile == nil || decodeZipXML(workbookFile, limits.ExpandedBytes, xmlBounds{Nodes: limits.XMLNodes}, &manifest) != nil || len(manifest.Sheets) != 1 {
-		return nil, errors.New("workbook must declare exactly one worksheet")
+		return nil, parseError("worksheet_manifest", "", "")
 	}
+	sheetName := safeSheetName(manifest.Sheets[0].Name)
 	var workbookRels relationships
 	if decodeZipXML(workbookRelsFile, limits.ExpandedBytes, xmlBounds{Nodes: limits.XMLNodes}, &workbookRels) != nil {
-		return nil, errors.New("invalid workbook relationships")
+		return nil, parseError("invalid_relationships", sheetName, "")
 	}
 	declaredWorksheet := ""
 	for _, relationship := range workbookRels.Items {
@@ -133,14 +149,14 @@ func ReadFirstSheet(raw []byte, limits Limits) ([]Row, error) {
 		}
 	}
 	if declaredWorksheet != worksheetName || !strings.HasPrefix(declaredWorksheet, "xl/worksheets/") {
-		return nil, errors.New("invalid worksheet relationship")
+		return nil, parseError("invalid_worksheet_relationship", sheetName, "")
 	}
 
 	shared := []string{}
 	if file := zipEntry(zr.File, "xl/sharedStrings.xml"); file != nil {
 		var values sharedStrings
 		if err := decodeZipXML(file, limits.ExpandedBytes, xmlBounds{SharedStrings: limits.Cells, Nodes: limits.XMLNodes}, &values); err != nil {
-			return nil, errors.New("invalid shared strings")
+			return nil, parseError("invalid_shared_strings", sheetName, "")
 		}
 		shared = make([]string, 0, len(values.Items))
 		for _, item := range values.Items {
@@ -150,11 +166,11 @@ func ReadFirstSheet(raw []byte, limits Limits) ([]Row, error) {
 
 	sheetFile := zipEntry(zr.File, declaredWorksheet)
 	if sheetFile == nil {
-		return nil, errors.New("declared worksheet is required")
+		return nil, parseError("worksheet_missing", sheetName, "")
 	}
 	var sheet worksheet
 	if err := decodeZipXML(sheetFile, limits.ExpandedBytes, xmlBounds{Rows: limits.Rows, Cells: limits.Cells, Nodes: limits.XMLNodes}, &sheet); err != nil {
-		return nil, errors.New("invalid worksheet")
+		return nil, parseError("invalid_worksheet_xml", sheetName, "")
 	}
 	rows := make([]Row, 0, len(sheet.Rows))
 	lastRow := 0
@@ -164,37 +180,37 @@ func ReadFirstSheet(raw []byte, limits Limits) ([]Row, error) {
 			number = index + 1
 		}
 		if number <= lastRow {
-			return nil, errors.New("worksheet rows are not ordered")
+			return nil, parseError("unordered_rows", sheetName, "")
 		}
 		lastRow = number
 		row := Row{Number: number, Cells: make(map[int]Cell, len(source.Cells))}
 		for _, sourceCell := range source.Cells {
-			if sourceCell.Formula != nil {
-				return nil, errors.New("formulas are not accepted")
+			column, referencedRow, ok := cellPosition(sourceCell.Reference)
+			if !ok || referencedRow != number {
+				return nil, parseError("invalid_cell_reference", sheetName, "")
 			}
-			column, ok := columnNumber(sourceCell.Reference)
-			if !ok {
-				return nil, errors.New("invalid cell reference")
+			if sourceCell.Formula != nil {
+				return nil, parseError("formula_not_allowed", sheetName, sourceCell.Reference)
 			}
 			if _, duplicate := row.Cells[column]; duplicate {
-				return nil, errors.New("duplicate cell reference")
+				return nil, parseError("duplicate_cell_reference", sheetName, sourceCell.Reference)
 			}
 			cell := Cell{Text: sourceCell.Value}
 			switch sourceCell.Type {
 			case "s":
 				sharedIndex, parseErr := strconv.Atoi(sourceCell.Value)
 				if parseErr != nil || sharedIndex < 0 || sharedIndex >= len(shared) {
-					return nil, errors.New("invalid shared string")
+					return nil, parseError("invalid_shared_string", sheetName, sourceCell.Reference)
 				}
 				cell.Text, cell.IsText = shared[sharedIndex], true
 			case "inlineStr":
 				cell.Text, cell.IsText = richTextValue(sourceCell.Inline), true
 			case "str":
 				cell.IsText = true
-			case "":
+			case "", "n", "d", "b", "e":
 				cell.IsText = sourceCell.Value == ""
 			default:
-				return nil, errors.New("unsupported cell type")
+				return nil, parseError("unsupported_cell_type", sheetName, sourceCell.Reference)
 			}
 			cell.Text = strings.TrimSpace(cell.Text)
 			row.Cells[column] = cell
@@ -206,6 +222,13 @@ func ReadFirstSheet(raw []byte, limits Limits) ([]Row, error) {
 
 func safeEntryName(name string) bool {
 	return name != "" && !strings.Contains(name, "\\") && !strings.HasPrefix(name, "/") && path.Clean(name) == name && name != "." && !strings.HasPrefix(name, "../")
+}
+
+func safeSheetName(name string) string {
+	if name == "" || len(name) > 31 || strings.IndexFunc(name, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+		return ""
+	}
+	return name
 }
 
 func richTextValue(value richText) string {
@@ -289,26 +312,26 @@ func decodeZipXML(file *zip.File, limit uint64, bounds xmlBounds, out any) error
 	return xml.NewDecoder(bytes.NewReader(raw)).Decode(out)
 }
 
-func columnNumber(reference string) (int, bool) {
+func cellPosition(reference string) (int, int, bool) {
 	const maxColumn = 16_384
 	column := 0
 	position := 0
 	for position < len(reference) && reference[position] >= 'A' && reference[position] <= 'Z' {
 		digit := int(reference[position]-'A') + 1
 		if column > (maxColumn-digit)/26 {
-			return 0, false
+			return 0, 0, false
 		}
 		column = column*26 + digit
 		position++
 	}
 	if column == 0 || column > maxColumn || position == len(reference) {
-		return 0, false
+		return 0, 0, false
 	}
 	row, err := strconv.Atoi(reference[position:])
 	if err != nil || row <= 0 || row > 1_048_576 {
-		return 0, false
+		return 0, 0, false
 	}
-	return column, true
+	return column, row, true
 }
 
 func BuildTemplate(sheetName string, headers []string) ([]byte, error) {

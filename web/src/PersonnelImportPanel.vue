@@ -35,8 +35,10 @@ type ImportRow = {
   job_family_id: string
   career_level_id: string
 }
-type ImportIssue = { row_number: number; field: string; code: string }
+type ImportIssue = { row_number: number; sheet: string; cell?: string; field: string; code: string }
 type Preview = { rows: ImportRow[]; errors: ImportIssue[]; row_count: number; catalog_revision: string; graph_revision: string }
+type WorkbookDiagnostic = { sheet?: string; cell?: string; code: string }
+type WorkbookFailure = { status: number; requestID?: string; diagnostic?: WorkbookDiagnostic }
 type Employee = {
   id: string
   lifecycle: { valid_from: string; valid_to: string | null }
@@ -96,6 +98,50 @@ const issueMessages: Record<string, string> = {
   invalid_catalog_code: '目录Code不能为空或格式不正确',
   unknown_catalog_code: '该入职日没有唯一有效的目录Code',
   organization_hierarchy_mismatch: 'Business Group、Division与Department层级不一致',
+}
+const workbookErrorMessages: Record<string, string> = {
+  invalid_package: '文件不是有效的 XLSX 工作簿，或压缩包结构已损坏',
+  unsafe_package_entry: '工作簿包含不安全的压缩包路径',
+  expanded_size_limit: '工作簿解压后超过 20 MiB 安全上限',
+  macros_not_allowed: '不接受包含宏的工作簿',
+  invalid_relationships: '工作簿关系定义损坏',
+  external_relationship_not_allowed: '工作簿包含外部链接；请删除外部数据连接后重试',
+  worksheet_count: '工作簿必须且只能包含一个工作表',
+  worksheet_manifest: '工作簿的工作表清单损坏',
+  invalid_worksheet_relationship: '工作表引用关系损坏',
+  invalid_shared_strings: '工作簿的共享文本表损坏',
+  worksheet_missing: '工作簿声明的工作表不存在',
+  invalid_worksheet_xml: '工作表结构损坏或超过行、单元格/XML安全上限',
+  unordered_rows: '工作表行号顺序不合法',
+  invalid_cell_reference: '单元格坐标不合法或与所在行不一致',
+  formula_not_allowed: '不允许公式；请将该单元格转换为纯文本',
+  duplicate_cell_reference: '同一坐标出现了重复单元格',
+  invalid_shared_string: '单元格引用了不存在的共享文本',
+  unsupported_cell_type: '单元格类型不受支持；请转换为纯文本',
+  empty_worksheet: 'Employees 工作表没有可导入的员工行',
+  header_row_missing: '第 1 行必须是模板表头',
+  header_missing: '缺少模板表头',
+  header_text_required: '模板表头必须是文本单元格',
+  header_mismatch: '表头与最新模板不一致；请勿修改中英文标题',
+  unexpected_column: '模板范围外存在非空列',
+  row_limit: '单次最多导入 100 名员工',
+}
+function workbookFailure(error: unknown): string {
+  const failure = error as WorkbookFailure
+  const diagnostic = failure.diagnostic
+  if (diagnostic && workbookErrorMessages[diagnostic.code]) {
+    const sheet = diagnostic.sheet === 'Employees' ? diagnostic.sheet : ''
+    const cell = typeof diagnostic.cell === 'string' && /^[A-Z]{1,3}[1-9]\d{0,6}$/.test(diagnostic.cell) ? diagnostic.cell : ''
+    const location = sheet && cell ? `${sheet}!${cell}` : sheet || cell
+    const request = typeof failure.requestID === 'string' && /^[0-9a-f-]{36}$/.test(failure.requestID) ? `（请求 ID：${failure.requestID}）` : ''
+    return `${location ? `${location}：` : ''}${workbookErrorMessages[diagnostic.code]}${request}`
+  }
+  if (failure.status === 401) return '会话已失效，请重新登录后再上传。'
+  if (failure.status === 403) return '当前账号没有批量创建人员的权限。'
+  if (failure.status === 413) return '工作簿超过 5 MiB 上传上限。'
+  if (failure.status === 409) return '组织目录版本已变化，请重新上传并校验。'
+  if (failure.status >= 500) return '服务暂时不可用；文件仍保留，可稍后点击“重新校验”。'
+  return '工作簿无法校验。请下载最新模板；错误仍存在时请提供请求 ID 给管理员。'
 }
 const statusLabels: Record<RowStatus, string> = {
   pending: '未处理',
@@ -187,16 +233,36 @@ async function previewWorkbook() {
       headers: { ...csrfHeaders(), 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
       body: file,
     })
-    if (!response.ok) throw new Error(String(response.status))
+    if (!response.ok) {
+      let requestID: string | undefined
+      let diagnostic: WorkbookDiagnostic | undefined
+      try {
+        const failure = await response.json() as { request_id?: unknown; workbook_error?: unknown }
+        if (typeof failure.request_id === 'string') requestID = failure.request_id
+        if (failure.workbook_error && typeof failure.workbook_error === 'object') {
+          const candidate = failure.workbook_error as Record<string, unknown>
+          if (typeof candidate.code === 'string') {
+            diagnostic = {
+              code: candidate.code,
+              sheet: typeof candidate.sheet === 'string' ? candidate.sheet : undefined,
+              cell: typeof candidate.cell === 'string' ? candidate.cell : undefined,
+            }
+          }
+        }
+      } catch {
+        // Non-JSON proxy failures remain status-specific and never become success.
+      }
+      throw { status: response.status, requestID, diagnostic } satisfies WorkbookFailure
+    }
     const parsed = await response.json() as Preview
-    if (!parsed || !Array.isArray(parsed.rows) || !Array.isArray(parsed.errors) || parsed.row_count !== parsed.rows.length || parsed.row_count < 1 || parsed.row_count > 100 || !/^[1-9]\d*$/.test(parsed.catalog_revision) || !/^[1-9]\d*$/.test(parsed.graph_revision)) throw new Error('503')
+    if (!parsed || !Array.isArray(parsed.rows) || !Array.isArray(parsed.errors) || parsed.row_count !== parsed.rows.length || parsed.row_count < 1 || parsed.row_count > 100 || !/^[1-9]\d*$/.test(parsed.catalog_revision) || !/^[1-9]\d*$/.test(parsed.graph_revision)) throw { status: 503 } satisfies WorkbookFailure
     preview.value = parsed
     executions.value = parsed.rows.map(row => ({ ...row, status: 'pending', message: '' }))
-    notice.value = parsed.errors.length ? `${file.name} 预览发现错误；修正工作簿后重新上传。` : `${file.name} 已校验 ${parsed.row_count} 行，尚未创建人员。`
+    notice.value = parsed.errors.length ? `${file.name} 预览发现错误；请按工作表和单元格定位修正后重新上传。` : `${file.name} 已校验 ${parsed.row_count} 行，尚未创建人员。`
   } catch (error) {
     if ((error as Error).name !== 'AbortError') {
       notice.value = ''
-      errorMessage.value = '工作簿无法安全解析。请使用最新模板并检查所有单元格均为文本。'
+      errorMessage.value = workbookFailure(error)
     }
   } finally {
     if (phase.value === 'previewing') stopOperation()
@@ -482,7 +548,7 @@ onBeforeUnmount(() => stopOperation())
           </template>
         </div>
         <ul v-if="preview.errors.length" class="import-errors">
-          <li v-for="issue in preview.errors" :key="`${issue.row_number}-${issue.field}-${issue.code}`">第 {{ issue.row_number }} 行 · {{ issue.field }}：{{ issueMessages[issue.code] ?? issue.code }}</li>
+          <li v-for="issue in preview.errors" :key="`${issue.row_number}-${issue.cell ?? issue.field}-${issue.code}`">{{ issue.sheet }}<template v-if="issue.cell">!{{ issue.cell }}</template> · {{ issue.field }}：{{ issueMessages[issue.code] ?? issue.code }}</li>
         </ul>
         <div class="import-table-wrap">
           <table>
