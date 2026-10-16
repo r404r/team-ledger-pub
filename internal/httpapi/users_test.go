@@ -18,6 +18,7 @@ import (
 	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/httpapi"
 	"github.com/r404r/team-ledger/internal/identity"
+	"github.com/r404r/team-ledger/internal/interview"
 	"github.com/r404r/team-ledger/internal/organization"
 	"github.com/r404r/team-ledger/internal/sensitive"
 	"github.com/r404r/team-ledger/internal/testsupport"
@@ -195,6 +196,31 @@ func TestLocalUserAdministrationRequiresPermissionAndInitialPasswordChange(t *te
 	directory, directoryErr := f.Service.Directory(ctx, staffRequest, f.OrgID, organization.DirectoryQuery{AsOf: f.Now.Format("2006-01-02"), IncludeProfile: true, Lifecycle: "active", Limit: 50})
 	if directoryErr != nil || len(directory.Items) != 2 {
 		t.Fatal("staff default directory did not contain self and direct report", directoryErr, len(directory.Items))
+	}
+	staffInterviewRequest := interview.Request{TokenHash: tokenHash[:], Purpose: "interview_followup", Key: value.NewID(), RequestID: value.NewID()}
+	staffInterviewCommand := interview.CreateCommand{ScheduledAt: f.Now.Add(time.Hour).Format(time.RFC3339Nano)}
+	staffInterview, interviewErr := f.Interviews.Create(ctx, staffInterviewRequest, report.ID, staffInterviewCommand)
+	if interviewErr != nil || staffInterview.Status != "scheduled" {
+		t.Fatal("staff default interview creation failed", staffInterview, interviewErr)
+	}
+	replayedInterview, replayErr := f.Interviews.Create(ctx, staffInterviewRequest, report.ID, staffInterviewCommand)
+	if replayErr != nil || replayedInterview != staffInterview {
+		t.Fatal("staff default interview replay failed", replayedInterview, replayErr)
+	}
+	staffInterviews, listErr := f.Interviews.List(ctx, interview.Request{TokenHash: tokenHash[:], Purpose: "interview_followup", RequestID: value.NewID()}, report.ID, interview.ListQuery{Limit: 20})
+	if listErr != nil || len(staffInterviews.Items) != 1 || staffInterviews.Items[0].ID != staffInterview.ID || len(staffInterviews.Permissions) != 2 || staffInterviews.Permissions[1].Capability != "interview.create" {
+		t.Fatal("staff default interview list or create hint failed", staffInterviews, listErr)
+	}
+	staffInterviewDetail, detailErr := f.Interviews.Detail(ctx, interview.Request{TokenHash: tokenHash[:], Purpose: "interview_followup", RequestID: value.NewID()}, staffInterview.ID, interview.DetailQuery{})
+	if detailErr != nil || staffInterviewDetail.Interview.ID != staffInterview.ID || len(staffInterviewDetail.Sections) != 0 || len(staffInterviewDetail.ActionItems) != 0 {
+		t.Fatal("staff default interview metadata detail failed", staffInterviewDetail, detailErr)
+	}
+	_, transitionErr := f.Interviews.Transition(ctx, interview.Request{TokenHash: tokenHash[:], Purpose: "interview_followup", Key: value.NewID(), RequestID: value.NewID()}, staffInterview.ID, interview.TransitionCommand{Action: "cancel", ExpectedRevision: "1", Reason: "not permitted"})
+	if !errors.Is(transitionErr, fault.NotFound) {
+		t.Fatal("staff default unexpectedly allowed an interview transition", transitionErr)
+	}
+	if _, listErr = f.Interviews.List(ctx, interview.Request{TokenHash: tokenHash[:], Purpose: "interview_followup", RequestID: value.NewID()}, peer.ID, interview.ListQuery{Limit: 20}); !errors.Is(listErr, fault.NotFound) {
+		t.Fatal("staff default exposed peer interview metadata", listErr)
 	}
 	duplicateStaff := send(f.Owner, http.MethodPost, "/api/v1/security/users", `{"username":"staff.duplicate","initial_password":"staff duplicate password","account_type":"staff","staff_code":"STAFF-ACCOUNT-001"}`, "security_administration", value.NewID(), nil, "")
 	if duplicateStaff.Status != http.StatusConflict || f.Count(t, "local_account") != 3 || f.Count(t, "staff_account_access") != 1 {

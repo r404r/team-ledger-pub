@@ -30,7 +30,7 @@ function detail(): Detail {
 function response(status: number, body: unknown) { return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }) }
 type RequestRecord = { path: string; method: string; body?: string; headers: Headers; signal?: AbortSignal | null; url: URL }
 let current: Detail, sessionValue: typeof session & { grant_authorities?: unknown[] }, requests: RequestRecord[], postReply: () => Promise<Response>, versionReply: () => Promise<Response>, wrappers: VueWrapper[]
-let sessionStatus: number, deferredDetail: Promise<Response> | null, directoryAllowed: boolean
+let sessionStatus: number, deferredDetail: Promise<Response> | null, directoryAllowed: boolean, listPermissions: Permission[]
 async function settle() { await flushPromises(); await nextTick() }
 function button(page: VueWrapper, text: string) { const found = page.findAll('button').filter(item => item.text() === text); expect(found).toHaveLength(1); return found[0]! }
 async function open(path = `/interviews/${INT}`) { history.replaceState({}, '', path); const page = mount(InterviewPage, { attachTo: document.body }); wrappers.push(page); await settle(); return page }
@@ -38,7 +38,7 @@ async function draft(page: VueWrapper) { await page.get('#note-category').setVal
 function posts() { return requests.filter(request => request.method === 'POST') }
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] }); vi.setSystemTime(new Date('2026-10-11T12:00:00Z'))
-  current = detail(); sessionValue = { ...session }; requests = []; wrappers = []; sessionStatus = 200; deferredDetail = null; directoryAllowed = true
+  current = detail(); sessionValue = { ...session }; requests = []; wrappers = []; sessionStatus = 200; deferredDetail = null; directoryAllowed = true; listPermissions = [{ capability: 'interview.read', category: 'metadata' }, { capability: 'interview.write', category: 'metadata' }]
   postReply = async () => response(201, { id: VERSION, revision: '8', status: 'draft', head_id: HEAD, head_revision: '8', version_no: '8' })
   versionReply = async () => response(200, note)
   vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -49,13 +49,28 @@ beforeEach(() => {
     if (url.pathname === '/api/v1/access-grants') return response(200, { items: [], next_cursor: null, consistency: 'current', as_of: '2026-10-11', auth_epoch: sessionValue.auth_epoch, authorities: sessionValue.grant_authorities ?? [] })
     if (url.pathname === `/api/v1/interviews/${INT}`) { if (deferredDetail) { const pending = deferredDetail; deferredDetail = null; return pending } return response(200, current) }
     if (url.pathname === `/api/v1/note-versions/${VERSION}`) return versionReply()
-    if (url.pathname === `/api/v1/employees/${EMPLOYEE}/interviews`) return response(200, { items: [current.interview], next_cursor: null, consistency: 'current', as_of: '2026-10-11', permissions: [{ capability: 'interview.read', category: 'metadata' }, { capability: 'interview.write', category: 'metadata' }] })
+    if (url.pathname === `/api/v1/employees/${EMPLOYEE}/interviews`) return response(200, { items: [current.interview], next_cursor: null, consistency: 'current', as_of: '2026-10-11', permissions: listPermissions })
     throw new Error('Unexpected external HTTP boundary')
   })
 })
 afterEach(() => { for (const page of wrappers) page.unmount(); document.body.replaceChildren(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers() })
 
 describe('P-INT-01 real component consumers', () => {
+  it('uses the narrow staff-derived create hint without exposing transition or note writes', async () => {
+    listPermissions = [{ capability: 'interview.read', category: 'metadata' }, { capability: 'interview.create', category: 'metadata' }]
+    sessionValue = { ...sessionValue, capabilities: ['interview.read'], interview_permissions: [{ capability: 'interview.read', category: 'metadata' }] }
+    postReply = async () => response(201, { id: VERSION, revision: '1', status: 'scheduled' })
+    const page = await open(`/employees/${EMPLOYEE}/interviews`)
+    expect(page.find('[aria-label="安排或历史补录"]').exists()).toBe(true)
+    expect(page.find('[aria-label="面谈状态转换"]').exists()).toBe(false)
+    expect(page.find('#note-category').exists()).toBe(false)
+    await page.get('#interview-scheduled').setValue('2026-10-12T09:00:00Z')
+    await page.get('[aria-label="安排或历史补录"]').trigger('submit')
+    await settle()
+    expect(posts()).toHaveLength(1)
+    expect(posts()[0]!.path).toBe(`/api/v1/employees/${EMPLOYEE}/interviews`)
+  })
+
   it('renders authorized shared versions without private section labels, IDs, source summaries or counts', async () => {
     current.permissions = current.permissions.filter(item => item.capability === 'note.read' || item.capability === 'interview.read')
     current.action_items = []

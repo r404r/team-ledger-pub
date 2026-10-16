@@ -25,17 +25,17 @@ func TestStaffDefaultAllowsOnlyOwnAndCurrentDirectReportEmployeeReads(t *testing
 	now := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
 	snapshot := staffDefaultSnapshot(now)
 	for _, employee := range []string{"manager", "report"} {
-		if !snapshot.Allows("organization.read", "metadata", employee, "organization_management", now) || !snapshot.Allows("pii.read", "pii", employee, "organization_management", now) {
-			t.Fatalf("staff default did not allow employee reads for %s", employee)
+		if !snapshot.Allows("organization.read", "metadata", employee, "organization_management", now) || !snapshot.Allows("pii.read", "pii", employee, "organization_management", now) || !snapshot.Allows("interview.read", "metadata", employee, "interview_followup", now) || !snapshot.StaffDefaultCanCreateInterview(employee, now) {
+			t.Fatalf("staff default did not allow employee and interview reads/create for %s", employee)
 		}
 	}
 	for _, employee := range []string{"", "peer", "former", "grandchild"} {
-		if snapshot.Allows("organization.read", "metadata", employee, "organization_management", now) || snapshot.Allows("pii.read", "pii", employee, "organization_management", now) {
+		if snapshot.Allows("organization.read", "metadata", employee, "organization_management", now) || snapshot.Allows("pii.read", "pii", employee, "organization_management", now) || snapshot.Allows("interview.read", "metadata", employee, "interview_followup", now) || snapshot.StaffDefaultCanCreateInterview(employee, now) {
 			t.Fatalf("staff default escaped one-hop current scope for %q", employee)
 		}
 	}
-	if snapshot.Allows("organization.write", "metadata", "manager", "organization_management", now) || snapshot.Allows("sensitive.export", "pii", "manager", "organization_management", now) || snapshot.Allows("interview.read", "metadata", "manager", "interview_followup", now) {
-		t.Fatal("staff employee-read policy granted a write, export, or interview capability")
+	if snapshot.Allows("organization.write", "metadata", "manager", "organization_management", now) || snapshot.Allows("sensitive.export", "pii", "manager", "organization_management", now) || snapshot.Allows("interview.write", "metadata", "manager", "interview_followup", now) {
+		t.Fatal("staff default granted an employee write, export, or general interview write capability")
 	}
 	scope := snapshot.StaffDefaultScope(now)
 	if len(scope) != 2 || scope[0] != "manager" || scope[1] != "report" {

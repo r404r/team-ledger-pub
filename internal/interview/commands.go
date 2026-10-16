@@ -13,7 +13,7 @@ func (s *Service) Create(ctx context.Context, q Request, employee string, c Crea
 	if e != nil {
 		return Result{}, e
 	}
-	if e = s.require(a, employee, "metadata", nil, "interview.read", "interview.write"); e != nil {
+	if e = s.requireInterviewCreate(a, employee, nil); e != nil {
 		return Result{}, s.denied(ctx, q, a, "OP-INT-02", e)
 	}
 	scheduled, e := timestamp(c.ScheduledAt)
@@ -70,7 +70,7 @@ func (s *Service) Create(ctx context.Context, q Request, employee string, c Crea
 	i := Record{OrgID: a.OrgID, Number: 1, InterviewView: InterviewView{ID: value.NewID(), EmployeeID: employee, Status: status, Revision: "1", ScheduledAt: scheduled, ActualStartedAt: start, ActualEndedAt: end, Backfilled: c.Backfilled, RecordedAt: s.clock(), AuthorSubjectID: a.SubjectID, Participants: c.Participants}}
 	event := TransitionEvent{OrgID: a.OrgID, ID: value.NewID(), InterviewID: i.ID, EmployeeID: employee, Status: status, Revision: 1, ActualStartedAt: start, ActualEndedAt: end, Backfilled: c.Backfilled, AuthorSubjectID: a.SubjectID, RecordedAt: i.RecordedAt}
 	return s.commit(ctx, q, a, employee, "OP-INT-02", digest, Write{Interview: &i, Transition: &event}, Result{ID: i.ID, Status: status, Revision: "1"}, func(tx Tx, current authz.Snapshot) error {
-		if e := s.require(current, employee, "metadata", nil, "interview.read", "interview.write"); e != nil {
+		if e := s.requireInterviewCreate(current, employee, interviewLine(i)); e != nil {
 			return e
 		}
 		for _, p := range c.Participants {

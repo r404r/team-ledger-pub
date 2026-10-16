@@ -515,8 +515,11 @@ func (s *Service) List(ctx context.Context, q Request, employee string, query Li
 	}
 	out := ListView{Items: make([]InterviewView, 0, n), AsOf: c.Day, Consistency: "current", Permissions: []Permission{{"interview.read", "metadata"}}}
 	write := sc.Broad && a.Allows("interview.write", "metadata", employee, "interview_followup", s.clock())
+	create := write || a.StaffDefaultCanCreateInterview(employee, s.clock())
 	if write {
 		out.Permissions = append(out.Permissions, Permission{"interview.write", "metadata"})
+	} else if create {
+		out.Permissions = append(out.Permissions, Permission{"interview.create", "metadata"})
 	}
 	if len(records) > n {
 		records = records[:n]
@@ -543,6 +546,9 @@ func (s *Service) List(ctx context.Context, q Request, employee string, query Li
 			return fault.Forbidden
 		}
 		if write && !current.Allows("interview.write", "metadata", employee, "interview_followup", s.clock()) {
+			return fault.Forbidden
+		}
+		if create && !write && !current.StaffDefaultCanCreateInterview(employee, s.clock()) {
 			return fault.Forbidden
 		}
 		for _, i := range records {

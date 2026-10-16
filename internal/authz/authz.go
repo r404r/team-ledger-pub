@@ -109,8 +109,8 @@ func (s Snapshot) staffDefaultAllows(capability, category, employee, purpose str
 	if !s.staffDefaultTarget(employee, now) {
 		return false
 	}
-	return purpose == "organization_management" &&
-		(capability == "organization.read" && category == "metadata" || capability == "pii.read" && category == "pii")
+	return purpose == "organization_management" && (capability == "organization.read" && category == "metadata" || capability == "pii.read" && category == "pii") ||
+		purpose == "interview_followup" && capability == "interview.read" && category == "metadata"
 }
 
 func (s Snapshot) scopeMatches(kind, id, employee, department string, now time.Time) bool {

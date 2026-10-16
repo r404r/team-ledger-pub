@@ -84,6 +84,16 @@ func (s *Service) require(a authz.Snapshot, employee, cat string, line []authz.O
 	}
 	return nil
 }
+func (s *Service) requireInterviewCreate(a authz.Snapshot, employee string, line []authz.ObjectReference) error {
+	if !s.allows(a, "interview.read", "metadata", employee, line) {
+		return fault.NotFound
+	}
+	if s.allows(a, "interview.write", "metadata", employee, line) || a.StaffDefaultCanCreateInterview(employee, s.clock()) {
+		return nil
+	}
+	return fault.NotFound
+}
+
 func category(c string) bool {
 	return c == "shared" || c == "manager_private" || c == "hr_confidential"
 }
@@ -176,6 +186,7 @@ func (s *Service) replay(ctx context.Context, q Request, a authz.Snapshot, op st
 		var employee, cat string
 		var line []authz.ObjectReference
 		var caps []string
+		create := false
 		switch op {
 		case "OP-INT-02", "OP-INT-03":
 			i, e := tx.Interview(ctx, a.OrgID, previous.Result.ID)
@@ -186,6 +197,7 @@ func (s *Service) replay(ctx context.Context, q Request, a authz.Snapshot, op st
 			cat = "metadata"
 			line = interviewLine(i)
 			caps = []string{"interview.read", "interview.write"}
+			create = op == "OP-INT-02"
 		case "OP-INT-05":
 			v, e := tx.InterviewVersion(ctx, a.OrgID, previous.Result.ID)
 			if e != nil {
@@ -217,7 +229,12 @@ func (s *Service) replay(ctx context.Context, q Request, a authz.Snapshot, op st
 		if e != nil {
 			return e
 		}
-		if e = s.require(current, employee, cat, line, caps...); e != nil {
+		if create {
+			e = s.requireInterviewCreate(current, employee, line)
+		} else {
+			e = s.require(current, employee, cat, line, caps...)
+		}
+		if e != nil {
 			return e
 		}
 		oldDay, e := day(a, s.clock())
