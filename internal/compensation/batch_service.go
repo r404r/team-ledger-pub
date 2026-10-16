@@ -473,15 +473,24 @@ func (s *Service) stageAdjustmentCandidate(ctx context.Context, req Request, sna
 	}
 	if inputErr == nil {
 		reasons := map[string]bool(nil)
+		countAsOf, countYear := "", 0
 		if batch.AdjustmentType == BatchSpecial {
 			reasons = make(map[string]bool, len(s.Policy.SpecialReasonCatalog))
 			for code := range s.Policy.SpecialReasonCatalog {
 				reasons[code] = true
 			}
+			countAsOf, inputErr = businessDay(snapshot, s.clock())
+			if inputErr == nil {
+				var countDate time.Time
+				countDate, inputErr = time.Parse("2006-01-02", countAsOf)
+				countYear = countDate.Year()
+			}
 		}
-		normalized, _, err := ValidateBatchLines(batch.AdjustmentType, int(batch.CycleYear), batch.DefaultEffectiveDate, lines, reasons)
-		inputErr = err
-		if err == nil {
+		var normalized []BatchLineView
+		if inputErr == nil {
+			normalized, _, inputErr = ValidateBatchLines(batch.AdjustmentType, int(batch.CycleYear), batch.DefaultEffectiveDate, lines, reasons)
+		}
+		if inputErr == nil {
 			for i := range normalized {
 				line := normalized[i].BatchLineCommand
 				basis, err := s.resolveBatchBasis(ctx, batch, line)
@@ -499,14 +508,12 @@ func (s *Service) stageAdjustmentCandidate(ctx context.Context, req Request, sna
 					payload.Warnings = append(payload.Warnings, BatchPreviewWarning{Code: "SALARY_BEFORE_MISMATCH", EmployeeID: line.EmployeeID, StaffCode: line.StaffCode, EffectiveDate: effective, EnteredSalaryBefore: line.SalaryBefore, CurrentSalaryBefore: basis.CurrentSalaryBefore})
 				}
 				if batch.AdjustmentType == BatchSpecial {
-					effective, _ := batchLineEffectiveDate(batch, line)
-					year, _ := strconv.Atoi(effective[:4])
-					counts, countErr := s.Batches.AdjustmentBatchCounts(ctx, batch.OrgID, line.EmployeeID, year)
+					counts, countErr := s.Batches.AdjustmentBatchCounts(ctx, batch.OrgID, line.EmployeeID, countYear)
 					if countErr != nil {
 						inputErr = countErr
 						break
 					}
-					counts.CountAsOfDate = effective
+					counts.CountAsOfDate = countAsOf
 					payload.AdjustmentCountsByEmployee[line.EmployeeID] = counts
 				}
 				payload.Lines = append(payload.Lines, line)

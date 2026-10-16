@@ -231,7 +231,7 @@ func TestAdjustmentBatchPreviewRequiresExplicitSalaryCorrectionAndPreservesHisto
 			}}
 			var candidate compensation.ImportCandidateView
 			apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPost, "/api/v1/compensation-adjustment-batches/"+batch.ID+"/previews", structureJSON(t, previewCommand), value.NewID()), http.StatusCreated, &candidate)
-			if candidate.State != "valid" || candidate.LineCount != 1 || len(candidate.Lines) != 1 || candidate.Lines[0].EmployeeID != employee.ID || candidate.Lines[0].EffectiveMonth != "2026-10" || candidate.Lines[0].ReasonCode != "market_adjustment" || len(candidate.Warnings) != 1 || candidate.Warnings[0].Code != "SALARY_BEFORE_MISMATCH" || candidate.Warnings[0].CurrentSalaryBefore != "10000" {
+			if counts := candidate.AdjustmentCountsByEmployee[employee.ID]; candidate.State != "valid" || candidate.LineCount != 1 || len(candidate.Lines) != 1 || candidate.Lines[0].EmployeeID != employee.ID || candidate.Lines[0].EffectiveMonth != "2026-10" || candidate.Lines[0].ReasonCode != "market_adjustment" || len(candidate.Warnings) != 1 || candidate.Warnings[0].Code != "SALARY_BEFORE_MISMATCH" || candidate.Warnings[0].CurrentSalaryBefore != "10000" || counts.CountAsOfDate != "2026-10-16" || counts.CurrentYear != 0 || counts.PreviousYear != 0 {
 				t.Fatalf("unexpected manual preview: %#v", candidate)
 			}
 			applyPath := "/api/v1/compensation-adjustment-batches/" + batch.ID + "/draft"

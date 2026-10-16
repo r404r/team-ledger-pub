@@ -454,7 +454,7 @@ docker compose --env-file .env.docker --profile bootstrap run --rm --no-deps \
 docker compose --env-file .env.docker up -d --wait audit-receiver audit-forwarder
 ```
 
-Compose默认SQLite，不承诺数据库角色隔离。PostgreSQL部署由v12 schema owner执行`docker/postgres/audit_roles.sql`，再由部署系统为四个NOLOGIN角色配置本地LOGIN凭据/成员关系和强制TLS；runtime不得使用schema owner。receiver只获`schema_version`和receiver chain/ledger所需权限，forwarder获`audit_event/audit_outbox`读取、outbox更新及receiver status heartbeat写入，离线maintainer只获ledger/outbox SELECT，API login只继承`teamledger_audit_api_status`以读取heartbeat；任何runtime角色均不得UPDATE/DELETE ledger。
+Compose默认SQLite，不承诺数据库角色隔离。PostgreSQL部署由当前v13 schema owner执行`docker/postgres/audit_roles.sql`，再由部署系统为四个NOLOGIN角色配置本地LOGIN凭据/成员关系和强制TLS；runtime不得使用schema owner。receiver只获`schema_version`和receiver chain/ledger所需权限，forwarder获`audit_event/audit_outbox`读取、outbox更新及receiver status heartbeat写入，离线maintainer只获ledger/outbox SELECT，API login只继承`teamledger_audit_api_status`读取receiver status。v12部署升级到v13后必须由schema owner重新执行该幂等脚本再切runtime。
 
 ### 5. 备份与恢复
 
