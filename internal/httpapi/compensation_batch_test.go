@@ -292,7 +292,7 @@ func TestSalaryBaselineBatchRecordsPointInTimeSalaryWithoutAdjustmentCounts(t *t
 				t.Fatalf("baseline template response status=%d headers=%v bytes=%d read=%v close=%v", templateResponse.StatusCode, templateResponse.Header, len(templateBytes), readErr, closeErr)
 			}
 
-			activateBaseline := func(effective, target, expectedBefore string) compensation.BatchView {
+			activateBaseline := func(effective, target, expectedBefore, expectedResult string) compensation.BatchView {
 				t.Helper()
 				create := compensation.CreateBatchCommand{Name: effective + " Salary Baseline", CycleYear: 2026, AdjustmentType: compensation.BatchBaseline, LegalEntityID: legalEntity, DefaultEffectiveDate: effective}
 				var batch compensation.BatchView
@@ -308,7 +308,7 @@ func TestSalaryBaselineBatchRecordsPointInTimeSalaryWithoutAdjustmentCounts(t *t
 				}
 				apply := compensation.ReplaceBatchLinesCommand{Revision: batch.Revision, CandidateID: candidate.ID}
 				apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPatch, "/api/v1/compensation-adjustment-batches/"+batch.ID+"/draft", structureJSON(t, apply), value.NewID()), http.StatusOK, &batch)
-				if len(batch.Lines) != 1 || batch.Lines[0].Result != "changed" || len(batch.IncreaseTotalsByCurrency) != 0 || batch.ManifestDigest == "" {
+				if len(batch.Lines) != 1 || batch.Lines[0].Result != expectedResult || len(batch.IncreaseTotalsByCurrency) != 0 || batch.ManifestDigest == "" {
 					t.Fatalf("unexpected frozen baseline: %#v", batch)
 				}
 				transition := compensation.BatchTransitionCommand{Action: "submit", Revision: batch.Revision, ManifestDigest: batch.ManifestDigest}
@@ -319,9 +319,14 @@ func TestSalaryBaselineBatchRecordsPointInTimeSalaryWithoutAdjustmentCounts(t *t
 				return batch
 			}
 
-			first := activateBaseline("2026-01-01", "10000", "0")
-			_ = activateBaseline("2026-10-01", "9000", "10000")
-			for date, amount := range map[string]string{"2026-06-01": "10000", "2026-10-01": "9000"} {
+			first := activateBaseline("2026-01-01", "10000", "0", "changed")
+			_ = activateBaseline("2026-10-01", "9000", "10000", "changed")
+			eventCount := f.Count(t, "compensation_event")
+			noChange := activateBaseline("2026-11-01", "9000", "9000", "no_change")
+			if f.Count(t, "compensation_event") != eventCount || noChange.Lines[0].OriginalAdjustmentEventID != "" {
+				t.Fatal("unchanged salary baseline created a salary event")
+			}
+			for date, amount := range map[string]string{"2026-06-01": "10000", "2026-10-01": "9000", "2026-11-01": "9000"} {
 				var current compensation.CurrentView
 				apiSend(t, f, financeHTTPRequest(t, f, f.FinR, http.MethodGet, "/api/v1/employees/"+employee.ID+"/compensation?as_of="+date, "", ""), http.StatusOK, &current)
 				if current.CurrentTerm == nil || current.CurrentTerm.Terms.AmountMinor == nil || *current.CurrentTerm.Terms.AmountMinor != amount {
