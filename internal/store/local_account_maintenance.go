@@ -1,8 +1,10 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"math"
 	"time"
 
@@ -45,6 +47,9 @@ func (r *Repository) CreateLocalAccount(ctx context.Context, input LocalAccountP
 	if _, err = tx.ExecContext(ctx, q.sql("INSERT INTO local_credential(account_id,pepper_key_id,pepper_version,password_phc,revision,updated_at) VALUES(?,?,?,?,1,?)", "INSERT INTO local_credential(account_id,pepper_key_id,pepper_version,password_phc,revision,updated_at) VALUES($1,$2,$3,$4,1,$5)"), input.AccountID, input.PepperKey.KeyID, input.PepperKey.Version, input.PasswordPHC, at); err != nil {
 		return safeError(err)
 	}
+	if _, err = tx.ExecContext(ctx, q.sql("INSERT INTO local_mfa_account(account_id,status,generation,updated_at) VALUES(?,'enrollment_required',1,?)", "INSERT INTO local_mfa_account(account_id,status,generation,updated_at) VALUES($1,'enrollment_required',1,$2)"), input.AccountID, at); err != nil {
+		return safeError(err)
+	}
 	if _, err = tx.ExecContext(ctx, q.sql("INSERT INTO subject_identity(digest,key_id,key_version,org_id,subject_id,active) VALUES(?,?,?,?,?,1)", "INSERT INTO subject_identity(digest,key_id,key_version,org_id,subject_id,active) VALUES($1,$2,$3,$4,$5,true)"), input.UsernameDigest, input.UsernameKey.KeyID, input.UsernameKey.Version, input.OrgID, input.SubjectID); err != nil {
 		return safeError(err)
 	}
@@ -82,6 +87,59 @@ func (r *Repository) ResetLocalAccount(ctx context.Context, orgID, subjectID str
 	return r.finishLocalAccountRevocation(ctx, tx, q, orgID, subjectID, digest, requestID, now, "AUTH-ACCOUNT-RESET")
 }
 
+func (r *Repository) ResetLocalMFA(ctx context.Context, orgID, subjectID string, digest []byte, requestID string, now time.Time) error {
+	if !value.ValidID(orgID) || !value.ValidID(subjectID) || len(digest) != 32 || !value.ValidID(requestID) {
+		return fault.Invalid
+	}
+	tx, err := r.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return fault.Unavailable
+	}
+	defer tx.Rollback()
+	q := reader{tx, r.Backend}
+	var accountID string
+	var generation int64
+	if err = tx.QueryRowContext(ctx, q.sql("SELECT a.id,m.generation FROM local_account a JOIN local_mfa_account m ON m.account_id=a.id WHERE a.org_id=? AND a.subject_id=? AND a.username_digest=? AND a.active=1", "SELECT a.id,m.generation FROM local_account a JOIN local_mfa_account m ON m.account_id=a.id WHERE a.org_id=$1 AND a.subject_id=$2 AND a.username_digest=$3 AND a.active=true FOR UPDATE OF a,m"), orgID, subjectID, digest).Scan(&accountID, &generation); err != nil {
+		return fault.NotFound
+	}
+	if generation == math.MaxInt64 {
+		return fault.Unavailable
+	}
+	var receiptAccount string
+	var receiptDigest []byte
+	receiptErr := tx.QueryRowContext(ctx, q.sql("SELECT account_id,username_digest FROM local_mfa_reset_receipt WHERE request_id=?", "SELECT account_id,username_digest FROM local_mfa_reset_receipt WHERE request_id=$1 FOR UPDATE"), requestID).Scan(&receiptAccount, &receiptDigest)
+	if receiptErr == nil {
+		if receiptAccount != accountID || !bytes.Equal(receiptDigest, digest) {
+			return fault.Mismatch
+		}
+		return nil
+	}
+	if !errors.Is(receiptErr, sql.ErrNoRows) {
+		return safeError(receiptErr)
+	}
+	for _, statement := range []string{
+		q.sql("DELETE FROM local_mfa_recovery_receipt WHERE account_id=?", "DELETE FROM local_mfa_recovery_receipt WHERE account_id=$1"),
+		q.sql("DELETE FROM local_mfa_recovery_code WHERE account_id=?", "DELETE FROM local_mfa_recovery_code WHERE account_id=$1"),
+		q.sql("DELETE FROM local_mfa_enrollment WHERE account_id=?", "DELETE FROM local_mfa_enrollment WHERE account_id=$1"),
+		q.sql("DELETE FROM local_mfa_factor WHERE account_id=?", "DELETE FROM local_mfa_factor WHERE account_id=$1"),
+	} {
+		if _, err = tx.ExecContext(ctx, statement, accountID); err != nil {
+			return safeError(err)
+		}
+	}
+	result, err := tx.ExecContext(ctx, q.sql("UPDATE local_mfa_account SET status='enrollment_required',generation=?,updated_at=? WHERE account_id=? AND generation=?", "UPDATE local_mfa_account SET status='enrollment_required',generation=$1,updated_at=$2 WHERE account_id=$3 AND generation=$4"), generation+1, r.BindTime(now), accountID, generation)
+	if err != nil {
+		return safeError(err)
+	}
+	if n, _ := result.RowsAffected(); n != 1 {
+		return fault.Conflict
+	}
+	if _, err = tx.ExecContext(ctx, q.sql("INSERT INTO local_mfa_reset_receipt(request_id,account_id,username_digest,created_at) VALUES(?,?,?,?)", "INSERT INTO local_mfa_reset_receipt(request_id,account_id,username_digest,created_at) VALUES($1,$2,$3,$4)"), requestID, accountID, digest, r.BindTime(now)); err != nil {
+		return safeError(err)
+	}
+	return r.finishLocalAccountRevocation(ctx, tx, q, orgID, subjectID, digest, requestID, now, "AUTH-ACCOUNT-RESET")
+}
+
 func (r *Repository) DisableLocalAccount(ctx context.Context, orgID, subjectID string, digest []byte, requestID string, now time.Time) error {
 	if !value.ValidID(orgID) || !value.ValidID(subjectID) || len(digest) != 32 || !value.ValidID(requestID) {
 		return fault.Invalid
@@ -98,6 +156,25 @@ func (r *Repository) DisableLocalAccount(ctx context.Context, orgID, subjectID s
 	}
 	if n, _ := result.RowsAffected(); n != 1 {
 		return fault.NotFound
+	}
+	var accountID string
+	var generation int64
+	if err = tx.QueryRowContext(ctx, q.sql("SELECT a.id,m.generation FROM local_account a JOIN local_mfa_account m ON m.account_id=a.id WHERE a.org_id=? AND a.subject_id=? AND a.username_digest=?", "SELECT a.id,m.generation FROM local_account a JOIN local_mfa_account m ON m.account_id=a.id WHERE a.org_id=$1 AND a.subject_id=$2 AND a.username_digest=$3 FOR UPDATE OF m"), orgID, subjectID, digest).Scan(&accountID, &generation); err != nil || generation == math.MaxInt64 {
+		return fault.Unavailable
+	}
+	for _, statement := range []string{
+		q.sql("DELETE FROM local_mfa_reset_receipt WHERE account_id=?", "DELETE FROM local_mfa_reset_receipt WHERE account_id=$1"),
+		q.sql("DELETE FROM local_mfa_recovery_receipt WHERE account_id=?", "DELETE FROM local_mfa_recovery_receipt WHERE account_id=$1"),
+		q.sql("DELETE FROM local_mfa_recovery_code WHERE account_id=?", "DELETE FROM local_mfa_recovery_code WHERE account_id=$1"),
+		q.sql("DELETE FROM local_mfa_enrollment WHERE account_id=?", "DELETE FROM local_mfa_enrollment WHERE account_id=$1"),
+		q.sql("DELETE FROM local_mfa_factor WHERE account_id=?", "DELETE FROM local_mfa_factor WHERE account_id=$1"),
+	} {
+		if _, err = tx.ExecContext(ctx, statement, accountID); err != nil {
+			return safeError(err)
+		}
+	}
+	if _, err = tx.ExecContext(ctx, q.sql("UPDATE local_mfa_account SET status='enrollment_required',generation=?,updated_at=? WHERE account_id=?", "UPDATE local_mfa_account SET status='enrollment_required',generation=$1,updated_at=$2 WHERE account_id=$3"), generation+1, r.BindTime(now), accountID); err != nil {
+		return safeError(err)
 	}
 	if _, err = tx.ExecContext(ctx, q.sql("UPDATE subject_identity SET active=0 WHERE digest=? AND org_id=? AND subject_id=?", "UPDATE subject_identity SET active=false WHERE digest=$1 AND org_id=$2 AND subject_id=$3"), digest, orgID, subjectID); err != nil {
 		return safeError(err)

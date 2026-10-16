@@ -314,7 +314,7 @@ func loadWrappers(client *sensitive.KeydClient) (map[string]sensitive.Wrapper, e
 	out := make(map[string]sensitive.Wrapper, 4)
 	for domain, keyDomain := range map[string]sensitive.KeyDomain{
 		"pii": sensitive.DomainPIIPayload, "interview": sensitive.DomainInterviewPayload,
-		"assessment": sensitive.DomainAssessmentPayload, "financial": sensitive.DomainFinancialPayload,
+		"assessment": sensitive.DomainAssessmentPayload, "financial": sensitive.DomainFinancialPayload, "identity_mfa": sensitive.DomainIdentityMFA,
 	} {
 		wrapper, err := sensitive.NewKeydWrapper(client, keyDomain)
 		if err != nil {
@@ -367,7 +367,7 @@ func restore(ctx context.Context, archivePath, target string, keyd *sensitive.Ke
 	if closeErr != nil {
 		return closeErr
 	}
-	if manifest.Backend != "sqlite" || manifest.SchemaVersion != 13 {
+	if manifest.Backend != "sqlite" || manifest.SchemaVersion != 14 {
 		return errors.New("incompatible backup")
 	}
 	repo, e := store.Open(ctx, "sqlite", tempPath)
@@ -491,7 +491,7 @@ func restorePostgres(ctx context.Context, archivePath, targetDSN, caPath string,
 	if closeErr != nil {
 		return closeErr
 	}
-	if manifest.Backend != "postgres" || manifest.SchemaVersion != 13 {
+	if manifest.Backend != "postgres" || manifest.SchemaVersion != 14 {
 		return errors.New("incompatible backup")
 	}
 	restoreList, e := postgresRestoreList(ctx, dumpPath, work)

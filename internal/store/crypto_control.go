@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/sensitive"
+	"github.com/r404r/team-ledger/internal/value"
 )
 
 type CryptoControl struct {
@@ -23,23 +24,25 @@ type CryptoControl struct {
 	Target         sensitive.KeyReference
 }
 
-func canonicalActive(state sensitive.ReadyState) ([]byte, error) {
-	if state.MaterialGeneration == 0 || len(state.Digest) != 64 || len(state.Active) != 16 || len(state.ActiveKeys) != 16 {
+var cryptoDomains = []sensitive.KeyDomain{
+	sensitive.DomainPIIPayload, sensitive.DomainInterviewPayload, sensitive.DomainAssessmentPayload,
+	sensitive.DomainFinancialPayload, sensitive.DomainIdentityTransaction, sensitive.DomainIdentityMapping,
+	sensitive.DomainBackupArchive, sensitive.DomainStaffCodeLookup, sensitive.DomainBonusPaymentLookup,
+	sensitive.DomainIdentitySubjectLookup, sensitive.DomainCommandReceipt, sensitive.DomainAssessmentGeneration,
+	sensitive.DomainCSRFToken, sensitive.DomainCursorToken, sensitive.DomainLocalUsernameLookup,
+	sensitive.DomainLocalPasswordPepper, sensitive.DomainIdentityMFA, sensitive.DomainLocalRecoveryCode,
+}
+
+func canonicalActiveFor(state sensitive.ReadyState, domains []sensitive.KeyDomain) ([]byte, error) {
+	if state.MaterialGeneration == 0 || len(state.Digest) != 64 || len(state.Active) != len(domains) || len(state.ActiveKeys) != len(domains) {
 		return nil, fault.Invalid
 	}
 	if _, err := hex.DecodeString(state.Digest); err != nil {
 		return nil, fault.Invalid
 	}
-	for _, domain := range []sensitive.KeyDomain{
-		sensitive.DomainPIIPayload, sensitive.DomainInterviewPayload, sensitive.DomainAssessmentPayload,
-		sensitive.DomainFinancialPayload, sensitive.DomainIdentityTransaction, sensitive.DomainIdentityMapping,
-		sensitive.DomainBackupArchive, sensitive.DomainStaffCodeLookup, sensitive.DomainBonusPaymentLookup,
-		sensitive.DomainIdentitySubjectLookup, sensitive.DomainCommandReceipt, sensitive.DomainAssessmentGeneration,
-		sensitive.DomainCSRFToken, sensitive.DomainCursorToken, sensitive.DomainLocalUsernameLookup,
-		sensitive.DomainLocalPasswordPepper,
-	} {
-		reference := state.ActiveKeys[domain]
-		if state.Active[domain] == 0 || reference.Version != state.Active[domain] || reference.KeyID == "" {
+	for _, domain := range domains {
+		reference, exists := state.ActiveKeys[domain]
+		if !exists || state.Active[domain] == 0 || reference.Version != state.Active[domain] || reference.KeyID == "" {
 			return nil, fault.Invalid
 		}
 	}
@@ -48,6 +51,14 @@ func canonicalActive(state sensitive.ReadyState) ([]byte, error) {
 		return nil, fault.Invalid
 	}
 	return raw, nil
+}
+
+func canonicalActive(state sensitive.ReadyState) ([]byte, error) {
+	return canonicalActiveFor(state, cryptoDomains)
+}
+
+func canonicalLegacyActive(state sensitive.ReadyState) ([]byte, error) {
+	return canonicalActiveFor(state, cryptoDomains[:16])
 }
 
 func scanCryptoControl(row *sql.Row) (CryptoControl, error) {
@@ -77,7 +88,9 @@ func scanCryptoControl(row *sql.Row) (CryptoControl, error) {
 		out.Target = sensitive.KeyReference{KeyID: targetID.String, Version: uint32(targetVersion.Int64)}
 	}
 	if _, err = canonicalActive(out.State); err != nil {
-		return CryptoControl{}, fault.Unavailable
+		if _, legacyErr := canonicalLegacyActive(out.State); legacyErr != nil {
+			return CryptoControl{}, fault.Unavailable
+		}
 	}
 	return out, nil
 }
@@ -134,6 +147,66 @@ func (r *Repository) VerifyOrInitializeCryptoState(ctx context.Context, state se
 	}
 	if err != nil || control.Phase != "stable" || !sameCryptoState(control, state) {
 		return fault.Unavailable
+	}
+	return safeError(tx.Commit())
+}
+
+// AcknowledgeKeyDomainExpansion is the only transition that may grow the
+// persisted active-key inventory. It cannot rotate or replace any legacy key.
+func (r *Repository) AcknowledgeKeyDomainExpansion(ctx context.Context, state sensitive.ReadyState, requestID string, now time.Time) error {
+	active, err := canonicalActive(state)
+	if err != nil || !state.WriteEnabled || len(state.Staged) != 0 || !value.ValidID(requestID) || now.IsZero() {
+		return fault.Invalid
+	}
+	tx, err := r.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return safeError(err)
+	}
+	defer tx.Rollback()
+	q := reader{tx, r.Backend}
+	control, err := scanCryptoControl(tx.QueryRowContext(ctx, q.sql(
+		"SELECT phase,material_generation,keyring_digest,active_json,domain,manifest_digest,target_key_id,target_key_version FROM crypto_control WHERE id=1",
+		"SELECT phase,material_generation,keyring_digest,active_json,domain,manifest_digest,target_key_id,target_key_version FROM crypto_control WHERE id=1 FOR UPDATE")))
+	if err != nil || control.Phase != "stable" {
+		return fault.Unavailable
+	}
+	if sameCryptoState(control, state) {
+		var digest string
+		if err = tx.QueryRowContext(ctx, q.sql("SELECT new_digest FROM key_domain_expansion_receipt WHERE request_id=?", "SELECT new_digest FROM key_domain_expansion_receipt WHERE request_id=$1"), requestID).Scan(&digest); err != nil || digest != state.Digest {
+			return fault.Mismatch
+		}
+		return safeError(tx.Commit())
+	}
+	legacy, err := canonicalLegacyActive(control.State)
+	if err != nil || control.State.MaterialGeneration == ^uint64(0) || state.MaterialGeneration != control.State.MaterialGeneration+1 {
+		return fault.Unavailable
+	}
+	for _, domain := range cryptoDomains[:16] {
+		if state.ActiveKeys[domain] != control.State.ActiveKeys[domain] {
+			return fault.Unavailable
+		}
+	}
+	for _, domain := range cryptoDomains[16:] {
+		reference := state.ActiveKeys[domain]
+		if reference.KeyID == "" || reference.Version != 1 || state.Active[domain] != 1 {
+			return fault.Unavailable
+		}
+	}
+	result, err := tx.ExecContext(ctx, q.sql(
+		"UPDATE crypto_control SET material_generation=?,keyring_digest=?,active_json=?,updated_at=? WHERE id=1 AND phase='stable' AND material_generation=? AND keyring_digest=? AND active_json=?",
+		"UPDATE crypto_control SET material_generation=$1,keyring_digest=$2,active_json=$3,updated_at=$4 WHERE id=1 AND phase='stable' AND material_generation=$5 AND keyring_digest=$6 AND active_json=$7"),
+		int64(state.MaterialGeneration), state.Digest, string(active), r.BindTime(now), int64(control.State.MaterialGeneration), control.State.Digest, string(legacy))
+	if err != nil {
+		return safeError(err)
+	}
+	if n, rowsErr := result.RowsAffected(); rowsErr != nil || n != 1 {
+		return fault.Unavailable
+	}
+	if _, err = tx.ExecContext(ctx, q.sql(
+		"INSERT INTO key_domain_expansion_receipt(request_id,old_generation,old_digest,new_generation,new_digest,active_json,created_at) VALUES(?,?,?,?,?,?,?)",
+		"INSERT INTO key_domain_expansion_receipt(request_id,old_generation,old_digest,new_generation,new_digest,active_json,created_at) VALUES($1,$2,$3,$4,$5,$6,$7)"),
+		requestID, int64(control.State.MaterialGeneration), control.State.Digest, int64(state.MaterialGeneration), state.Digest, string(active), r.BindTime(now)); err != nil {
+		return safeError(err)
 	}
 	return safeError(tx.Commit())
 }

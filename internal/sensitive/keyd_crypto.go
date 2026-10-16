@@ -44,6 +44,10 @@ func domainNumber(domain KeyDomain) (uint16, bool) {
 		return 15, true
 	case DomainLocalPasswordPepper:
 		return 16, true
+	case DomainIdentityMFA:
+		return 17, true
+	case DomainLocalRecoveryCode:
+		return 18, true
 	default:
 		return 0, false
 	}
@@ -59,11 +63,31 @@ func domainFromNumber(number uint16) (KeyDomain, bool) {
 }
 
 func allKeyDomains() []KeyDomain {
-	return []KeyDomain{DomainPIIPayload, DomainInterviewPayload, DomainAssessmentPayload, DomainFinancialPayload, DomainIdentityTransaction, DomainIdentityMapping, DomainBackupArchive, DomainStaffCodeLookup, DomainBonusPaymentLookup, DomainIdentitySubjectLookup, DomainCommandReceipt, DomainAssessmentGeneration, DomainCSRFToken, DomainCursorToken, DomainLocalUsernameLookup, DomainLocalPasswordPepper}
+	return []KeyDomain{
+		DomainPIIPayload, DomainInterviewPayload, DomainAssessmentPayload, DomainFinancialPayload,
+		DomainIdentityTransaction, DomainIdentityMapping, DomainBackupArchive, DomainStaffCodeLookup,
+		DomainBonusPaymentLookup, DomainIdentitySubjectLookup, DomainCommandReceipt, DomainAssessmentGeneration,
+		DomainCSRFToken, DomainCursorToken, DomainLocalUsernameLookup, DomainLocalPasswordPepper,
+		DomainIdentityMFA, DomainLocalRecoveryCode,
+	}
 }
 
-func wrapperDomain(domain KeyDomain) bool { n, ok := domainNumber(domain); return ok && n <= 7 }
-func macDomain(domain KeyDomain) bool     { n, ok := domainNumber(domain); return ok && n >= 8 }
+func legacyKeyDomains() []KeyDomain { return allKeyDomains()[:16] }
+
+func wrapperDomain(domain KeyDomain) bool {
+	switch domain {
+	case DomainPIIPayload, DomainInterviewPayload, DomainAssessmentPayload, DomainFinancialPayload,
+		DomainIdentityTransaction, DomainIdentityMapping, DomainBackupArchive, DomainIdentityMFA:
+		return true
+	default:
+		return false
+	}
+}
+
+func macDomain(domain KeyDomain) bool {
+	_, ok := domainNumber(domain)
+	return ok && !wrapperDomain(domain)
+}
 
 func hkdfKey(secret, salt, info []byte) [32]byte {
 	extract := hmac.New(sha256.New, salt)

@@ -92,7 +92,7 @@ func validManifest(manifest Manifest) bool {
 		}
 	}
 	for _, dependency := range manifest.KeyDependencies {
-		if (dependency.Domain != "pii" && dependency.Domain != "interview" && dependency.Domain != "assessment" && dependency.Domain != "financial") || dependency.KeyID == "" || dependency.Version == 0 {
+		if (dependency.Domain != "pii" && dependency.Domain != "interview" && dependency.Domain != "assessment" && dependency.Domain != "financial" && dependency.Domain != "identity_mfa") || dependency.KeyID == "" || dependency.Version == 0 {
 			return false
 		}
 	}

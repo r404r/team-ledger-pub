@@ -407,6 +407,13 @@ func (s *Service) Complete(ctx context.Context, request CallbackRequest) (LoginR
 	}
 	return LoginResult{SessionCookie: cookie, ReturnTo: t.ReturnTo, ExpiresAt: issue.ExpiresAt}, nil
 }
+func (s *Service) CurrentSession(ctx context.Context, hash []byte) (Session, error) {
+	if s == nil || len(hash) != 32 {
+		return Session{}, fault.Unauthenticated
+	}
+	return s.Store.IdentitySession(ctx, hash, s.now())
+}
+
 func (s *Service) Touch(ctx context.Context, hash []byte) error {
 	if s == nil || len(hash) != 32 {
 		return fault.Unauthenticated

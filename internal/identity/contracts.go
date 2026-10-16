@@ -26,8 +26,8 @@ type Authorization struct {
 }
 type CallbackRequest struct{ Code, State, BrowserCookie, RequestID string }
 type LoginResult struct {
-	SessionCookie, ReturnTo string
-	ExpiresAt               time.Time
+	SessionCookie, CSRFToken, ReturnTo, Next string
+	ExpiresAt                                time.Time
 }
 
 var MFARequired = &fault.Fault{Status: 403, Code: "MFA_REQUIRED", Reason: "MFA_REQUIRED"}
@@ -53,10 +53,13 @@ type Identity struct {
 	Active           bool
 }
 type Session struct {
-	Hash, IdentityDigest     []byte
-	OrgID, SubjectID         string
-	Epoch                    int64
-	ExpiresAt, IdleExpiresAt time.Time
+	Hash, IdentityDigest         []byte
+	OrgID, SubjectID, AccessKind string
+	Epoch                        int64
+	ExpiresAt, IdleExpiresAt     time.Time
+	CSRFHash                     []byte
+	CSRFKeyID                    string
+	CSRFVersion                  uint32
 }
 type SessionIssue struct {
 	Transaction                                       Transaction

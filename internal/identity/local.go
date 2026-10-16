@@ -37,21 +37,29 @@ type LocalCredential struct {
 	AccountID, OrgID, SubjectID, PepperKeyID, UsernameKeyID, PHC string
 	UsernameDigest                                               []byte
 	UsernameKeyVersion, PepperVersion                            uint32
-	CredentialRevision                                           int64
+	CredentialRevision, MFAGeneration                            int64
+	MFAStatus                                                    string
+	Factor                                                       *LocalMFAFactor
+	RecoveryKeyID                                                string
+	RecoveryKeyVersion                                           uint32
+	RecoveryDigest                                               []byte
 	Active                                                       bool
 	Failures                                                     int64
 	RetryAfter                                                   time.Time
 }
 
 type LocalSessionIssue struct {
-	UsernameDigest, TokenHash, CSRFHash []byte
-	Now, ExpiresAt, IdleExpiresAt       time.Time
-	RequestID, CSRFKeyID, UsernameKeyID string
-	CredentialRevision                  int64
-	CSRFVersion, UsernameKeyVersion     uint32
+	UsernameDigest, TokenHash, CSRFHash                        []byte
+	Now, ExpiresAt, IdleExpiresAt, MFAUntil                    time.Time
+	RequestID, CSRFKeyID, CSRFToken, UsernameKeyID, AccessKind string
+	CredentialRevision, FactorGeneration, AcceptedStep         int64
+	CSRFVersion, UsernameKeyVersion                            uint32
+	AMR                                                        []string
+	Factor                                                     *LocalMFAFactor
 }
 
 type LocalStore interface {
+	LocalMFAStore
 	IdentityMode(context.Context) (string, error)
 	LookupLocalCredential(context.Context, []byte) (LocalCredential, error)
 	RecordLocalFailure(context.Context, []byte, string, time.Time) error
@@ -61,7 +69,7 @@ type LocalStore interface {
 }
 
 type LocalLoginRequest struct {
-	Username, Password, ReturnTo, RequestID string
+	Username, Password, TOTPCode, ReturnTo, RequestID string
 }
 type LocalPasswordChangeRequest struct {
 	SessionHash                  []byte
@@ -72,6 +80,7 @@ type LocalPasswordChangeRequest struct {
 type localAuthenticator struct {
 	store   LocalStore
 	keys    LocalKeyService
+	cipher  sensitive.Cipher
 	fake    string
 	fakeKey sensitive.KeyReference
 }
@@ -191,30 +200,63 @@ func verifyPHC(ctx context.Context, keys LocalKeyService, phc, password string, 
 	return err == nil && ok
 }
 
-func newLocalAuthenticator(ctx context.Context, store LocalStore, keys LocalKeyService) (*localAuthenticator, error) {
-	if store == nil || keys == nil {
+func newLocalAuthenticator(ctx context.Context, store LocalStore, keys LocalKeyService, cipher sensitive.Cipher) (*localAuthenticator, error) {
+	if store == nil || keys == nil || cipher.Wrapper == nil {
 		return nil, fault.Unavailable
 	}
 	fake, reference, err := passwordPHC(ctx, keys, "teamledger-fake-password", []byte("local-fake-salt!"))
 	if err != nil {
 		return nil, err
 	}
-	return &localAuthenticator{store: store, keys: keys, fake: fake, fakeKey: reference}, nil
+	return &localAuthenticator{store: store, keys: keys, cipher: cipher, fake: fake, fakeKey: reference}, nil
 }
 
-func NewLocal(ctx context.Context, store Store, local LocalStore, keys LocalKeyService) (*Service, error) {
-	if store == nil || local == nil || keys == nil {
+func NewLocal(ctx context.Context, store Store, local LocalStore, keys LocalKeyService, cipher sensitive.Cipher) (*Service, error) {
+	if store == nil || local == nil || keys == nil || cipher.Wrapper == nil {
 		return nil, fault.Unavailable
 	}
 	mode, err := local.IdentityMode(ctx)
 	if err != nil || mode != "local" {
 		return nil, fault.Unavailable
 	}
-	authenticator, err := newLocalAuthenticator(ctx, local, keys)
+	authenticator, err := newLocalAuthenticator(ctx, local, keys, cipher)
 	if err != nil {
 		return nil, err
 	}
 	return &Service{Store: store, keys: keys, Now: time.Now, mode: "local", local: authenticator}, nil
+}
+
+func (s *Service) localSessionIssue(ctx context.Context, _ []byte, accessKind string, recentMFA bool, requestID string) (string, LocalSessionIssue, error) {
+	if s == nil || s.local == nil || !value.ValidID(requestID) || accessKind != "business" && accessKind != "mfa_enrollment" && accessKind != "mfa_recovery" {
+		return "", LocalSessionIssue{}, fault.Invalid
+	}
+	cookie, raw, err := randomToken()
+	if err != nil {
+		return "", LocalSessionIssue{}, err
+	}
+	defer clear(raw)
+	hash := sha256.Sum256(raw)
+	csrf, csrfKey, err := CSRFToken(ctx, s.keys, raw)
+	if err != nil {
+		return "", LocalSessionIssue{}, err
+	}
+	csrfHash := sha256.Sum256([]byte(csrf))
+	now := s.now()
+	issue := LocalSessionIssue{TokenHash: hash[:], CSRFHash: csrfHash[:], CSRFKeyID: csrfKey.KeyID, CSRFToken: csrf, CSRFVersion: csrfKey.Version, AccessKind: accessKind, Now: now, RequestID: requestID}
+	if accessKind == "business" {
+		issue.ExpiresAt, issue.IdleExpiresAt = now.Add(8*time.Hour), now.Add(30*time.Minute)
+		issue.AMR = []string{"pwd", "otp"}
+		if recentMFA {
+			issue.MFAUntil = now.Add(localMFATTL)
+		}
+	} else {
+		issue.ExpiresAt, issue.IdleExpiresAt = now.Add(localMFATTL), now.Add(localMFATTL)
+		issue.AMR = []string{"pwd"}
+	}
+	if issue.MFAUntil.IsZero() {
+		issue.MFAUntil = time.Unix(0, 0).UTC()
+	}
+	return cookie, issue, nil
 }
 
 func (s *Service) LocalLogin(ctx context.Context, request LocalLoginRequest) (LoginResult, error) {
@@ -256,22 +298,47 @@ func (s *Service) LocalLogin(ctx context.Context, request LocalLoginRequest) (Lo
 			return LoginResult{}, upgradeErr
 		}
 	}
-	cookie, raw, err := randomToken()
+	acceptedStep := int64(0)
+	accessKind, recentMFA := "mfa_enrollment", false
+	if credential.MFAStatus == "active" {
+		if credential.Factor == nil {
+			return LoginResult{}, fault.Unavailable
+		}
+		if request.TOTPCode == "" {
+			return LoginResult{}, MFARequired
+		}
+		plain, openErr := s.local.cipher.Open(ctx, credential.Factor.Envelope.Context, credential.Factor.Envelope)
+		if openErr != nil || len(plain) != totpSecretBytes {
+			clear(plain)
+			return LoginResult{}, fault.Unavailable
+		}
+		var valid bool
+		acceptedStep, valid = verifyTOTP(plain, normalizeTOTPCode(request.TOTPCode), now, credential.Factor.LastAcceptedStep)
+		clear(plain)
+		if !valid {
+			if err = s.local.store.RecordLocalFailure(ctx, username.Digest, request.RequestID, now); err != nil {
+				return LoginResult{}, err
+			}
+			return LoginResult{}, fault.Unauthenticated
+		}
+		accessKind, recentMFA = "business", true
+	} else if credential.MFAStatus != "enrollment_required" {
+		return LoginResult{}, fault.Unavailable
+	}
+	cookie, issue, err := s.localSessionIssue(ctx, nil, accessKind, recentMFA, request.RequestID)
 	if err != nil {
 		return LoginResult{}, err
 	}
-	defer clear(raw)
-	hash := sha256.Sum256(raw)
-	csrf, csrfKey, err := CSRFToken(ctx, s.keys, raw)
-	if err != nil {
-		return LoginResult{}, err
-	}
-	csrfHash := sha256.Sum256([]byte(csrf))
-	issue := LocalSessionIssue{UsernameDigest: username.Digest, UsernameKeyID: credential.UsernameKeyID, UsernameKeyVersion: credential.UsernameKeyVersion, TokenHash: hash[:], CSRFHash: csrfHash[:], CSRFKeyID: csrfKey.KeyID, CSRFVersion: csrfKey.Version, Now: now, ExpiresAt: now.Add(8 * time.Hour), IdleExpiresAt: now.Add(30 * time.Minute), RequestID: request.RequestID, CredentialRevision: credential.CredentialRevision}
+	issue.UsernameDigest, issue.UsernameKeyID, issue.UsernameKeyVersion = username.Digest, credential.UsernameKeyID, credential.UsernameKeyVersion
+	issue.CredentialRevision, issue.FactorGeneration, issue.AcceptedStep = credential.CredentialRevision, credential.MFAGeneration, acceptedStep
 	if err = s.local.store.IssueLocalSession(ctx, issue); err != nil {
 		return LoginResult{}, err
 	}
-	return LoginResult{SessionCookie: cookie, ReturnTo: request.ReturnTo, ExpiresAt: issue.ExpiresAt}, nil
+	next := ""
+	if accessKind == "mfa_enrollment" {
+		next = "enroll"
+	}
+	return LoginResult{SessionCookie: cookie, CSRFToken: issue.CSRFToken, ReturnTo: request.ReturnTo, Next: next, ExpiresAt: issue.ExpiresAt}, nil
 }
 
 func (s *Service) ChangeLocalPassword(ctx context.Context, request LocalPasswordChangeRequest) error {

@@ -5,11 +5,12 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/r404r/team-ledger/internal/fault"
 )
 
-func TestV13MigratesPersistedV12BatchWithoutClearingData(t *testing.T) {
+func TestV14MigratesPersistedV12BatchWithoutClearingData(t *testing.T) {
 	ctx := context.Background()
 	repo, err := Open(ctx, "sqlite", filepath.Join(t.TempDir(), "persisted-v12.sqlite"))
 	if err != nil {
@@ -61,7 +62,7 @@ func TestV13MigratesPersistedV12BatchWithoutClearingData(t *testing.T) {
 		t.Fatal(err)
 	}
 	var version, rows int
-	if err = repo.DB.QueryRowContext(ctx, "SELECT max(version),count(*) FROM schema_version").Scan(&version, &rows); err != nil || version != 13 || rows != 13 {
+	if err = repo.DB.QueryRowContext(ctx, "SELECT max(version),count(*) FROM schema_version").Scan(&version, &rows); err != nil || version != 14 || rows != 14 {
 		t.Fatalf("ledger version=%d rows=%d err=%v", version, rows, err)
 	}
 	var code, state string
@@ -77,7 +78,84 @@ func TestV13MigratesPersistedV12BatchWithoutClearingData(t *testing.T) {
 	}
 }
 
-func TestV13RefusesV11WithoutWriting(t *testing.T) {
+func TestV14MigrationRequiresLocalMFAEnrollmentAndPreservesOIDCSession(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(ctx, "sqlite", filepath.Join(t.TempDir(), "persisted-v13.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	tx, err := repo.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for version := 1; version <= 13; version++ {
+		ddl, checksum, loadErr := repo.migration(version)
+		if loadErr != nil {
+			t.Fatal(loadErr)
+		}
+		for _, statement := range migrationStatements(ddl) {
+			if _, err = tx.ExecContext(ctx, statement); err != nil {
+				t.Fatalf("build v13 statement: %v", err)
+			}
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO schema_version(version,backend,checksum) VALUES(?,?,?)", version, "sqlite", checksum); err != nil {
+			t.Fatal(err)
+		}
+	}
+	org := "10000000-0000-4000-8000-000000000011"
+	localSubject := "10000000-0000-4000-8000-000000000012"
+	oidcSubject := "10000000-0000-4000-8000-000000000013"
+	account := "10000000-0000-4000-8000-000000000014"
+	localToken := make([]byte, 32)
+	oidcToken := make([]byte, 32)
+	localToken[0], oidcToken[0] = 1, 2
+	username := make([]byte, 32)
+	csrf := make([]byte, 32)
+	now := repo.BindTime(time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC))
+	expires := repo.BindTime(time.Date(2026, 10, 17, 0, 0, 0, 0, time.UTC))
+	for _, statement := range []struct {
+		sql  string
+		args []any
+	}{
+		{"INSERT INTO organization(id,timezone,graph_revision) VALUES(?,'UTC',1)", []any{org}},
+		{"INSERT INTO subject(org_id,id,active,auth_epoch) VALUES(?,?,1,1)", []any{org, localSubject}},
+		{"INSERT INTO subject(org_id,id,active,auth_epoch) VALUES(?,?,1,1)", []any{org, oidcSubject}},
+		{"INSERT INTO local_account(id,org_id,subject_id,username_digest,username_key_id,username_key_version,active,record_id,version_id,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes,created_at) VALUES(?,?,?,?,?,1,1,?,?, 'identity','identity.local_username.v1',1,1,'A256GCM-RANDOMNONCE','dek','kek',1,?,?,?)", []any{account, org, localSubject, username, "username-v1", account, account, []byte{1}, []byte{2}, now}},
+		{"INSERT INTO local_credential(account_id,pepper_key_id,pepper_version,password_phc,revision,updated_at) VALUES(?,'pepper-v1',1,?,1,?)", []any{account, "$argon2id$v=19$m=65536,t=3,p=1$MTIzNDU2Nzg5MDEyMzQ1Ng$MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI", now}},
+		{"INSERT INTO session(token_hash,org_id,subject_id,subject_epoch,expires_at,idle_expires_at,mfa_until,revoked,csrf_hash,csrf_key_id,csrf_version) VALUES(?,?,?,1,?,?,?,0,?,'csrf-v1',1)", []any{localToken, org, localSubject, expires, expires, now, csrf}},
+		{"INSERT INTO session(token_hash,org_id,subject_id,subject_epoch,expires_at,idle_expires_at,mfa_until,revoked,csrf_hash,csrf_key_id,csrf_version) VALUES(?,?,?,1,?,?,?,0,?,'csrf-v1',1)", []any{oidcToken, org, oidcSubject, expires, expires, now, csrf}},
+	} {
+		if _, err = tx.ExecContext(ctx, statement.sql, statement.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	var generation, localRevoked, oidcRevoked int64
+	if err = repo.DB.QueryRowContext(ctx, "SELECT status,generation FROM local_mfa_account WHERE account_id=?", account).Scan(&status, &generation); err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.DB.QueryRowContext(ctx, "SELECT revoked FROM session WHERE token_hash=?", localToken).Scan(&localRevoked); err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.DB.QueryRowContext(ctx, "SELECT revoked FROM session WHERE token_hash=?", oidcToken).Scan(&oidcRevoked); err != nil {
+		t.Fatal(err)
+	}
+	if status != "enrollment_required" || generation != 1 || localRevoked != 1 || oidcRevoked != 0 {
+		t.Fatalf("migration state status=%q generation=%d local_revoked=%d oidc_revoked=%d", status, generation, localRevoked, oidcRevoked)
+	}
+	if err = repo.CheckSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestV14RefusesV11WithoutWriting(t *testing.T) {
 	ctx := context.Background()
 	repo, err := Open(ctx, "sqlite", filepath.Join(t.TempDir(), "legacy-v11.sqlite"))
 	if err != nil {

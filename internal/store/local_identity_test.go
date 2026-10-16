@@ -35,6 +35,16 @@ func (k localKeys) Verify(ctx context.Context, domain sensitive.KeyDomain, refer
 	return err == nil && hmac.Equal(value.Digest, expected), err
 }
 
+type localWrapper struct{}
+
+func (localWrapper) Wrap(_ context.Context, plain []byte) (sensitive.WrappedKey, error) {
+	return sensitive.WrappedKey{KEKID: "00000000-0000-4000-8000-000000000001", Version: 1, Data: bytes.Clone(plain)}, nil
+}
+
+func (localWrapper) Unwrap(_ context.Context, wrapped sensitive.WrappedKey) ([]byte, error) {
+	return bytes.Clone(wrapped.Data), nil
+}
+
 func TestLocalBootstrapLoginThrottleAndSession(t *testing.T) {
 	ctx := context.Background()
 	repo, err := store.Open(ctx, "sqlite", filepath.Join(t.TempDir(), "local.sqlite"))
@@ -77,7 +87,7 @@ func TestLocalBootstrapLoginThrottleAndSession(t *testing.T) {
 	if err = repo.DB.QueryRowContext(ctx, "SELECT policy_version FROM local_bootstrap_receipt WHERE request_id=?", bootstrap.RequestID).Scan(&policy); err != nil || policy != "bootstrap_policy.v1" {
 		t.Fatal("bootstrap policy version was not fixed", policy, err)
 	}
-	service, err := identity.NewLocal(ctx, repo, repo, keys)
+	service, err := identity.NewLocal(ctx, repo, repo, keys, sensitive.Cipher{Wrapper: localWrapper{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,11 +196,11 @@ func TestLocalBootstrapLoginThrottleAndSession(t *testing.T) {
 		t.Fatal("lookup local credential after mode switch", err)
 	}
 	issueAt := now.Add(10 * time.Minute)
-	issue := identity.LocalSessionIssue{UsernameDigest: username.Digest, UsernameKeyID: username.KeyID, UsernameKeyVersion: username.Version, TokenHash: bytes.Repeat([]byte{91}, 32), CSRFHash: bytes.Repeat([]byte{92}, 32), CSRFKeyID: "00000000-0000-7000-8000-000000000001", CSRFVersion: 1, Now: issueAt, ExpiresAt: issueAt.Add(8 * time.Hour), IdleExpiresAt: issueAt.Add(30 * time.Minute), RequestID: value.NewID(), CredentialRevision: credential.CredentialRevision}
+	issue := identity.LocalSessionIssue{UsernameDigest: username.Digest, UsernameKeyID: username.KeyID, UsernameKeyVersion: username.Version, TokenHash: bytes.Repeat([]byte{91}, 32), CSRFHash: bytes.Repeat([]byte{92}, 32), CSRFKeyID: "00000000-0000-7000-8000-000000000001", CSRFVersion: 1, AccessKind: "mfa_enrollment", Now: issueAt, ExpiresAt: issueAt.Add(10 * time.Minute), IdleExpiresAt: issueAt.Add(10 * time.Minute), MFAUntil: time.Unix(0, 0).UTC(), RequestID: value.NewID(), CredentialRevision: credential.CredentialRevision, FactorGeneration: credential.MFAGeneration}
 	if err = repo.IssueLocalSession(ctx, issue); !errors.Is(err, fault.Unauthenticated) {
 		t.Fatal("old-mode local session issued after mode switch", err)
 	}
-	if _, err = identity.NewLocal(ctx, repo, repo, keys); err == nil {
+	if _, err = identity.NewLocal(ctx, repo, repo, keys, sensitive.Cipher{Wrapper: localWrapper{}}); err == nil {
 		t.Fatal("local identity started after oidc mode switch")
 	}
 }

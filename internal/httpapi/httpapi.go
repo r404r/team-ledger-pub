@@ -98,6 +98,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	hash := sha256.Sum256(raw)
 	req.TokenHash = hash[:]
+	if h.preAuthorizationIdentityRoute(w, r, raw, req.TokenHash, requestID) {
+		return
+	}
 	employeeScope, departmentScope := "", ""
 	invalidScope := false
 	if r.URL.Path == "/api/v1/session" && r.Method == http.MethodGet {
@@ -441,6 +444,8 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 		root = "local_login"
 	case *authPasswordChangeCommand:
 		root = "local_password_change"
+	case *authLocalRecoveryCommand, *authLocalMFACommand, *authLocalMFAConfirmCommand:
+		root = "local_mfa"
 	default:
 		return fault.Invalid
 	}
@@ -448,7 +453,7 @@ func strictBody(w http.ResponseWriter, r *http.Request, out any) error {
 	d.UseNumber()
 	if strings.HasPrefix(root, "finance_") {
 		e = walkFinancialJSON(d, 0, root, false)
-	} else if root == "local_login" || root == "local_password_change" || root == "bonus_command" || root == "batch_command" || root == "assessment_command" || root == "assessment_worker" || root == "catalog_command" || root == "workforce_command" {
+	} else if root == "local_login" || root == "local_password_change" || root == "local_mfa" || root == "bonus_command" || root == "batch_command" || root == "assessment_command" || root == "assessment_worker" || root == "catalog_command" || root == "workforce_command" {
 		e = walkUniqueJSON(d, 0)
 	} else {
 		e = walkJSON(d, 0, root)

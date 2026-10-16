@@ -1,10 +1,16 @@
 package httpapi_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha1"
 	"crypto/sha256"
+	"encoding/base32"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,8 +22,10 @@ import (
 	"github.com/r404r/team-ledger/internal/identity"
 	"github.com/r404r/team-ledger/internal/organization"
 	"github.com/r404r/team-ledger/internal/sensitive"
+	"github.com/r404r/team-ledger/internal/store"
 	"github.com/r404r/team-ledger/internal/testsupport"
 	"github.com/r404r/team-ledger/internal/value"
+	"time"
 )
 
 func TestAuthLogoutRevokesCurrentCookieAndSensitiveAccess(t *testing.T) {
@@ -217,5 +225,132 @@ func TestAuthCallbackMissingTrustedMFAKeepsSessionAndReturnsChallenge(t *testing
 				t.Fatal("failed MFA must preserve the original single-factor session without elevating it")
 			}
 		})
+	}
+}
+
+type httpLocalWrapper struct{}
+
+func (httpLocalWrapper) Wrap(_ context.Context, plain []byte) (sensitive.WrappedKey, error) {
+	return sensitive.WrappedKey{KEKID: "00000000-0000-4000-8000-000000000001", Version: 1, Data: bytes.Clone(plain)}, nil
+}
+
+func (httpLocalWrapper) Unwrap(_ context.Context, wrapped sensitive.WrappedKey) ([]byte, error) {
+	return bytes.Clone(wrapped.Data), nil
+}
+
+func httpTOTP(t *testing.T, secret string, now time.Time) string {
+	t.Helper()
+	raw, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var counter [8]byte
+	binary.BigEndian.PutUint64(counter[:], uint64(now.Unix()/30))
+	mac := hmac.New(sha1.New, raw)
+	_, _ = mac.Write(counter[:])
+	sum := mac.Sum(nil)
+	offset := sum[len(sum)-1] & 15
+	code := (binary.BigEndian.Uint32(sum[offset:offset+4]) & 0x7fffffff) % 1000000
+	return fmt.Sprintf("%06d", code)
+}
+
+func TestLocalMFAHTTPEnrollmentCreatesBusinessSession(t *testing.T) {
+	f := testsupport.NewHarness(t, "sqlite")
+	ctx := context.Background()
+	if _, err := f.Repo.DB.ExecContext(ctx, "INSERT INTO identity_mode_state(id,mode,revision,updated_at) VALUES(1,'local',1,?)", f.Repo.BindTime(f.Now)); err != nil {
+		t.Fatal(err)
+	}
+	keys := testsupport.MACKeys{Key: f.CSRFKey}
+	username, err := identity.LocalUsernameMAC(ctx, keys, "mfa.http.admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	phc, pepper, err := identity.NewPasswordCredential(ctx, keys, "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountID := value.NewID()
+	binding := sensitive.Context{OrgID: f.OrgID, RecordID: accountID, VersionID: accountID, ObjectKind: "local_username", Purpose: "identity", SchemaType: "identity.local_username.v1", SchemaVersion: 1}
+	envelope, err := (sensitive.Cipher{Wrapper: httpLocalWrapper{}}).Seal(ctx, binding, []byte("mfa.http.admin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.Repo.CreateLocalAccount(ctx, store.LocalAccountProvision{RequestID: value.NewID(), OrgID: f.OrgID, SubjectID: f.Owner.SubjectID, AccountID: accountID, UsernameDigest: username.Digest, UsernameKey: sensitive.KeyReference{KeyID: username.KeyID, Version: username.Version}, UsernameEnvelope: envelope, PepperKey: pepper, PasswordPHC: phc, Now: f.Now}); err != nil {
+		t.Fatal(err)
+	}
+	identities, err := identity.NewLocal(ctx, f.Repo, f.Repo, keys, sensitive.Cipher{Wrapper: httpLocalWrapper{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identities.Now = func() time.Time { return f.Now }
+	dir := t.TempDir()
+	if err = os.WriteFile(filepath.Join(dir, "index.html"), []byte("<!doctype html><main></main>"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewUnstartedServer(nil)
+	origin := "https://" + server.Listener.Addr().String()
+	handler, err := httpapi.New(f.Service, f.Interviews, f.Assessment, f.Compensation, f.Authz, identities, keys, origin, dir, "synthetic-deployment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Config.Handler = handler
+	server.StartTLS()
+	defer server.Close()
+	send := func(path, body, csrf string, cookie *http.Cookie) (*http.Response, map[string]any) {
+		t.Helper()
+		req, requestErr := http.NewRequest(http.MethodPost, server.URL+path, bytes.NewBufferString(body))
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		req.Header.Set("Origin", origin)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		req.Header.Set("Content-Type", "application/json")
+		if csrf != "" {
+			req.Header.Set("X-CSRF-Token", csrf)
+		}
+		if cookie != nil {
+			req.AddCookie(cookie)
+		}
+		response, requestErr := server.Client().Do(req)
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		var payload map[string]any
+		if response.StatusCode != http.StatusNoContent {
+			if requestErr = json.NewDecoder(response.Body).Decode(&payload); requestErr != nil {
+				response.Body.Close()
+				t.Fatal(requestErr)
+			}
+		}
+		response.Body.Close()
+		return response, payload
+	}
+	loginResponse, login := send("/api/v1/auth/local/login", `{"username":"mfa.http.admin","password":"correct horse battery staple","return_to":"/","totp_code":""}`, "", nil)
+	if loginResponse.StatusCode != http.StatusAccepted || login["next"] != "enroll" || login["csrf_token"] == "" || len(loginResponse.Cookies()) != 1 {
+		t.Fatal("initial local login did not enter enrollment", loginResponse.StatusCode, login)
+	}
+	restrictedCookie := loginResponse.Cookies()[0]
+	csrf := login["csrf_token"].(string)
+	beginResponse, pending := send("/api/v1/auth/local/mfa/enrollment", `{}`, csrf, restrictedCookie)
+	if beginResponse.StatusCode != http.StatusCreated || pending["mode"] != "initial" || pending["secret"] == "" {
+		t.Fatal("MFA enrollment did not start", beginResponse.StatusCode, pending)
+	}
+	code := httpTOTP(t, pending["secret"].(string), f.Now)
+	confirmResponse, confirmed := send("/api/v1/auth/local/mfa/confirm", `{"totp_code":"`+code+`"}`, csrf, restrictedCookie)
+	if confirmResponse.StatusCode != http.StatusOK || confirmed["recovery_code"] == "" || confirmed["csrf_token"] == "" || len(confirmResponse.Cookies()) != 1 {
+		t.Fatal("MFA enrollment did not confirm", confirmResponse.StatusCode, confirmed)
+	}
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/api/v1/session", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(confirmResponse.Cookies()[0])
+	sessionResponse, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sessionResponse.Body.Close()
+	if sessionResponse.StatusCode != http.StatusOK {
+		t.Fatal("confirmed MFA session did not enter business API", sessionResponse.StatusCode)
 	}
 }

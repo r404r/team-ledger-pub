@@ -125,7 +125,7 @@ func readExactFD(fd int, size int) ([]byte, error) {
 }
 
 func makeInitialKeyring(root []byte) ([]byte, error) {
-	entries := make([]keyEntry, 0, 16)
+	entries := make([]keyEntry, 0, len(allKeyDomains()))
 	for _, domain := range allKeyDomains() {
 		id, err := newDEKID()
 		if err != nil {
@@ -194,7 +194,7 @@ func sealKeyring(root []byte, ring keyring, previous [32]byte) ([]byte, error) {
 	return append(header, sealed...), nil
 }
 
-func openKeyring(root, raw []byte) (keyring, error) {
+func openKeyringInventory(root, raw []byte, allowLegacy bool) (keyring, error) {
 	var empty keyring
 	if len(root) != 32 || len(raw) < 66+16 || string(raw[:4]) != "TLKR" || binary.BigEndian.Uint16(raw[4:6]) != 1 || int(binary.BigEndian.Uint32(raw[62:66])) != len(raw)-66 {
 		return empty, ErrInvalid
@@ -270,7 +270,17 @@ func openKeyring(root, raw []byte) (keyring, error) {
 		}
 		return empty, ErrInvalid
 	}
-	for _, domain := range allKeyDomains() {
+	expected := allKeyDomains()
+	if allowLegacy && len(states) == len(legacyKeyDomains()) {
+		expected = legacyKeyDomains()
+	}
+	if len(states) != len(expected) {
+		for j := range body.Entries {
+			clear(body.Entries[j].Material)
+		}
+		return empty, ErrInvalid
+	}
+	for _, domain := range expected {
 		state := states[domain]
 		if state == nil || state.active != 1 || state.staged > 1 {
 			for j := range body.Entries {
@@ -281,6 +291,10 @@ func openKeyring(root, raw []byte) (keyring, error) {
 	}
 	digest := sha256.Sum256(raw)
 	return keyring{Generation: generation, Entries: body.Entries, Digest: hex.EncodeToString(digest[:])}, nil
+}
+
+func openKeyring(root, raw []byte) (keyring, error) {
+	return openKeyringInventory(root, raw, false)
 }
 
 func InitKeyDirectory(path string) error {
@@ -358,7 +372,7 @@ func writeNewFile(dirfd int, name string, mode uint32, data []byte) error {
 	return unix.Fsync(fd)
 }
 
-func loadKeyDirectory(path string) (int, []byte, keyring, error) {
+func loadKeyDirectoryMode(path string, allowLegacy bool) (int, []byte, keyring, error) {
 	dirfd, err := secureOpenDirectory(path, true)
 	if err != nil {
 		return -1, nil, keyring{}, err
@@ -405,7 +419,7 @@ func loadKeyDirectory(path string) (int, []byte, keyring, error) {
 		unix.Close(dirfd)
 		return -1, nil, keyring{}, err
 	}
-	ring, err := openKeyring(root, raw)
+	ring, err := openKeyringInventory(root, raw, allowLegacy)
 	clear(raw)
 	unix.Close(dirfd)
 	if err != nil {
@@ -414,6 +428,54 @@ func loadKeyDirectory(path string) (int, []byte, keyring, error) {
 		return -1, nil, keyring{}, err
 	}
 	return lockfd, root, ring, nil
+}
+
+func loadKeyDirectory(path string) (int, []byte, keyring, error) {
+	return loadKeyDirectoryMode(path, false)
+}
+
+// UpgradeKeyDomains adds only the two v14 MFA domains to a complete legacy
+// keyring. Callers must stop keyd first; the same persistent lock prevents a
+// concurrent server or second upgrader from modifying material.
+func UpgradeKeyDomains(path string) (ReadyState, error) {
+	lockfd, root, ring, err := loadKeyDirectoryMode(path, true)
+	if err != nil {
+		return ReadyState{}, err
+	}
+	defer unix.Close(lockfd)
+	defer clear(root)
+	defer clearKeyring(&ring)
+	current := len(ring.Entries) == len(allKeyDomains())
+	if current {
+		return keyringReadyState(ring), nil
+	}
+	if len(ring.Entries) != len(legacyKeyDomains()) {
+		return ReadyState{}, ErrInvalid
+	}
+	for _, domain := range []KeyDomain{DomainIdentityMFA, DomainLocalRecoveryCode} {
+		id, keyErr := newDEKID()
+		if keyErr != nil {
+			return ReadyState{}, keyErr
+		}
+		material := make([]byte, 32)
+		if _, keyErr = rand.Read(material); keyErr != nil {
+			clear(material)
+			return ReadyState{}, keyErr
+		}
+		kind, status := "wrap", "active"
+		if macDomain(domain) {
+			kind, status = "mac", "active_write_verify"
+		}
+		ring.Entries = append(ring.Entries, keyEntry{Domain: domain, Kind: kind, KeyID: id, Version: 1, Status: status, Material: material})
+	}
+	if ring.Generation == ^uint64(0) {
+		return ReadyState{}, ErrInvalid
+	}
+	ring.Generation++
+	if err = persistKeyring(path, root, &ring); err != nil {
+		return ReadyState{}, err
+	}
+	return keyringReadyState(ring), nil
 }
 
 func persistKeyring(path string, root []byte, ring *keyring) error {

@@ -47,7 +47,7 @@ func TestSQLiteEncryptedSnapshotRestoresSchemaAndFacts(t *testing.T) {
 	}
 	decoded, err := backup.ReadArchive(bytes.NewReader(archive.Bytes()), out, key)
 	closeErr := out.Close()
-	if err != nil || closeErr != nil || decoded.SchemaVersion != 13 {
+	if err != nil || closeErr != nil || decoded.SchemaVersion != 14 {
 		t.Fatal(decoded, err, closeErr)
 	}
 	restoredRepo, err := store.Open(ctx, "sqlite", restored)

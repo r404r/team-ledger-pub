@@ -76,7 +76,7 @@ func TestPostgresLocalBootstrapAndLogin(t *testing.T) {
 	if err != nil {
 		t.Fatal("PostgreSQL bootstrap failed", err)
 	}
-	service, err := identity.NewLocal(ctx, repo, repo, keys)
+	service, err := identity.NewLocal(ctx, repo, repo, keys, sensitive.Cipher{Wrapper: localWrapper{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestPostgresLocalBootstrapAndLogin(t *testing.T) {
 		t.Fatal("PostgreSQL credential lookup after mode switch failed", err)
 	}
 	issueAt := now.Add(7 * time.Second)
-	issue := identity.LocalSessionIssue{UsernameDigest: username.Digest, UsernameKeyID: username.KeyID, UsernameKeyVersion: username.Version, TokenHash: bytes.Repeat([]byte{93}, 32), CSRFHash: bytes.Repeat([]byte{94}, 32), CSRFKeyID: "00000000-0000-7000-8000-000000000001", CSRFVersion: 1, Now: issueAt, ExpiresAt: issueAt.Add(8 * time.Hour), IdleExpiresAt: issueAt.Add(30 * time.Minute), RequestID: value.NewID(), CredentialRevision: credential.CredentialRevision}
+	issue := identity.LocalSessionIssue{UsernameDigest: username.Digest, UsernameKeyID: username.KeyID, UsernameKeyVersion: username.Version, TokenHash: bytes.Repeat([]byte{93}, 32), CSRFHash: bytes.Repeat([]byte{94}, 32), CSRFKeyID: "00000000-0000-7000-8000-000000000001", CSRFVersion: 1, AccessKind: "mfa_enrollment", Now: issueAt, ExpiresAt: issueAt.Add(10 * time.Minute), IdleExpiresAt: issueAt.Add(10 * time.Minute), MFAUntil: time.Unix(0, 0).UTC(), RequestID: value.NewID(), CredentialRevision: credential.CredentialRevision, FactorGeneration: credential.MFAGeneration}
 	if err = repo.IssueLocalSession(ctx, issue); !errors.Is(err, fault.Unauthenticated) {
 		t.Fatal("PostgreSQL old-mode local session issued after mode switch", err)
 	}

@@ -77,6 +77,47 @@ func (r *Repository) LookupLocalCredential(ctx context.Context, digest []byte) (
 	result.CredentialRevision = revision
 	result.Active = accountActive && subjectActive
 	result.RetryAfter = retry.Time
+	var mfaGeneration int64
+	if err = r.DB.QueryRowContext(ctx, reader{r.DB, r.Backend}.sql(
+		"SELECT status,generation FROM local_mfa_account WHERE account_id=?",
+		"SELECT status,generation FROM local_mfa_account WHERE account_id=$1"), result.AccountID).Scan(&result.MFAStatus, &mfaGeneration); err != nil {
+		return identity.LocalCredential{}, safeError(err)
+	}
+	if mfaGeneration <= 0 {
+		return identity.LocalCredential{}, fault.Unavailable
+	}
+	result.MFAGeneration = mfaGeneration
+	if result.MFAStatus == "active" {
+		var factor identity.LocalMFAFactor
+		var schemaVersion, formatVersion, kekVersion int64
+		var purpose, schemaType, algorithm, dekID, recordID, versionID string
+		err = r.DB.QueryRowContext(ctx, reader{r.DB, r.Backend}.sql(
+			"SELECT org_id,factor_id,generation,last_accepted_step,record_id,version_id,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes FROM local_mfa_factor WHERE account_id=?",
+			"SELECT org_id,factor_id,generation,last_accepted_step,record_id,version_id,purpose,schema_type,schema_version,format_version,algorithm,dek_id,kek_id,kek_version,wrapped_dek,sealed_bytes FROM local_mfa_factor WHERE account_id=$1"),
+			result.AccountID).Scan(&factor.OrgID, &factor.FactorID, &factor.Generation, &factor.LastAcceptedStep, &recordID, &versionID, &purpose, &schemaType, &schemaVersion, &formatVersion, &algorithm, &dekID, &factor.Envelope.Key.KEKID, &kekVersion, &factor.Envelope.Key.Data, &factor.Envelope.SealedBytes)
+		if err != nil {
+			return identity.LocalCredential{}, safeError(err)
+		}
+		if factor.Generation != result.MFAGeneration || schemaVersion != 1 || formatVersion != 1 || kekVersion <= 0 || kekVersion > math.MaxUint32 {
+			return identity.LocalCredential{}, fault.Unavailable
+		}
+		factor.AccountID = result.AccountID
+		factor.Envelope.Context = sensitive.Context{OrgID: factor.OrgID, RecordID: recordID, VersionID: versionID, ObjectKind: "local_mfa_factor", Purpose: purpose, SchemaType: schemaType, SchemaVersion: uint32(schemaVersion)}
+		factor.Envelope.FormatVersion, factor.Envelope.Algorithm, factor.Envelope.DEKID, factor.Envelope.Key.Version = uint16(formatVersion), algorithm, dekID, uint32(kekVersion)
+		result.Factor = &factor
+		var recoveryVersion int64
+		err = r.DB.QueryRowContext(ctx, reader{r.DB, r.Backend}.sql(
+			"SELECT key_id,key_version,digest FROM local_mfa_recovery_code WHERE account_id=? AND generation=?",
+			"SELECT key_id,key_version,digest FROM local_mfa_recovery_code WHERE account_id=$1 AND generation=$2"), result.AccountID, result.MFAGeneration).Scan(&result.RecoveryKeyID, &recoveryVersion, &result.RecoveryDigest)
+		if err == nil {
+			if recoveryVersion <= 0 || recoveryVersion > math.MaxUint32 || len(result.RecoveryDigest) != 32 {
+				return identity.LocalCredential{}, fault.Unavailable
+			}
+			result.RecoveryKeyVersion = uint32(recoveryVersion)
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return identity.LocalCredential{}, safeError(err)
+		}
+	}
 	return result, nil
 }
 
@@ -125,7 +166,9 @@ func (r *Repository) RecordLocalFailure(ctx context.Context, digest []byte, requ
 }
 
 func (r *Repository) IssueLocalSession(ctx context.Context, issue identity.LocalSessionIssue) error {
-	if len(issue.UsernameDigest) != 32 || issue.UsernameKeyID == "" || issue.UsernameKeyVersion == 0 || len(issue.TokenHash) != 32 || len(issue.CSRFHash) != 32 || issue.CSRFKeyID == "" || issue.CSRFVersion == 0 || issue.CredentialRevision <= 0 || !value.ValidID(issue.RequestID) || !issue.ExpiresAt.Equal(issue.Now.Add(8*time.Hour)) || !issue.IdleExpiresAt.Equal(issue.Now.Add(30*time.Minute)) {
+	validBusiness := issue.AccessKind == "business" && issue.ExpiresAt.Equal(issue.Now.Add(8*time.Hour)) && issue.IdleExpiresAt.Equal(issue.Now.Add(30*time.Minute)) && issue.MFAUntil.Equal(issue.Now.Add(10*time.Minute)) && issue.FactorGeneration > 0 && issue.AcceptedStep > 0
+	validEnrollment := issue.AccessKind == "mfa_enrollment" && issue.ExpiresAt.Equal(issue.Now.Add(10*time.Minute)) && issue.IdleExpiresAt.Equal(issue.ExpiresAt) && issue.MFAUntil.Equal(time.Unix(0, 0).UTC()) && issue.AcceptedStep == 0
+	if len(issue.UsernameDigest) != 32 || issue.UsernameKeyID == "" || issue.UsernameKeyVersion == 0 || len(issue.TokenHash) != 32 || len(issue.CSRFHash) != 32 || issue.CSRFKeyID == "" || issue.CSRFVersion == 0 || issue.CredentialRevision <= 0 || !value.ValidID(issue.RequestID) || !validBusiness && !validEnrollment {
 		return fault.Invalid
 	}
 	tx, err := r.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
@@ -138,30 +181,44 @@ func (r *Repository) IssueLocalSession(ctx context.Context, issue identity.Local
 	if err = tx.QueryRowContext(ctx, q.sql("SELECT mode FROM identity_mode_state WHERE id=1", "SELECT mode FROM identity_mode_state WHERE id=1 FOR UPDATE")).Scan(&mode); err != nil || mode != "local" {
 		return fault.Unauthenticated
 	}
-	query := q.sql("SELECT a.org_id,a.subject_id,a.active,s.active,s.auth_epoch,c.revision FROM local_account a JOIN subject s ON s.org_id=a.org_id AND s.id=a.subject_id JOIN local_credential c ON c.account_id=a.id WHERE a.username_digest=?", "SELECT a.org_id,a.subject_id,a.active,s.active,s.auth_epoch,c.revision FROM local_account a JOIN subject s ON s.org_id=a.org_id AND s.id=a.subject_id JOIN local_credential c ON c.account_id=a.id WHERE a.username_digest=$1 FOR UPDATE")
-	var orgID, subjectID string
+	query := q.sql("SELECT a.id,a.org_id,a.subject_id,a.active,s.active,s.auth_epoch,c.revision,m.status,m.generation FROM local_account a JOIN subject s ON s.org_id=a.org_id AND s.id=a.subject_id JOIN local_credential c ON c.account_id=a.id JOIN local_mfa_account m ON m.account_id=a.id WHERE a.username_digest=?", "SELECT a.id,a.org_id,a.subject_id,a.active,s.active,s.auth_epoch,c.revision,m.status,m.generation FROM local_account a JOIN subject s ON s.org_id=a.org_id AND s.id=a.subject_id JOIN local_credential c ON c.account_id=a.id JOIN local_mfa_account m ON m.account_id=a.id WHERE a.username_digest=$1 FOR UPDATE")
+	var accountID, orgID, subjectID, status string
 	var accountActive, subjectActive bool
-	var epoch, revision int64
-	if err = tx.QueryRowContext(ctx, query, issue.UsernameDigest).Scan(&orgID, &subjectID, &accountActive, &subjectActive, &epoch, &revision); err != nil || !accountActive || !subjectActive || revision != issue.CredentialRevision {
+	var epoch, revision, generation int64
+	if err = tx.QueryRowContext(ctx, query, issue.UsernameDigest).Scan(&accountID, &orgID, &subjectID, &accountActive, &subjectActive, &epoch, &revision, &status, &generation); err != nil || !accountActive || !subjectActive || revision != issue.CredentialRevision {
+		return fault.Unauthenticated
+	}
+	if issue.AccessKind == "business" {
+		if status != "active" || generation != issue.FactorGeneration {
+			return fault.Unauthenticated
+		}
+		result, updateErr := tx.ExecContext(ctx, q.sql("UPDATE local_mfa_factor SET last_accepted_step=? WHERE account_id=? AND generation=? AND last_accepted_step<?", "UPDATE local_mfa_factor SET last_accepted_step=$1 WHERE account_id=$2 AND generation=$3 AND last_accepted_step<$4"), issue.AcceptedStep, accountID, generation, issue.AcceptedStep)
+		if updateErr != nil {
+			return safeError(updateErr)
+		}
+		if n, rowsErr := result.RowsAffected(); rowsErr != nil || n != 1 {
+			return fault.Unauthenticated
+		}
+	} else if status != "enrollment_required" || generation != issue.FactorGeneration {
 		return fault.Unauthenticated
 	}
 	if _, err = tx.ExecContext(ctx, q.sql("DELETE FROM local_login_throttle WHERE username_digest=?", "DELETE FROM local_login_throttle WHERE username_digest=$1"), issue.UsernameDigest); err != nil {
 		return safeError(err)
 	}
-	zero := r.BindTime(time.Unix(0, 0).UTC())
-	if _, err = tx.ExecContext(ctx, q.sql("INSERT INTO session(token_hash,org_id,subject_id,subject_epoch,expires_at,idle_expires_at,mfa_until,revoked,csrf_hash,csrf_key_id,csrf_version) VALUES(?,?,?,?,?,?,?,0,?,?,?)", "INSERT INTO session(token_hash,org_id,subject_id,subject_epoch,expires_at,idle_expires_at,mfa_until,revoked,csrf_hash,csrf_key_id,csrf_version) VALUES($1,$2,$3,$4,$5,$6,$7,false,$8,$9,$10)"), issue.TokenHash, orgID, subjectID, epoch, r.BindTime(issue.ExpiresAt), r.BindTime(issue.IdleExpiresAt), zero, issue.CSRFHash, issue.CSRFKeyID, issue.CSRFVersion); err != nil {
+	if _, err = tx.ExecContext(ctx, q.sql("INSERT INTO session(token_hash,org_id,subject_id,subject_epoch,expires_at,idle_expires_at,mfa_until,revoked,csrf_hash,csrf_key_id,csrf_version,access_kind) VALUES(?,?,?,?,?,?,?,0,?,?,?,?)", "INSERT INTO session(token_hash,org_id,subject_id,subject_epoch,expires_at,idle_expires_at,mfa_until,revoked,csrf_hash,csrf_key_id,csrf_version,access_kind) VALUES($1,$2,$3,$4,$5,$6,$7,false,$8,$9,$10,$11)"), issue.TokenHash, orgID, subjectID, epoch, r.BindTime(issue.ExpiresAt), r.BindTime(issue.IdleExpiresAt), r.BindTime(issue.MFAUntil), issue.CSRFHash, issue.CSRFKeyID, issue.CSRFVersion, issue.AccessKind); err != nil {
 		return safeError(err)
 	}
-	if _, err = tx.ExecContext(ctx, q.sql("INSERT INTO session_auth(token_hash,org_id,subject_id,identity_digest,identity_key_id,key_version,created_at,acr,amr_json) VALUES(?,?,?,?,?,?,?,'','[\"pwd\"]')", "INSERT INTO session_auth(token_hash,org_id,subject_id,identity_digest,identity_key_id,key_version,created_at,acr,amr_json) VALUES($1,$2,$3,$4,$5,$6,$7,'','[\"pwd\"]')"), issue.TokenHash, orgID, subjectID, issue.UsernameDigest, issue.UsernameKeyID, issue.UsernameKeyVersion, r.BindTime(issue.Now)); err != nil {
+	amr := `["pwd"]`
+	if issue.AccessKind == "business" {
+		amr = `["pwd","otp"]`
+	}
+	if _, err = tx.ExecContext(ctx, q.sql("INSERT INTO session_auth(token_hash,org_id,subject_id,identity_digest,identity_key_id,key_version,created_at,acr,amr_json) VALUES(?,?,?,?,?,?,?,'',?)", "INSERT INTO session_auth(token_hash,org_id,subject_id,identity_digest,identity_key_id,key_version,created_at,acr,amr_json) VALUES($1,$2,$3,$4,$5,$6,$7,'',$8)"), issue.TokenHash, orgID, subjectID, issue.UsernameDigest, issue.UsernameKeyID, issue.UsernameKeyVersion, r.BindTime(issue.Now), amr); err != nil {
 		return safeError(err)
 	}
 	if err = insertAudit(ctx, tx, r.Backend, organization.Audit{ID: value.NewID(), OrgID: orgID, SubjectID: subjectID, Operation: "AUTH-LOGIN", RequestID: issue.RequestID, Outcome: "allowed", At: issue.Now}); err != nil {
 		return err
 	}
-	if err = tx.Commit(); err != nil {
-		return fault.Unavailable
-	}
-	return nil
+	return safeError(tx.Commit())
 }
 func (r *Repository) UpgradeLocalCredential(ctx context.Context, usernameDigest []byte, credentialRevision int64, phc string, pepper sensitive.KeyReference, now time.Time) error {
 	if len(usernameDigest) != 32 || credentialRevision <= 0 || len(phc) < 80 || len(phc) > 256 || pepper.KeyID == "" || pepper.Version == 0 {

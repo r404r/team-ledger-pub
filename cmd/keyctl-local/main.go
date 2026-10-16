@@ -27,6 +27,7 @@ func keyDomain(value string) (sensitive.KeyDomain, bool) {
 		"command_receipt": sensitive.DomainCommandReceipt, "assessment_generation": sensitive.DomainAssessmentGeneration,
 		"csrf_token": sensitive.DomainCSRFToken, "cursor_token": sensitive.DomainCursorToken,
 		"local_username_lookup": sensitive.DomainLocalUsernameLookup, "local_password_pepper": sensitive.DomainLocalPasswordPepper,
+		"identity_mfa": sensitive.DomainIdentityMFA, "local_recovery_code": sensitive.DomainLocalRecoveryCode,
 	}
 	domain, ok := domains[value]
 	return domain, ok
@@ -271,9 +272,59 @@ func csrfActivate(args []string) error {
 	return json.NewEncoder(os.Stdout).Encode(state)
 }
 
+func upgradeDomains(args []string) error {
+	set := flag.NewFlagSet("upgrade-domains", flag.ContinueOnError)
+	set.SetOutput(os.Stderr)
+	directory := set.String("dir", "", "absolute key directory")
+	if err := set.Parse(args); err != nil || set.NArg() != 0 || *directory == "" {
+		return errors.New("invalid domain upgrade arguments")
+	}
+	state, err := sensitive.UpgradeKeyDomains(*directory)
+	if err != nil {
+		return errors.New("key domain upgrade failed")
+	}
+	return json.NewEncoder(os.Stdout).Encode(state)
+}
+
+func acknowledgeDomains(args []string) error {
+	set := flag.NewFlagSet("acknowledge-domains", flag.ContinueOnError)
+	set.SetOutput(os.Stderr)
+	socket := set.String("socket", "", "local keyd Unix socket")
+	backend := set.String("backend", "", "sqlite or postgres")
+	dsnFile := set.String("dsn-file", "", "protected database DSN file")
+	requestID := set.String("request-id", "", "maintenance request UUID")
+	if err := set.Parse(args); err != nil || set.NArg() != 0 || *socket == "" || (*backend != "sqlite" && *backend != "postgres") || *dsnFile == "" || !value.ValidID(*requestID) {
+		return errors.New("invalid domain acknowledgement arguments")
+	}
+	dsn, err := configfile.Read(*dsnFile, 16<<10, true)
+	if err != nil || len(dsn) == 0 {
+		clear(dsn)
+		return errors.New("invalid database configuration")
+	}
+	defer clear(dsn)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	state, err := (&sensitive.KeydClient{Socket: *socket, Timeout: 5 * time.Second}).Ready(ctx)
+	if err != nil {
+		return errors.New("local key service unavailable")
+	}
+	repo, err := store.Open(ctx, *backend, string(dsn))
+	if err != nil {
+		return errors.New("database unavailable")
+	}
+	defer repo.Close()
+	if err = repo.CheckSchema(ctx); err != nil {
+		return errors.New("invalid database schema")
+	}
+	if err = repo.AcknowledgeKeyDomainExpansion(ctx, state, *requestID, time.Now().UTC().Truncate(time.Microsecond)); err != nil {
+		return errors.New("key domain acknowledgement failed")
+	}
+	return json.NewEncoder(os.Stdout).Encode(state)
+}
+
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: keyctl-local init|status|stage|activate|csrf-activate|offline-export|offline-verify-pair|offline-restore")
+		return errors.New("usage: keyctl-local init|upgrade-domains|acknowledge-domains|status|stage|activate|csrf-activate|offline-export|offline-verify-pair|offline-restore")
 	}
 	switch args[0] {
 	case "init":
@@ -284,6 +335,10 @@ func run(args []string) error {
 			return errors.New("invalid init arguments")
 		}
 		return sensitive.InitKeyDirectory(*directory)
+	case "upgrade-domains":
+		return upgradeDomains(args[1:])
+	case "acknowledge-domains":
+		return acknowledgeDomains(args[1:])
 	case "status":
 		return status(args[1:])
 	case "stage", "activate":
@@ -297,7 +352,7 @@ func run(args []string) error {
 	case "offline-restore":
 		return offlineRestore(args[1:])
 	default:
-		return errors.New("usage: keyctl-local init|status|stage|activate|csrf-activate|offline-export|offline-verify-pair|offline-restore")
+		return errors.New("usage: keyctl-local init|upgrade-domains|acknowledge-domains|status|stage|activate|csrf-activate|offline-export|offline-verify-pair|offline-restore")
 	}
 }
 

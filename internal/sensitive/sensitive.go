@@ -456,6 +456,10 @@ func payloadRegistry(binding Context) (object, purpose, schemaVersion uint16, em
 		object, purpose, schemaVersion, expected = 17, 9, 1, "identity.local_username.v1"
 	case "identity_mapping":
 		object, purpose, schemaVersion, expected = 18, 9, 1, "identity.mapping.v1"
+	case "local_mfa_factor":
+		object, purpose, schemaVersion, expected = 19, 9, 1, "identity.local_mfa_factor.v1"
+	case "local_mfa_enrollment":
+		object, purpose, schemaVersion, expected = 20, 9, 1, "identity.local_mfa_enrollment.v1"
 	default:
 		return 0, 0, 0, false, ErrInvalid
 	}

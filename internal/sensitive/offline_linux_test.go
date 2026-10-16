@@ -111,7 +111,7 @@ func TestOfflinePairCoversEveryStateVerifiesAndRestoresExactMaterial(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inventory.FormatVersion != 1 || inventory.MaterialGeneration != 2 || len(inventory.Entries) != 19 || len(inventory.ActivePointers) != 16 || len(inventory.Files) != 3 {
+	if inventory.FormatVersion != 1 || inventory.MaterialGeneration != 2 || len(inventory.Entries) != 21 || len(inventory.ActivePointers) != 18 || len(inventory.Files) != 3 {
 		t.Fatal("incomplete inventory", inventory.MaterialGeneration, len(inventory.Entries), len(inventory.ActivePointers), len(inventory.Files))
 	}
 	states := map[string]bool{}

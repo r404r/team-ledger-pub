@@ -3,12 +3,14 @@ package store_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/r404r/team-ledger/internal/sensitive"
 	"github.com/r404r/team-ledger/internal/testsupport"
+	"github.com/r404r/team-ledger/internal/value"
 )
 
 func cryptoState(generation uint64, digest byte, pii uint32, pending *sensitive.KeyReference, write bool) sensitive.ReadyState {
@@ -19,7 +21,7 @@ func cryptoState(generation uint64, digest byte, pii uint32, pending *sensitive.
 		sensitive.DomainBackupArchive, sensitive.DomainStaffCodeLookup, sensitive.DomainBonusPaymentLookup,
 		sensitive.DomainIdentitySubjectLookup, sensitive.DomainCommandReceipt, sensitive.DomainAssessmentGeneration,
 		sensitive.DomainCSRFToken, sensitive.DomainCursorToken, sensitive.DomainLocalUsernameLookup,
-		sensitive.DomainLocalPasswordPepper,
+		sensitive.DomainLocalPasswordPepper, sensitive.DomainIdentityMFA, sensitive.DomainLocalRecoveryCode,
 	} {
 		active[domain] = 1
 		activeKeys[domain] = sensitive.KeyReference{KeyID: "00000000-0000-4000-8000-000000000001", Version: 1}
@@ -100,5 +102,38 @@ func TestCryptoMaterialGenerationRequiresA1A2AndFinalAcknowledgement(t *testing.
 				t.Fatal("retired generation unavailable", err)
 			}
 		})
+	}
+}
+
+func TestKeyDomainExpansionAcknowledgementPreservesEveryLegacyKey(t *testing.T) {
+	f := testsupport.NewHarness(t, "sqlite")
+	ctx := context.Background()
+	now := time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC)
+	legacy := cryptoState(4, 'a', 1, nil, true)
+	delete(legacy.Active, sensitive.DomainIdentityMFA)
+	delete(legacy.Active, sensitive.DomainLocalRecoveryCode)
+	delete(legacy.ActiveKeys, sensitive.DomainIdentityMFA)
+	delete(legacy.ActiveKeys, sensitive.DomainLocalRecoveryCode)
+	raw, err := json.Marshal(legacy.ActiveKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.Repo.DB.ExecContext(ctx, "INSERT INTO crypto_control(id,phase,material_generation,keyring_digest,active_json,updated_at) VALUES(1,'stable',?,?,?,?)", legacy.MaterialGeneration, legacy.Digest, string(raw), f.Repo.BindTime(now)); err != nil {
+		t.Fatal(err)
+	}
+	expanded := cryptoState(5, 'b', 1, nil, true)
+	requestID := value.NewID()
+	if err = f.Repo.AcknowledgeKeyDomainExpansion(ctx, expanded, requestID, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.Repo.VerifyCryptoState(ctx, expanded); err != nil {
+		t.Fatal("expanded crypto state was not acknowledged", err)
+	}
+	if err = f.Repo.AcknowledgeKeyDomainExpansion(ctx, expanded, requestID, now.Add(2*time.Second)); err != nil {
+		t.Fatal("domain acknowledgement was not idempotent", err)
+	}
+	var receipts int
+	if err = f.Repo.DB.QueryRowContext(ctx, "SELECT count(*) FROM key_domain_expansion_receipt WHERE request_id=?", requestID).Scan(&receipts); err != nil || receipts != 1 {
+		t.Fatal("domain acknowledgement receipt missing", receipts, err)
 	}
 }

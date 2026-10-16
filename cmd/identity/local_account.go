@@ -22,6 +22,9 @@ type accountInput struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 }
+type usernameInput struct {
+	Username string `json:"username"`
+}
 
 func openLocalRepo(ctx context.Context, backend, dsnFile, caFile string) (*store.Repository, error) {
 	dsnBytes, err := configfile.Read(dsnFile, 16<<10, true)
@@ -46,6 +49,32 @@ func openLocalRepo(ctx context.Context, backend, dsnFile, caFile string) (*store
 
 func readAccountInput(path string) (accountInput, error) {
 	var input accountInput
+	raw, err := configfile.Read(path, 1024, true)
+	if err != nil || len(raw) == 0 {
+		clear(raw)
+		return input, fault.Unavailable
+	}
+	defer clear(raw)
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&input) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		return input, fault.Invalid
+	}
+	canonical, err := json.Marshal(input)
+	if err != nil || !bytes.Equal(raw, canonical) {
+		clear(canonical)
+		return input, fault.Invalid
+	}
+	clear(canonical)
+	username, err := identity.CanonicalLocalUsername(input.Username)
+	if err != nil || username != input.Username {
+		return input, fault.Invalid
+	}
+	return input, nil
+}
+
+func readUsernameInput(path string) (usernameInput, error) {
+	var input usernameInput
 	raw, err := configfile.Read(path, 1024, true)
 	if err != nil || len(raw) == 0 {
 		clear(raw)
@@ -128,6 +157,43 @@ func localAccountRun(action string, args []string) error {
 	defer clear(envelope.Key.Data)
 	defer clear(envelope.SealedBytes)
 	return repo.CreateLocalAccount(ctx, store.LocalAccountProvision{RequestID: *requestID, OrgID: *orgID, SubjectID: *subjectID, AccountID: accountID, UsernameDigest: username.Digest, UsernameKey: sensitive.KeyReference{KeyID: username.KeyID, Version: username.Version}, UsernameEnvelope: envelope, PepperKey: pepper, PasswordPHC: phc, Now: now})
+}
+
+func localMFAResetRun(args []string) error {
+	set := flag.NewFlagSet("identity local-mfa-reset", flag.ContinueOnError)
+	set.SetOutput(io.Discard)
+	backend := set.String("backend", "", "sqlite or postgres")
+	dsnFile := set.String("dsn-file", "", "protected DSN file")
+	inputFile := set.String("input-file", "", "protected canonical username JSON")
+	keydSocket := set.String("keyd-socket", "", "local teamledger-keyd Unix socket")
+	caFile := set.String("postgres-ca-file", "", "protected public PostgreSQL CA file")
+	orgID := set.String("org-id", "", "existing organization UUID")
+	subjectID := set.String("subject-id", "", "existing subject UUID")
+	requestID := set.String("request-id", "", "maintenance request UUID")
+	if set.Parse(args) != nil || set.NArg() != 0 || !value.ValidID(*orgID) || !value.ValidID(*subjectID) || !value.ValidID(*requestID) || *inputFile == "" || *keydSocket == "" || *dsnFile == "" {
+		return fault.Invalid
+	}
+	input, err := readUsernameInput(*inputFile)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	keys := &sensitive.KeydClient{Socket: *keydSocket, Timeout: 5 * time.Second}
+	username, err := identity.LocalUsernameMAC(ctx, keys, input.Username)
+	if err != nil {
+		return err
+	}
+	defer clear(username.Digest)
+	repo, err := openLocalRepo(ctx, *backend, *dsnFile, *caFile)
+	if err != nil {
+		return err
+	}
+	defer repo.Close()
+	if err = repo.CheckSchema(ctx); err != nil {
+		return err
+	}
+	return repo.ResetLocalMFA(ctx, *orgID, *subjectID, username.Digest, *requestID, time.Now().UTC().Truncate(time.Microsecond))
 }
 
 func modeSwitchRun(args []string) error {

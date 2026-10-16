@@ -42,6 +42,8 @@ func run(args []string) error {
 			return localAccountRun("reset", args[1:])
 		case "local-account-disable":
 			return localAccountRun("disable", args[1:])
+		case "local-mfa-reset":
+			return localMFAResetRun(args[1:])
 		case "mode-switch":
 			return modeSwitchRun(args[1:])
 		case "reindex":

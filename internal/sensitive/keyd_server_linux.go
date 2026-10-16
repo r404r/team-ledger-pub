@@ -282,10 +282,14 @@ func expectedDomain(binding Context, dekID string) (KeyDomain, error) {
 	case "financial":
 		return DomainFinancialPayload, nil
 	case "identity":
-		if binding.ObjectKind == "identity_transaction" {
+		switch binding.ObjectKind {
+		case "identity_transaction":
 			return DomainIdentityTransaction, nil
+		case "local_mfa_factor", "local_mfa_enrollment":
+			return DomainIdentityMFA, nil
+		default:
+			return DomainIdentityMapping, nil
 		}
-		return DomainIdentityMapping, nil
 	case "backup":
 		return DomainBackupArchive, nil
 	default:
@@ -466,11 +470,11 @@ func (s *keydServer) writeEnabled() bool {
 	return true
 }
 
-func (s *keydServer) readyResponse() keydResponse {
+func keyringReadyState(ring keyring) ReadyState {
 	active := map[KeyDomain]uint32{}
 	activeKeys := map[KeyDomain]KeyReference{}
 	staged := map[KeyDomain]KeyReference{}
-	for _, entry := range s.ring.Entries {
+	for _, entry := range ring.Entries {
 		if entry.Status == "active" || entry.Status == "active_write_verify" {
 			active[entry.Domain] = entry.Version
 			activeKeys[entry.Domain] = KeyReference{KeyID: entry.KeyID, Version: entry.Version}
@@ -479,7 +483,12 @@ func (s *keydServer) readyResponse() keydResponse {
 			staged[entry.Domain] = KeyReference{KeyID: entry.KeyID, Version: entry.Version}
 		}
 	}
-	return keydResponse{OK: true, Ready: &ReadyState{MaterialGeneration: s.ring.Generation, Digest: s.ring.Digest, Active: active, ActiveKeys: activeKeys, Staged: staged, WriteEnabled: len(staged) == 0}}
+	return ReadyState{MaterialGeneration: ring.Generation, Digest: ring.Digest, Active: active, ActiveKeys: activeKeys, Staged: staged, WriteEnabled: len(staged) == 0}
+}
+
+func (s *keydServer) readyResponse() keydResponse {
+	state := keyringReadyState(s.ring)
+	return keydResponse{OK: true, Ready: &state}
 }
 
 func (s *keydServer) stage(r keydRequest) keydResponse {

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"net/http"
 	"net/url"
@@ -14,14 +15,30 @@ import (
 const bindingCookieName = "__Host-teamledger_oidc_binding"
 
 type authStepUpCommand struct {
-	Action   string `json:"action"`
-	ReturnTo string `json:"return_to"`
+	Action          string `json:"action"`
+	ReturnTo        string `json:"return_to"`
+	CurrentPassword string `json:"current_password"`
+	TOTPCode        string `json:"totp_code"`
 }
 type authLogoutCommand struct{}
 type authLocalLoginCommand struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 	ReturnTo string `json:"return_to"`
+	TOTPCode string `json:"totp_code"`
+}
+type authLocalRecoveryCommand struct {
+	Username     string `json:"username"`
+	Password     string `json:"password"`
+	RecoveryCode string `json:"recovery_code"`
+	ReturnTo     string `json:"return_to"`
+}
+type authLocalMFACommand struct {
+	CurrentPassword string `json:"current_password"`
+	TOTPCode        string `json:"totp_code"`
+}
+type authLocalMFAConfirmCommand struct {
+	TOTPCode string `json:"totp_code"`
 }
 type authPasswordChangeCommand struct {
 	CurrentPassword string `json:"current_password"`
@@ -54,10 +71,11 @@ func bindingCookie(r *http.Request) (string, error) {
 
 func (h *handler) publicIdentityRoute(w http.ResponseWriter, r *http.Request, requestID string) bool {
 	modeRoute := r.URL.Path == "/api/v1/auth/mode"
+	recovery := r.URL.Path == "/api/v1/auth/local/recover"
 	localLogin := r.URL.Path == "/api/v1/auth/local/login"
 	login := r.URL.Path == "/api/v1/auth/login"
 	callback := r.URL.Path == "/api/v1/auth/callback"
-	if !login && !callback && !localLogin && !modeRoute {
+	if !login && !callback && !localLogin && !recovery && !modeRoute {
 		return false
 	}
 	w.Header().Set("Referrer-Policy", "no-referrer")
@@ -71,25 +89,39 @@ func (h *handler) publicIdentityRoute(w http.ResponseWriter, r *http.Request, re
 		}{h.identities.Mode()})
 		return true
 	}
-	if localLogin {
+	if localLogin || recovery {
 		if r.Method != http.MethodPost || r.URL.RawQuery != "" || r.Header.Get("Origin") != h.origin || r.Header.Get("Sec-Fetch-Site") != "same-origin" || r.Header.Get("Content-Type") != "application/json" {
 			h.fail(w, fault.Forbidden, requestID)
 			return true
 		}
-		var command authLocalLoginCommand
-		if e := strictBody(w, r, &command); e != nil {
-			h.fail(w, e, requestID)
-			return true
+		result := identity.LoginResult{}
+		var e error
+		if localLogin {
+			var command authLocalLoginCommand
+			if e = strictBody(w, r, &command); e == nil {
+				result, e = h.identities.LocalLogin(r.Context(), identity.LocalLoginRequest{Username: command.Username, Password: command.Password, TOTPCode: command.TOTPCode, ReturnTo: command.ReturnTo, RequestID: requestID})
+			}
+		} else {
+			var command authLocalRecoveryCommand
+			key := r.Header.Get("Idempotency-Key")
+			if e = strictBody(w, r, &command); e == nil {
+				result, e = h.identities.LocalMFARecover(r.Context(), identity.LocalMFARecoveryRequest{Username: command.Username, Password: command.Password, RecoveryCode: command.RecoveryCode, ReturnTo: command.ReturnTo, RequestID: key})
+			}
 		}
-		result, e := h.identities.LocalLogin(r.Context(), identity.LocalLoginRequest{Username: command.Username, Password: command.Password, ReturnTo: command.ReturnTo, RequestID: requestID})
 		if e != nil {
 			h.fail(w, e, requestID)
 			return true
 		}
 		http.SetCookie(w, protectedCookie("__Host-teamledger_session", result.SessionCookie, result.ExpiresAt))
-		h.reply(w, http.StatusOK, struct {
-			ReturnTo string `json:"return_to"`
-		}{result.ReturnTo})
+		status := http.StatusOK
+		if result.Next != "" {
+			status = http.StatusAccepted
+		}
+		h.reply(w, status, struct {
+			ReturnTo  string `json:"return_to"`
+			Next      string `json:"next,omitempty"`
+			CSRFToken string `json:"csrf_token"`
+		}{result.ReturnTo, result.Next, result.CSRFToken})
 		return true
 	}
 	if r.Method != http.MethodGet {
@@ -162,9 +194,13 @@ func (h *handler) publicIdentityRoute(w http.ResponseWriter, r *http.Request, re
 
 func (h *handler) authenticatedIdentityRoute(w http.ResponseWriter, r *http.Request, hash []byte, requestID string) bool {
 	passwordChange := r.URL.Path == "/api/v1/auth/local/password"
+	mfaReplace := r.URL.Path == "/api/v1/auth/local/mfa/replace"
+	mfaConfirm := r.URL.Path == "/api/v1/auth/local/mfa/confirm"
+	mfaCancel := r.URL.Path == "/api/v1/auth/local/mfa/cancel"
+	recoveryCode := r.URL.Path == "/api/v1/auth/local/mfa/recovery-code"
 	logout := r.URL.Path == "/api/v1/auth/logout"
 	stepUp := r.URL.Path == "/api/v1/auth/step-up"
-	if !logout && !stepUp && !passwordChange {
+	if !logout && !stepUp && !passwordChange && !mfaReplace && !mfaConfirm && !mfaCancel && !recoveryCode {
 		return false
 	}
 	if r.Method != http.MethodPost {
@@ -200,6 +236,70 @@ func (h *handler) authenticatedIdentityRoute(w http.ResponseWriter, r *http.Requ
 		w.WriteHeader(http.StatusNoContent)
 		return true
 	}
+	if mfaCancel {
+		var command authLogoutCommand
+		if e := strictBody(w, r, &command); e != nil {
+			h.fail(w, e, requestID)
+			return true
+		}
+		if e := h.identities.LocalMFACancel(r.Context(), hash, requestID); e != nil {
+			h.fail(w, e, requestID)
+			return true
+		}
+		clearProtectedCookie(w, "__Host-teamledger_session")
+		w.WriteHeader(http.StatusNoContent)
+		return true
+	}
+	if mfaReplace || recoveryCode {
+		var command authLocalMFACommand
+		if e := strictBody(w, r, &command); e != nil {
+			h.fail(w, e, requestID)
+			return true
+		}
+		if mfaReplace {
+			result, e := h.identities.LocalMFABegin(r.Context(), hash, identity.LocalMFAReplaceRequest{SessionHash: hash, Password: command.CurrentPassword, TOTPCode: command.TOTPCode, RequestID: requestID})
+			if e != nil {
+				h.fail(w, e, requestID)
+				return true
+			}
+			h.reply(w, http.StatusCreated, struct {
+				Secret    string    `json:"secret"`
+				URI       string    `json:"uri"`
+				Mode      string    `json:"mode"`
+				ExpiresAt time.Time `json:"expires_at"`
+			}{result.Secret, result.URI, result.Mode, result.ExpiresAt})
+			return true
+		}
+		result, e := h.identities.LocalMFARecoveryCode(r.Context(), identity.LocalMFARecoveryCodeRequest{SessionHash: hash, Password: command.CurrentPassword, TOTPCode: command.TOTPCode, RequestID: requestID})
+		if e != nil {
+			h.fail(w, e, requestID)
+			return true
+		}
+		http.SetCookie(w, protectedCookie("__Host-teamledger_session", result.SessionCookie, result.ExpiresAt))
+		h.reply(w, http.StatusOK, struct {
+			RecoveryCode string `json:"recovery_code"`
+			CSRFToken    string `json:"csrf_token"`
+		}{result.RecoveryCode, result.CSRFToken})
+		return true
+	}
+	if mfaConfirm {
+		var command authLocalMFAConfirmCommand
+		if e := strictBody(w, r, &command); e != nil {
+			h.fail(w, e, requestID)
+			return true
+		}
+		result, e := h.identities.LocalMFAConfirm(r.Context(), hash, command.TOTPCode, requestID)
+		if e != nil {
+			h.fail(w, e, requestID)
+			return true
+		}
+		http.SetCookie(w, protectedCookie("__Host-teamledger_session", result.SessionCookie, result.ExpiresAt))
+		h.reply(w, http.StatusOK, struct {
+			RecoveryCode string `json:"recovery_code"`
+			CSRFToken    string `json:"csrf_token"`
+		}{result.RecoveryCode, result.CSRFToken})
+		return true
+	}
 	var command authStepUpCommand
 	if e := strictBody(w, r, &command); e != nil {
 		h.fail(w, e, requestID)
@@ -207,6 +307,19 @@ func (h *handler) authenticatedIdentityRoute(w http.ResponseWriter, r *http.Requ
 	}
 	if !identity.AllowedReturn(command.ReturnTo) || !identity.AllowedStepUpAction(command.Action) {
 		h.fail(w, fault.Invalid, requestID)
+		return true
+	}
+	if h.identities.Mode() == "local" {
+		result, e := h.identities.LocalStepUp(r.Context(), identity.LocalMFAStepUpRequest{SessionHash: hash, Password: command.CurrentPassword, TOTPCode: command.TOTPCode, Action: command.Action, ReturnTo: command.ReturnTo, RequestID: requestID})
+		if e != nil {
+			h.fail(w, e, requestID)
+			return true
+		}
+		http.SetCookie(w, protectedCookie("__Host-teamledger_session", result.SessionCookie, result.ExpiresAt))
+		h.reply(w, http.StatusOK, struct {
+			ReturnTo  string `json:"return_to"`
+			CSRFToken string `json:"csrf_token"`
+		}{result.ReturnTo, result.CSRFToken})
 		return true
 	}
 	authorization, e := h.identities.Begin(r.Context(), identity.BeginRequest{Mode: "step_up", Action: command.Action, ReturnTo: command.ReturnTo, SessionHash: hash, RequestID: requestID})
@@ -218,5 +331,123 @@ func (h *handler) authenticatedIdentityRoute(w http.ResponseWriter, r *http.Requ
 	h.reply(w, http.StatusOK, struct {
 		URL string `json:"authorization_url"`
 	}{authorization.URL})
+	return true
+}
+
+func (h *handler) preAuthorizationIdentityRoute(w http.ResponseWriter, r *http.Request, raw, hash []byte, requestID string) bool {
+	enrollment := r.URL.Path == "/api/v1/auth/local/mfa/enrollment"
+	pending := r.URL.Path == "/api/v1/auth/local/mfa/pending"
+	confirm := r.URL.Path == "/api/v1/auth/local/mfa/confirm"
+	cancel := r.URL.Path == "/api/v1/auth/local/mfa/cancel"
+	logout := r.URL.Path == "/api/v1/auth/logout"
+	if !enrollment && !pending && !confirm && !cancel && !logout {
+		return false
+	}
+	session, err := h.identities.CurrentSession(r.Context(), hash)
+	if err != nil {
+		h.fail(w, err, requestID)
+		return true
+	}
+	if session.AccessKind == "business" {
+		return false
+	}
+	if session.AccessKind != "mfa_enrollment" && session.AccessKind != "mfa_recovery" {
+		h.fail(w, fault.Unauthenticated, requestID)
+		return true
+	}
+	token, key, err := identity.CSRFToken(r.Context(), h.keys, raw)
+	tokenHash := sha256.Sum256([]byte(token))
+	if err != nil || session.CSRFKeyID != key.KeyID || session.CSRFVersion != key.Version || subtle.ConstantTimeCompare(session.CSRFHash, tokenHash[:]) != 1 {
+		h.fail(w, fault.Unauthenticated, requestID)
+		return true
+	}
+	if r.URL.RawQuery != "" {
+		h.fail(w, fault.Invalid, requestID)
+		return true
+	}
+	if r.Method != http.MethodGet {
+		if r.Method != http.MethodPost || r.Header.Get("Origin") != h.origin || r.Header.Get("Sec-Fetch-Site") != "same-origin" || r.Header.Get("Content-Type") != "application/json" || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(token)) != 1 {
+			h.fail(w, fault.Forbidden, requestID)
+			return true
+		}
+	} else if !pending {
+		h.fail(w, fault.NotFound, requestID)
+		return true
+	}
+	if err = h.identities.Touch(r.Context(), hash); err != nil {
+		h.fail(w, err, requestID)
+		return true
+	}
+	switch {
+	case pending:
+		result, e := h.identities.LocalMFAPending(r.Context(), hash)
+		if e != nil {
+			h.fail(w, e, requestID)
+			return true
+		}
+		h.reply(w, http.StatusOK, struct {
+			Secret    string    `json:"secret"`
+			URI       string    `json:"uri"`
+			Mode      string    `json:"mode"`
+			ExpiresAt time.Time `json:"expires_at"`
+		}{result.Secret, result.URI, result.Mode, result.ExpiresAt})
+	case enrollment:
+		var command authLocalMFACommand
+		if e := strictBody(w, r, &command); e != nil {
+			h.fail(w, e, requestID)
+			return true
+		}
+		result, e := h.identities.LocalMFABegin(r.Context(), hash, identity.LocalMFAReplaceRequest{SessionHash: hash, RequestID: requestID})
+		if e != nil {
+			h.fail(w, e, requestID)
+			return true
+		}
+		h.reply(w, http.StatusCreated, struct {
+			Secret    string    `json:"secret"`
+			URI       string    `json:"uri"`
+			Mode      string    `json:"mode"`
+			ExpiresAt time.Time `json:"expires_at"`
+		}{result.Secret, result.URI, result.Mode, result.ExpiresAt})
+	case confirm:
+		var command authLocalMFAConfirmCommand
+		if e := strictBody(w, r, &command); e != nil {
+			h.fail(w, e, requestID)
+			return true
+		}
+		result, e := h.identities.LocalMFAConfirm(r.Context(), hash, command.TOTPCode, requestID)
+		if e != nil {
+			h.fail(w, e, requestID)
+			return true
+		}
+		http.SetCookie(w, protectedCookie("__Host-teamledger_session", result.SessionCookie, result.ExpiresAt))
+		h.reply(w, http.StatusOK, struct {
+			RecoveryCode string `json:"recovery_code"`
+			CSRFToken    string `json:"csrf_token"`
+		}{result.RecoveryCode, result.CSRFToken})
+	case cancel:
+		var command authLogoutCommand
+		if e := strictBody(w, r, &command); e != nil {
+			h.fail(w, e, requestID)
+			return true
+		}
+		if err = h.identities.LocalMFACancel(r.Context(), hash, requestID); err != nil {
+			h.fail(w, err, requestID)
+			return true
+		}
+		clearProtectedCookie(w, "__Host-teamledger_session")
+		w.WriteHeader(http.StatusNoContent)
+	case logout:
+		var command authLogoutCommand
+		if e := strictBody(w, r, &command); e != nil {
+			h.fail(w, e, requestID)
+			return true
+		}
+		if err = h.identities.Logout(r.Context(), hash, requestID); err != nil {
+			h.fail(w, err, requestID)
+			return true
+		}
+		clearProtectedCookie(w, "__Host-teamledger_session")
+		w.WriteHeader(http.StatusNoContent)
+	}
 	return true
 }

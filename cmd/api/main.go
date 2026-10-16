@@ -130,6 +130,10 @@ func run() error {
 	if e != nil {
 		return errors.New("invalid key service configuration")
 	}
+	mfaWrapper, e := sensitive.NewKeydWrapper(keys, sensitive.DomainIdentityMFA)
+	if e != nil {
+		return errors.New("invalid key service configuration")
+	}
 	policy, e := compensationPolicy()
 	if e != nil {
 		return e
@@ -228,7 +232,7 @@ func run() error {
 	}
 	var identities *identity.Service
 	if identityMode == "local" {
-		identities, e = identity.NewLocal(startup, repo, repo, keys)
+		identities, e = identity.NewLocal(startup, repo, repo, keys, sensitive.Cipher{Wrapper: mfaWrapper})
 	} else {
 		identities, e = identity.New(startup, repo, keys, oidcConfig)
 	}

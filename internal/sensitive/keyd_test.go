@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestRFC5649KnownAnswers(t *testing.T) {
@@ -91,7 +93,7 @@ func TestKeydInitLockSocketWrapMACAndRestart(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if err != nil || ready.MaterialGeneration != 1 || len(ready.Active) != 16 {
+	if err != nil || ready.MaterialGeneration != 1 || len(ready.Active) != 18 {
 		cancel()
 		<-done
 		t.Fatal("keyd not ready", ready, err)
@@ -291,4 +293,60 @@ func TestKeydAPIIdentityCannotUseMaintenanceOperations(t *testing.T) {
 			t.Fatalf("API identity unexpectedly authorized for backup %s: %#v", operation, response)
 		}
 	}
+}
+
+func TestKeyDomainUpgradeRequiresExplicitLegacyExpansion(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, err := os.MkdirTemp(home, ".teamledger-key-upgrade-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(parent)
+	if err = os.Chmod(parent, 0700); err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(parent, "keys")
+	if err = InitKeyDirectory(directory); err != nil {
+		t.Fatal(err)
+	}
+	lockfd, root, ring, err := loadKeyDirectory(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 16; i < len(ring.Entries); i++ {
+		clear(ring.Entries[i].Material)
+	}
+	ring.Entries = ring.Entries[:16]
+	if err = persistKeyring(directory, root, &ring); err != nil {
+		t.Fatal(err)
+	}
+	clear(root)
+	clearKeyring(&ring)
+	unix.Close(lockfd)
+	socket := filepath.Join(directory, "keyd.sock")
+	if err = ServeKeyd(context.Background(), KeydServerConfig{KeyDirectory: directory, Socket: socket, APIUIDs: []uint32{uint32(os.Geteuid())}}); err == nil {
+		t.Fatal("keyd accepted a legacy keyring without explicit expansion")
+	}
+	state, err := UpgradeKeyDomains(directory)
+	if err != nil || state.MaterialGeneration != 2 || len(state.ActiveKeys) != 18 || state.Active[sensitiveDomainForTest(t, "identity_mfa")] != 1 {
+		t.Fatal("legacy keyring expansion failed", state, err)
+	}
+	again, err := UpgradeKeyDomains(directory)
+	if err != nil || again.MaterialGeneration != state.MaterialGeneration || again.Digest != state.Digest {
+		t.Fatal("completed keyring expansion was not idempotent", again, err)
+	}
+}
+
+func sensitiveDomainForTest(t *testing.T, name string) KeyDomain {
+	t.Helper()
+	for _, domain := range allKeyDomains() {
+		if string(domain) == name {
+			return domain
+		}
+	}
+	t.Fatal("missing domain", name)
+	return ""
 }
