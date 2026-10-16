@@ -364,14 +364,14 @@ DEV-028 T2将员工目录收敛为业务查询页：初次显示当前获准在�
 
 DEV-028 T3将创建人员收敛为一次原子业务动作：创建页必填全集团Staff Code，可从当前获准员工中查找并选择直属主管/HOD，也可明确无直属主管。OP-ORG-05同一事务写profile/lifecycle、canonical identifier及可选administrative reporting；Staff Code冲突、主管不存在/跨组织/无权引用或revision变化时不留下半成品员工。成功后页面只以receipt确认提交，再按当前授权和查看日期重读完整资料；命令推进组织图导致本次会话auth epoch变化时，主体与org不变且重核对成功才继续。人员页面把lifecycle `valid_from/valid_to`的业务中文统一显示为“入职日/退职日”，API字段及半开有效期语义不变。
 
-DEV-032在P-ORG-03人员资料创建页增加可折叠批量入口及安全XLSX解析/逐行恢复机制；DEV-033在不增加第二套employee字段的前提下，把同一入口升级为完整员工主数据创建。唯一`Employees`工作表固定18个双语表头，覆盖Staff Code、中英文姓名、Location、Branch Code、BG/Division/Department Code、学历、入职/退职日、职位、Job Family/Career Level Code、HOD Staff Code及可选联系/摘要；明确不包含薪资。preview按每行入职日把受控code解析为ID并验证固定三层父链，返回冻结catalog/graph revision；确认后每行OP-ORG-05原子创建profile、lifecycle、identifier、employment、education及job assignment，所有两端均确认的直属主管关系最后以一次OP-ORG-10写入。文件安全边界、≤100行、逐行状态、原key/body结果确认和不自动认领重复Staff Code的规则保持不变。
+DEV-032在P-ORG-03人员资料创建页增加可折叠批量入口及安全XLSX解析/逐行恢复机制；DEV-033在不增加第二套employee字段的前提下，把同一入口升级为完整员工主数据创建。唯一`Employees`工作表固定18个双语表头，覆盖Staff Code、中英文姓名、Location、Branch Code、BG/Division/Department Code、学历、入职/退职日、职位、Job Family/Career Level Code、HOD Staff Code及可选联系/摘要；明确不包含薪资。选择合法XLSX后页面立即显示文件名并调用preview，不要求再点击第二个按钮；失败时保留明确的“重新校验”，preview成功且错误为零后仍须人工确认才创建。preview按每行入职日把受控code解析为ID并验证固定三层父链，返回冻结catalog/graph revision；确认后每行OP-ORG-05原子创建profile、lifecycle、identifier、employment、education及job assignment，所有两端均确认的直属主管关系最后以一次OP-ORG-10写入。文件安全边界、≤100行、逐行状态、原key/body结果确认和不自动认领重复Staff Code的规则保持不变。
 
 ```mermaid
 flowchart LR
     operator["组织/人员维护者"]
     template["下载空白XLSX模板<br/>固定18个双语字段；无租户数据"]
     workbook["本地填写≤100人<br/>身份＋雇佣＋三层组织code<br/>学历＋任职＋HOD；不含薪资"]
-    preview["按每行入职日解析目录与父链<br/>有界安全解析；不执行公式<br/>冻结catalog/graph；不写数据库"]
+    preview["选择文件即显示文件名并自动preview<br/>按入职日解析目录与父链<br/>有界安全解析；不执行公式；不写数据库"]
     confirm{"错误为0且明确确认？"}
     create["逐行OP-ORG-05原子创建<br/>profile＋lifecycle＋identifier<br/>employment＋education＋assignment"]
     createResult{"单行提交结果"}
