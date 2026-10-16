@@ -43,18 +43,18 @@ func (t Tenure) Current(day string) bool {
 }
 
 type Snapshot struct {
-	SubjectID, OrgID, Timezone            string
-	Active, SessionRevoked                bool
-	SessionEpoch, SubjectEpoch, AuthEpoch int64
-	ExpiresAt, IdleExpiresAt, MFAUntil    time.Time
-	CSRFHash                              []byte
-	CSRFKeyID                             string
-	CSRFVersion                           uint32
-	Assignments                           []Assignment
-	Grants                                []Grant
-	SubjectEmployeeID                     string
-	JobAssignments                        []Tenure
-	Relations                             []Tenure
+	SubjectID, OrgID, Timezone                                          string
+	Active, SessionRevoked                                              bool
+	SessionEpoch, SubjectEpoch, AuthEpoch                               int64
+	ExpiresAt, IdleExpiresAt, MFAUntil                                  time.Time
+	CSRFHash                                                            []byte
+	CSRFKeyID                                                           string
+	CSRFVersion                                                         uint32
+	Assignments                                                         []Assignment
+	Grants                                                              []Grant
+	SubjectEmployeeID, StaffDefaultEmployeeID, StaffDefaultEmployeeFrom string
+	StaffDefaultEmployeeTo                                              *string
+	JobAssignments, Relations, StaffDefaultReports                      []Tenure
 }
 
 func (s Snapshot) Valid(now time.Time) bool {
@@ -67,6 +67,50 @@ func (s Snapshot) day(now time.Time) (string, bool) {
 		return "", false
 	}
 	return now.In(zone).Format("2006-01-02"), true
+}
+func (s Snapshot) staffDefaultTarget(employee string, now time.Time) bool {
+	if employee == "" || s.StaffDefaultEmployeeID == "" {
+		return false
+	}
+	day, ok := s.day(now)
+	if !ok || !within(day, s.StaffDefaultEmployeeFrom, s.StaffDefaultEmployeeTo) {
+		return false
+	}
+	if employee == s.StaffDefaultEmployeeID {
+		return true
+	}
+	for _, relation := range s.StaffDefaultReports {
+		if relation.Kind == "reporting_line" && relation.EmployeeID == employee && relation.ManagerEmployeeID == s.StaffDefaultEmployeeID && relation.Current(day) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s Snapshot) StaffDefaultScope(now time.Time) []string {
+	if !s.Valid(now) || !s.staffDefaultTarget(s.StaffDefaultEmployeeID, now) {
+		return nil
+	}
+	result := make([]string, 0, len(s.StaffDefaultReports)+1)
+	result = append(result, s.StaffDefaultEmployeeID)
+	for _, relation := range s.StaffDefaultReports {
+		if s.staffDefaultTarget(relation.EmployeeID, now) {
+			result = append(result, relation.EmployeeID)
+		}
+	}
+	return result
+}
+
+func (s Snapshot) StaffDefaultCanCreateInterview(employee string, now time.Time) bool {
+	return s.Valid(now) && s.staffDefaultTarget(employee, now)
+}
+
+func (s Snapshot) staffDefaultAllows(capability, category, employee, purpose string, now time.Time) bool {
+	if !s.staffDefaultTarget(employee, now) {
+		return false
+	}
+	return purpose == "organization_management" &&
+		(capability == "organization.read" && category == "metadata" || capability == "pii.read" && category == "pii")
 }
 
 func (s Snapshot) scopeMatches(kind, id, employee, department string, now time.Time) bool {
@@ -140,6 +184,9 @@ func (s Snapshot) AllowsDepartment(capability, category, department, purpose str
 func (s Snapshot) allows(capability, category, employee, department, purpose string, now time.Time, lineage []ObjectReference, source *ObjectReference) bool {
 	if !s.Valid(now) || !SupportedPair(capability, category, purpose) || requiresMFA(capability) && !now.Before(s.MFAUntil) {
 		return false
+	}
+	if s.staffDefaultAllows(capability, category, employee, purpose, now) {
+		return true
 	}
 	assigned := false
 	for _, a := range s.Assignments {

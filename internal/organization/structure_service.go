@@ -28,7 +28,8 @@ func (s *Service) structureAuthority(ctx context.Context, reader Reader, request
 		if !snapshot.Allows("organization.write", "metadata", "", request.Purpose, now) {
 			return snapshot, fault.Forbidden
 		}
-	} else if !snapshot.Allows("organization.read", "metadata", "", request.Purpose, now) {
+	} else if !snapshot.Allows("organization.read", "metadata", "", request.Purpose, now) &&
+		!(operation == "OP-ORG-04" && len(snapshot.StaffDefaultScope(now)) > 0) {
 		return snapshot, fault.NotFound
 	}
 	return snapshot, nil

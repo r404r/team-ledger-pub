@@ -125,6 +125,21 @@ func (r reader) Security(ctx context.Context, hash []byte, org, employee string)
 		return authz.Snapshot{}, safeError(err)
 	}
 	s.SubjectEmployeeID = actor.String
+	var staffTo sql.NullString
+	staffPolicy := "SELECT p.employee_id," + r.dateColumn("e.valid_from") + "," + r.dateColumn("e.valid_to") + " FROM staff_account_access p JOIN employee e ON e.org_id=p.org_id AND e.id=p.employee_id" + r.sql(
+		" WHERE p.org_id=? AND p.subject_id=? AND p.policy_version='staff_default.v1'",
+		" WHERE p.org_id=$1 AND p.subject_id=$2 AND p.policy_version='staff_default.v1'")
+	err = r.db.QueryRowContext(ctx, staffPolicy, s.OrgID, s.SubjectID).Scan(&s.StaffDefaultEmployeeID, &s.StaffDefaultEmployeeFrom, &staffTo)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return authz.Snapshot{}, safeError(err)
+	}
+	if err == nil {
+		s.StaffDefaultEmployeeTo = stringPtr(staffTo)
+		s.StaffDefaultReports, err = r.securityStaffDefaultReports(ctx, s.OrgID, s.StaffDefaultEmployeeID)
+		if err != nil {
+			return authz.Snapshot{}, err
+		}
+	}
 	s.JobAssignments, err = r.securityJobAssignments(ctx, s.OrgID, employee)
 	if err != nil {
 		return authz.Snapshot{}, err
@@ -190,6 +205,28 @@ func (r reader) securityJobAssignments(ctx context.Context, org, employee string
 			return nil, safeError(err)
 		}
 		facts = append(facts, t)
+		if len(facts) > 1000 {
+			return nil, fault.Unavailable
+		}
+	}
+	return facts, safeError(rows.Err())
+}
+func (r reader) securityStaffDefaultReports(ctx context.Context, org, manager string) ([]authz.Tenure, error) {
+	q := "SELECT " + r.tenureColumns("reporting_line") + tenureJoin("reporting_line") + r.sql(
+		" WHERE m.org_id=? AND m.manager_employee_id=? AND m.kind='administrative' LIMIT 1001",
+		" WHERE m.org_id=$1 AND m.manager_employee_id=$2 AND m.kind='administrative' LIMIT 1001")
+	rows, err := r.db.QueryContext(ctx, q, org, manager)
+	if err != nil {
+		return nil, safeError(err)
+	}
+	defer rows.Close()
+	var facts []authz.Tenure
+	for rows.Next() {
+		fact, scanErr := scanTenure(rows, "reporting_line")
+		if scanErr != nil {
+			return nil, safeError(scanErr)
+		}
+		facts = append(facts, fact)
 		if len(facts) > 1000 {
 			return nil, fault.Unavailable
 		}

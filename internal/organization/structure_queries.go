@@ -291,6 +291,9 @@ func (s *Service) directoryScope(ctx context.Context, snap authz.Snapshot, req R
 	scope := DirectoryScope{AuthorizationDate: day}
 	scope.Org = snap.Allows("organization.read", "metadata", "", req.Purpose, now) && (q.Q == "" || snap.Allows("pii.read", "pii", "", req.Purpose, now))
 	employees, departments := map[string]bool{}, map[string]bool{}
+	for _, employee := range snap.StaffDefaultScope(now) {
+		employees[employee] = true
+	}
 	for _, a := range snap.Assignments {
 		if a.ScopeKind == "employee" {
 			employees[a.ScopeID] = true

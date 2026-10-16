@@ -3,7 +3,9 @@ package httpapi_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/httpapi"
 	"github.com/r404r/team-ledger/internal/identity"
 	"github.com/r404r/team-ledger/internal/organization"
@@ -155,6 +158,43 @@ func TestLocalUserAdministrationRequiresPermissionAndInitialPasswordChange(t *te
 	}
 	if f.Count(t, "staff_account_access") != 1 || f.Count(t, "subject_employee") != 1 {
 		t.Fatal("staff account binding and default policy were not committed")
+	}
+	graphRevision = employee.GraphRevision
+	report, createErr := f.Service.Create(ctx, f.Request(f.Owner), f.OrgID, organization.CreateCommand{
+		Profile:                 organization.Profile{LocalName: "直属员工"},
+		Lifecycle:               organization.Lifecycle{ValidFrom: f.Now.Format("2006-01-02")},
+		ManagerEmployeeID:       &employee.ID,
+		ExpectedCatalogRevision: &catalogRevision,
+		ExpectedGraphRevision:   &graphRevision,
+	})
+	if createErr != nil {
+		t.Fatal("create direct report:", createErr)
+	}
+	peer, createErr := f.Service.Create(ctx, f.Request(f.Owner), f.OrgID, organization.CreateCommand{
+		Profile: organization.Profile{LocalName: "同级员工"}, Lifecycle: organization.Lifecycle{ValidFrom: f.Now.Format("2006-01-02")},
+	})
+	if createErr != nil {
+		t.Fatal("create peer:", createErr)
+	}
+	tokenHash, csrfHash := sha256.Sum256([]byte("staff-default-business-session")), sha256.Sum256([]byte("staff-default-csrf"))
+	exec("INSERT INTO session(token_hash,org_id,subject_id,subject_epoch,expires_at,idle_expires_at,mfa_until,revoked,csrf_hash,csrf_version) VALUES(?,?,?,?,?,?,?,0,?,1)", tokenHash[:], f.OrgID, staffUser.SubjectID, int64(1), f.Repo.BindTime(f.Now.Add(8*time.Hour)), f.Repo.BindTime(f.Now.Add(30*time.Minute)), f.Repo.BindTime(f.Now.Add(10*time.Minute)), csrfHash[:])
+	staffRequest := organization.Request{TokenHash: tokenHash[:], Purpose: "organization_management", RequestID: value.NewID()}
+	staffSnapshot, securityErr := f.Repo.Security(ctx, tokenHash[:], f.OrgID, report.ID)
+	if securityErr != nil || staffSnapshot.StaffDefaultEmployeeID != employee.ID || len(staffSnapshot.StaffDefaultReports) != 1 || !staffSnapshot.Allows("organization.read", "metadata", report.ID, staffRequest.Purpose, f.Now) || !staffSnapshot.Allows("pii.read", "pii", report.ID, staffRequest.Purpose, f.Now) {
+		t.Fatal("staff default policy was not loaded for current direct report", securityErr, staffSnapshot)
+	}
+	for _, target := range []string{employee.ID, report.ID} {
+		view, readErr := f.Service.Read(ctx, staffRequest, target, f.Now.Format("2006-01-02"), true)
+		if readErr != nil || view.ID != target || view.Profile == nil {
+			t.Fatal("staff default employee read failed", target, readErr)
+		}
+	}
+	if _, readErr := f.Service.Read(ctx, staffRequest, peer.ID, f.Now.Format("2006-01-02"), true); !errors.Is(readErr, fault.NotFound) {
+		t.Fatal("staff default policy exposed a peer", readErr)
+	}
+	directory, directoryErr := f.Service.Directory(ctx, staffRequest, f.OrgID, organization.DirectoryQuery{AsOf: f.Now.Format("2006-01-02"), IncludeProfile: true, Lifecycle: "active", Limit: 50})
+	if directoryErr != nil || len(directory.Items) != 2 {
+		t.Fatal("staff default directory did not contain self and direct report", directoryErr, len(directory.Items))
 	}
 	duplicateStaff := send(f.Owner, http.MethodPost, "/api/v1/security/users", `{"username":"staff.duplicate","initial_password":"staff duplicate password","account_type":"staff","staff_code":"STAFF-ACCOUNT-001"}`, "security_administration", value.NewID(), nil, "")
 	if duplicateStaff.Status != http.StatusConflict || f.Count(t, "local_account") != 3 || f.Count(t, "staff_account_access") != 1 {
