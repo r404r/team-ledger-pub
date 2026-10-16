@@ -249,6 +249,45 @@ describe('shared protected identity interaction', () => {
     expect(page.find('[data-protected-surface]').exists()).toBe(true)
   })
 
+  it('keeps the selected personnel workbook and pending preview when the file chooser returns focus', async () => {
+    history.replaceState({}, '', `/?as_of=${AS_OF}`)
+    api.reply('POST', `/api/v1/orgs/${ORG}/employees/query`, 200, { items: [], graph_revision: '1', next_cursor: null, search_incomplete: false })
+    const page = await open()
+    const previewing = api.defer('POST', `/api/v1/orgs/${ORG}/employees/import-preview`)
+    const checking = api.defer('GET', '/api/v1/session')
+    const workbook = new File(['synthetic workbook'], 'people.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const input = page.get('input[type=file]')
+    Object.defineProperty(input.element, 'files', { value: [workbook] })
+
+    const selection = input.trigger('change')
+    await nextTick()
+    expect(page.text()).toContain('people.xlsx 正在上传并校验')
+
+    const sessionChecksBeforeFocus = api.matching('GET', '/api/v1/session').length
+    window.dispatchEvent(new Event('focus'))
+    window.dispatchEvent(new Event('focus'))
+    await nextTick()
+    expect(identityState(page)).toBe('authenticated')
+    expect(page.find('input[type=file]').exists()).toBe(true)
+    expect(page.text()).not.toContain('正在核对服务端会话')
+    expect(api.matching('GET', '/api/v1/session')).toHaveLength(sessionChecksBeforeFocus + 1)
+
+    checking.resolve(200, initialSession)
+    previewing.resolve(200, {
+      row_count: 1, catalog_revision: '1', graph_revision: '1', errors: [], rows: [{
+        row_number: 2, staff_code: 'FOCUS-001', local_name: '合成文件选择员工',
+        location: 'Shanghai', branch_code: 'BR-A', business_group_code: 'BG-A', division_code: 'DIV-A', department_code: 'DEP-A',
+        education_level: 'Master', hire_date: AS_OF, position: 'Consultant', job_family_code: 'JF-A', career_level_code: 'P1',
+        departure_date: null, branch_id: OTHER, business_group_id: OTHER, division_id: OTHER, department_id: OTHER,
+        job_family_id: OTHER, career_level_id: OTHER,
+      }],
+    })
+    await selection
+    await settled()
+    expect(page.text()).toContain('people.xlsx 已校验 1 行')
+    expect(page.text()).toContain('合成文件选择员工')
+  })
+
   it('still destroys the retained surface when an internal route check rejects the session', async () => {
     const page = await openGate()
     api.reply('GET', '/api/v1/session', 401, { code: 'UNAUTHENTICATED' })

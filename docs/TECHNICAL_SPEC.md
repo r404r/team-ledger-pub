@@ -132,7 +132,7 @@ R6a/R6b当前代码源：`internal/assessment/`、`internal/store/assessment*.go
 
 DEV-025前端视觉基础集中在`web/src/styles.css`并由`main.ts`静态导入；Vite production build生成内容hash CSS/JS，由Go静态服务同源返回。`App.vue`负责品牌栏、sticky主导航和当前路由状态，`IdentityGate.vue`负责认证态会话条及未认证/首次改密/MFA gate；10个业务页面继续使用原生语义/ARIA和既有scoped专属布局。无远程字体、CSS框架、图标CDN、分析SDK或运行时主题服务；全局层只改变呈现，不缓存或扩大敏感DTO。
 
-DEV-026把`IdentityGate.checkSession`区分为破坏式显式/生命周期核对和路由后台核对。已有`authenticated`会话收到`popstate`时，后台请求仍使用`no-store`并参与generation/AbortController竞态控制，但不提前增加`protectedGeneration`或切换`phase=checking`；pending期间保持身份壳层，返回相同subject、org及auth epoch时确认继续。401调用统一`expireSession`，context变化/敏感期限失效进入`changed`，transport/非成功响应进入`unavailable`，这些失败路径仍清空session并卸载slot。用户显式“重新核对”、focus/pageshow及pagehide继续采用先销毁后核对语义。
+DEV-026把`IdentityGate.checkSession`区分为破坏式显式/生命周期核对和路由后台核对。DEV-039将已有`authenticated`会话收到`popstate`或window focus/pageshow时统一为后台请求：仍使用`no-store`并参与generation/AbortController竞态控制，但不提前增加`protectedGeneration`或切换`phase=checking`；pending期间保持身份壳层和业务组件实例，重叠focus由`resumeCheckPending`合并，返回相同subject、org及auth epoch时确认继续。401调用统一`expireSession`，context变化/敏感期限失效进入`changed`，transport/非成功响应进入`unavailable`，这些失败路径仍清空session并卸载slot。初始checking、新pagehide后的恢复及用户显式“重新核对”继续采用先销毁后核对语义。
 
 DEV-030把认证态`IdentityGate`的原生`details/summary`经deferred Teleport放入`App.vue` sticky顶栏固定target，默认closed且不写local/session storage；浮层absolute定位，不推动业务layout，动态视口限高并内部滚动。DEV-035加入本地TOTP后，未登记/恢复session只渲染账号安全页；business session的本地step-up、factor替换和恢复码重发在模态框完成，不卸载受保护页面，也不自动重放命令。二维码由浏览器本地生成，不调用外部服务；secret/code只保存在当前Vue内存并在取消、失效、离页时清除。
 

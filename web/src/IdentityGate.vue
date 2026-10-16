@@ -60,6 +60,7 @@ const sessionSummary = ref<HTMLElement | null>(null)
 let alive = false
 let generation = 0
 let controller: AbortController | null = null
+let resumeCheckPending = false
 let logoutCSRF: string | null = null
 let expiryTimer: ReturnType<typeof setInterval> | null = null
 let recoveryRequestID = ''
@@ -219,8 +220,8 @@ async function checkSession(preserveProtected = false) {
   const previous = session.value
   const preserve = preserveProtected && previous !== null && phase.value === 'authenticated'
   const operation = beginOperation(preserve ? null : 'checking')
-  // Explicit checks destroy protected instances first. Route checks retain the
-  // current shell until the server proves that the identity context changed.
+  // Route and window-focus checks retain the current shell until the server
+  // proves that the identity context changed. Explicit checks destroy it first.
   if (!preserve) await nextTick()
   if (!isCurrent(operation)) return
   try {
@@ -675,8 +676,18 @@ function routeChanged() {
   returnTo.value = knownReturnRoute()
   if (phase.value === 'authenticated' || phase.value === 'checking') void checkSession(true)
 }
-function resume() {
-  if (phase.value === 'authenticated' || phase.value === 'checking') void checkSession()
+async function resume() {
+  if (phase.value === 'checking') {
+    await checkSession()
+    return
+  }
+  if (phase.value !== 'authenticated' || resumeCheckPending) return
+  resumeCheckPending = true
+  try {
+    await checkSession(true)
+  } finally {
+    resumeCheckPending = false
+  }
 }
 function suspend() {
   if (phase.value !== 'authenticated' && phase.value !== 'checking') return
