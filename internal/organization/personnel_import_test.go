@@ -122,6 +122,26 @@ func TestParsePersonnelWorkbookCoercesIntegerStaffCodeWithoutDuplicateErrors(t *
 		t.Fatalf("preview = %#v", preview)
 	}
 }
+func TestParsePersonnelWorkbookAllowsOptionalEducationPositionAndClassification(t *testing.T) {
+	row := personnelRow("OPTIONAL-001", "可选字段员工", "")
+	for _, column := range []int{8, 10, 11, 12} {
+		row[column] = ""
+	}
+	preview, err := parsePersonnelWorkbook(personnelWorkbook(t, [][]string{row}, -1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Errors) != 0 || preview.Rows[0].EducationLevel != "" || preview.Rows[0].Position != "" || preview.Rows[0].JobFamilyCode != "" || preview.Rows[0].CareerLevelCode != "" {
+		t.Fatalf("optional fields rejected: %#v", preview)
+	}
+}
+
+func TestResolvePersonnelCatalogNormalizesTrimmedCaseInsensitiveUniqueValue(t *testing.T) {
+	entries := []personnelCatalogEntry{{ID: "id-1", Code: "CONSULTING", Label: "Consulting Services"}}
+	if id, code, normalized, ambiguous := resolvePersonnelCatalog(" consulting services ", entries); id != "id-1" || code != "CONSULTING" || !normalized || ambiguous {
+		t.Fatalf("label resolution = %q %q %v %v", id, code, normalized, ambiguous)
+	}
+}
 
 func TestNormalizeExcelSerialDateHonorsWorkbookEpochAndRejectsAmbiguity(t *testing.T) {
 	if got, ok := normalizeExcelSerialDate("1", false); !ok || got != "1900-01-01" {

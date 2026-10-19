@@ -173,7 +173,7 @@ func initialWorkforceCommand(command CreateCommand, employeeID string) (Workforc
 		workforce.Changes = append(workforce.Changes, WorkforceChangeItem{Action: "add", Kind: "education", EmployeeID: employeeID, EducationLevel: &command.Education.Level, ValidFrom: &validFrom, ValidTo: command.Lifecycle.ValidTo})
 	}
 	if command.JobAssignment != nil {
-		workforce.Changes = append(workforce.Changes, WorkforceChangeItem{Action: "add", Kind: "job_assignment", EmployeeID: employeeID, DepartmentID: &command.JobAssignment.DepartmentID, JobFamilyID: &command.JobAssignment.JobFamilyID, CareerLevelID: &command.JobAssignment.CareerLevelID, Position: &command.JobAssignment.Position, ValidFrom: &validFrom, ValidTo: command.Lifecycle.ValidTo})
+		workforce.Changes = append(workforce.Changes, WorkforceChangeItem{Action: "add", Kind: "job_assignment", EmployeeID: employeeID, DepartmentID: &command.JobAssignment.DepartmentID, JobFamilyID: command.JobAssignment.JobFamilyID, CareerLevelID: command.JobAssignment.CareerLevelID, Position: command.JobAssignment.Position, ValidFrom: &validFrom, ValidTo: command.Lifecycle.ValidTo})
 	}
 	if command.ManagerEmployeeID != nil {
 		reportingKind := "administrative"

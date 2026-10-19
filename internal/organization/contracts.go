@@ -25,10 +25,10 @@ type InitialEducation struct {
 	Level string `json:"level"`
 }
 type InitialJobAssignment struct {
-	DepartmentID  string          `json:"department_id"`
-	JobFamilyID   string          `json:"job_family_id"`
-	CareerLevelID string          `json:"career_level_id"`
-	Position      PositionPayload `json:"position"`
+	DepartmentID  string           `json:"department_id"`
+	JobFamilyID   *string          `json:"job_family_id,omitempty"`
+	CareerLevelID *string          `json:"career_level_id,omitempty"`
+	Position      *PositionPayload `json:"position,omitempty"`
 }
 
 type CreateCommand struct {

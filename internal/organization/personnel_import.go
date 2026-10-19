@@ -129,14 +129,27 @@ func personnelCellReference(column, row int) string {
 	return letters + strconv.Itoa(row)
 }
 
+type PersonnelImportCatalogOption struct {
+	ID    string `json:"id"`
+	Code  string `json:"code"`
+	Label string `json:"label,omitempty"`
+	Rank  int    `json:"rank,omitempty"`
+}
+
 type PersonnelImportPreview struct {
-	Rows            []PersonnelImportRow   `json:"rows"`
-	Errors          []PersonnelImportIssue `json:"errors"`
-	Warnings        []PersonnelImportIssue `json:"warnings"`
-	EducationLevels []EducationLevelView   `json:"education_levels"`
-	RowCount        int                    `json:"row_count"`
-	CatalogRevision string                 `json:"catalog_revision,omitempty"`
-	GraphRevision   string                 `json:"graph_revision,omitempty"`
+	Rows            []PersonnelImportRow           `json:"rows"`
+	Errors          []PersonnelImportIssue         `json:"errors"`
+	Warnings        []PersonnelImportIssue         `json:"warnings"`
+	EducationLevels []EducationLevelView           `json:"education_levels"`
+	LegalEntities   []PersonnelImportCatalogOption `json:"legal_entities"`
+	BusinessGroups  []PersonnelImportCatalogOption `json:"business_groups"`
+	Divisions       []PersonnelImportCatalogOption `json:"divisions"`
+	Departments     []PersonnelImportCatalogOption `json:"departments"`
+	JobFamilies     []PersonnelImportCatalogOption `json:"job_families"`
+	CareerLevels    []PersonnelImportCatalogOption `json:"career_levels"`
+	RowCount        int                            `json:"row_count"`
+	CatalogRevision string                         `json:"catalog_revision,omitempty"`
+	GraphRevision   string                         `json:"graph_revision,omitempty"`
 }
 type PersonnelImportReviewCommand struct {
 	Rows []PersonnelImportReviewRow `json:"rows"`
@@ -172,7 +185,7 @@ func (s *Service) ReviewPersonnelImport(ctx context.Context, request Request, or
 	if len(command.Rows) == 0 || len(command.Rows) > personnelWorkbookRows {
 		return PersonnelImportPreview{}, fault.Invalid
 	}
-	preview := PersonnelImportPreview{Rows: make([]PersonnelImportRow, 0, len(command.Rows)), Errors: []PersonnelImportIssue{}, Warnings: []PersonnelImportIssue{}, EducationLevels: []EducationLevelView{}}
+	preview := newPersonnelImportPreview(len(command.Rows))
 	rowNumbers := make(map[int]struct{}, len(command.Rows))
 	for _, input := range command.Rows {
 		if input.RowNumber < 2 || input.RowNumber > 1_048_576 {
@@ -273,7 +286,7 @@ func parsePersonnelWorkbook(raw []byte) (PersonnelImportPreview, error) {
 	if err := validatePersonnelHeaders(rows[0]); err != nil {
 		return PersonnelImportPreview{}, err
 	}
-	preview := PersonnelImportPreview{Rows: []PersonnelImportRow{}, Errors: []PersonnelImportIssue{}, Warnings: []PersonnelImportIssue{}, EducationLevels: []EducationLevelView{}}
+	preview := newPersonnelImportPreview(0)
 	for _, source := range rows[1:] {
 		if rowEmpty(source) {
 			continue
@@ -332,6 +345,21 @@ func parsePersonnelWorkbook(raw []byte) (PersonnelImportPreview, error) {
 	validatePersonnelReferences(&preview)
 	preview.RowCount = len(preview.Rows)
 	return preview, nil
+}
+
+func newPersonnelImportPreview(capacity int) PersonnelImportPreview {
+	return PersonnelImportPreview{
+		Rows:            make([]PersonnelImportRow, 0, capacity),
+		Errors:          []PersonnelImportIssue{},
+		Warnings:        []PersonnelImportIssue{},
+		EducationLevels: []EducationLevelView{},
+		LegalEntities:   []PersonnelImportCatalogOption{},
+		BusinessGroups:  []PersonnelImportCatalogOption{},
+		Divisions:       []PersonnelImportCatalogOption{},
+		Departments:     []PersonnelImportCatalogOption{},
+		JobFamilies:     []PersonnelImportCatalogOption{},
+		CareerLevels:    []PersonnelImportCatalogOption{},
+	}
 }
 
 func validatePersonnelHeaders(row xlsx.Row) error {
@@ -600,25 +628,33 @@ func validatePersonnelRow(source xlsx.Row, preview *PersonnelImportPreview, inde
 			issue("location", "invalid_location")
 		}
 	}
-	if !hasIssue("education_level") && !validEducationLevel(row.EducationLevel) {
-		issue("education_level", "invalid_education_level")
+	if row.EducationLevel != "" && !hasIssue("education_level") {
+		normalized := strings.TrimSpace(row.EducationLevel)
+		if !validEducationLevel(normalized) {
+			issue("education_level", "invalid_education_level")
+		} else if normalized != row.EducationLevel {
+			row.EducationLevel = normalized
+			warning("education_level", "catalog_label_resolved")
+		}
 	}
-	if !hasIssue("position") && !positionValid(PositionPayload{Title: row.Position}) {
+	if row.Position != "" && !hasIssue("position") && !positionValid(PositionPayload{Title: row.Position}) {
 		issue("position", "invalid_position")
 	}
 	for _, field := range []struct {
-		name  string
-		value string
-		limit int
+		name     string
+		value    string
+		limit    int
+		required bool
 	}{
-		{"branch_code", row.BranchCode, 64},
-		{"business_group_code", row.BusinessGroupCode, 64},
-		{"division_code", row.DivisionCode, 64},
-		{"department_code", row.DepartmentCode, 64},
-		{"job_family_code", row.JobFamilyCode, 32},
-		{"career_level_code", row.CareerLevelCode, 32},
+		{"branch_code", row.BranchCode, 64, true},
+		{"business_group_code", row.BusinessGroupCode, 64, true},
+		{"division_code", row.DivisionCode, 64, true},
+		{"department_code", row.DepartmentCode, 64, true},
+		{"job_family_code", row.JobFamilyCode, 32, false},
+		{"career_level_code", row.CareerLevelCode, 32, false},
 	} {
-		if !hasIssue(field.name) && (field.value == "" || strings.TrimSpace(field.value) != field.value || len(field.value) > field.limit) {
+		normalized := strings.TrimSpace(field.value)
+		if !hasIssue(field.name) && (field.required && normalized == "" || normalized != "" && len(normalized) > field.limit) {
 			issue(field.name, "invalid_catalog_code")
 		}
 	}
@@ -638,16 +674,17 @@ type personnelCatalogEntry struct {
 }
 
 func resolvePersonnelCatalog(raw string, entries []personnelCatalogEntry) (string, string, bool, bool) {
+	normalized := strings.TrimSpace(raw)
 	codeMatches := 0
 	var codeMatch personnelCatalogEntry
 	for _, entry := range entries {
-		if entry.Code == raw {
+		if strings.EqualFold(entry.Code, normalized) {
 			codeMatches++
 			codeMatch = entry
 		}
 	}
 	if codeMatches == 1 {
-		return codeMatch.ID, codeMatch.Code, false, false
+		return codeMatch.ID, codeMatch.Code, codeMatch.Code != raw, false
 	}
 	if codeMatches > 1 {
 		return "", "", false, true
@@ -655,7 +692,7 @@ func resolvePersonnelCatalog(raw string, entries []personnelCatalogEntry) (strin
 	labelMatches := 0
 	var labelMatch personnelCatalogEntry
 	for _, entry := range entries {
-		if entry.Label != "" && entry.Label == raw {
+		if entry.Label != "" && strings.EqualFold(strings.TrimSpace(entry.Label), normalized) {
 			labelMatches++
 			labelMatch = entry
 		}
@@ -664,6 +701,15 @@ func resolvePersonnelCatalog(raw string, entries []personnelCatalogEntry) (strin
 		return labelMatch.ID, labelMatch.Code, true, false
 	}
 	return "", "", false, labelMatches > 1
+}
+
+func appendPersonnelCatalogOption(target *[]PersonnelImportCatalogOption, option PersonnelImportCatalogOption) {
+	for _, existing := range *target {
+		if existing.ID == option.ID {
+			return
+		}
+	}
+	*target = append(*target, option)
 }
 
 func (s *Service) resolvePersonnelImportCatalogs(ctx context.Context, org string, preview *PersonnelImportPreview, includeLabels bool) error {
@@ -728,11 +774,11 @@ func (s *Service) resolvePersonnelImportCatalogs(ctx context.Context, org string
 				preview.EducationLevels = append(preview.EducationLevels, level)
 			}
 		}
-		resolve := func(field string, raw *string, target *string, entries []personnelCatalogEntry) {
-			if hasIssue(field) {
+		resolve := func(field string, raw *string, target *string, entries []personnelCatalogEntry, required bool) {
+			if hasIssue(field) || *raw == "" && !required {
 				return
 			}
-			id, code, labelMatch, ambiguous := resolvePersonnelCatalog(*raw, entries)
+			id, code, normalized, ambiguous := resolvePersonnelCatalog(*raw, entries)
 			switch {
 			case ambiguous:
 				issue(field, "ambiguous_catalog_label")
@@ -740,7 +786,7 @@ func (s *Service) resolvePersonnelImportCatalogs(ctx context.Context, org string
 				issue(field, "unknown_catalog_code")
 			default:
 				*raw, *target = code, id
-				if labelMatch {
+				if normalized {
 					warning(field, "catalog_label_resolved")
 				}
 			}
@@ -749,36 +795,52 @@ func (s *Service) resolvePersonnelImportCatalogs(ctx context.Context, org string
 		for _, entry := range catalogs.LegalEntities {
 			if entry.Active {
 				legalEntities = append(legalEntities, personnelCatalogEntry{ID: entry.ID, Code: entry.Code, Label: entry.DisplayName})
+				appendPersonnelCatalogOption(&preview.LegalEntities, PersonnelImportCatalogOption{ID: entry.ID, Code: entry.Code, Label: entry.DisplayName})
 			}
 		}
 		orgUnits := make(map[string][]personnelCatalogEntry, 3)
 		for _, entry := range catalogs.OrgUnits {
 			if entry.Active {
 				orgUnits[entry.Kind] = append(orgUnits[entry.Kind], personnelCatalogEntry{ID: entry.ID, Code: entry.Code, Label: entry.Label})
+				option := PersonnelImportCatalogOption{ID: entry.ID, Code: entry.Code, Label: entry.Label}
+				switch entry.Kind {
+				case "business_group":
+					appendPersonnelCatalogOption(&preview.BusinessGroups, option)
+				case "division":
+					appendPersonnelCatalogOption(&preview.Divisions, option)
+				case "department":
+					appendPersonnelCatalogOption(&preview.Departments, option)
+				}
 			}
 		}
 		jobFamilies := make([]personnelCatalogEntry, 0, len(catalogs.JobFamilies))
 		for _, entry := range catalogs.JobFamilies {
 			if entry.Active {
 				jobFamilies = append(jobFamilies, personnelCatalogEntry{ID: entry.ID, Code: entry.Code, Label: entry.Label})
+				appendPersonnelCatalogOption(&preview.JobFamilies, PersonnelImportCatalogOption{ID: entry.ID, Code: entry.Code, Label: entry.Label})
 			}
 		}
 		careerLevels := make([]personnelCatalogEntry, 0, len(catalogs.CareerLevels))
 		for _, entry := range catalogs.CareerLevels {
 			if entry.Active {
 				careerLevels = append(careerLevels, personnelCatalogEntry{ID: entry.ID, Code: entry.Code, Label: entry.Label})
+				appendPersonnelCatalogOption(&preview.CareerLevels, PersonnelImportCatalogOption{ID: entry.ID, Code: entry.Code, Label: entry.Label, Rank: entry.Rank})
 			}
 		}
-		resolve("branch_code", &row.BranchCode, &row.BranchID, legalEntities)
-		resolve("business_group_code", &row.BusinessGroupCode, &row.BusinessGroupID, orgUnits["business_group"])
-		resolve("division_code", &row.DivisionCode, &row.DivisionID, orgUnits["division"])
-		resolve("department_code", &row.DepartmentCode, &row.DepartmentID, orgUnits["department"])
-		resolve("job_family_code", &row.JobFamilyCode, &row.JobFamilyID, jobFamilies)
-		resolve("career_level_code", &row.CareerLevelCode, &row.CareerLevelID, careerLevels)
-		if !hasIssue("education_level") {
+		resolve("branch_code", &row.BranchCode, &row.BranchID, legalEntities, true)
+		resolve("business_group_code", &row.BusinessGroupCode, &row.BusinessGroupID, orgUnits["business_group"], true)
+		resolve("division_code", &row.DivisionCode, &row.DivisionID, orgUnits["division"], true)
+		resolve("department_code", &row.DepartmentCode, &row.DepartmentID, orgUnits["department"], true)
+		resolve("job_family_code", &row.JobFamilyCode, &row.JobFamilyID, jobFamilies, false)
+		resolve("career_level_code", &row.CareerLevelCode, &row.CareerLevelID, careerLevels, false)
+		if row.EducationLevel != "" && !hasIssue("education_level") {
 			educationFound := false
 			for _, level := range catalogs.EducationLevels {
-				educationFound = educationFound || level.Code == row.EducationLevel
+				educationFound = educationFound || strings.EqualFold(level.Code, strings.TrimSpace(row.EducationLevel))
+				if strings.EqualFold(level.Code, strings.TrimSpace(row.EducationLevel)) && row.EducationLevel != level.Code {
+					row.EducationLevel = level.Code
+					warning("education_level", "catalog_label_resolved")
+				}
 			}
 			if !educationFound {
 				issue("education_level", "unknown_education_level")

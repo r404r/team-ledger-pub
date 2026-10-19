@@ -78,12 +78,14 @@ func TestWorkforceChangesRejectHODSecondaryUnknownEmployeeAndPartialSets(t *test
 
 func TestInitialWorkforceCommandBuildsCompleteEmployeeFacts(t *testing.T) {
 	staff, catalog, graph := "S001", "3", "3"
+	jobFamily, careerLevel := workforceFamily, workforceLevel
+	position := PositionPayload{Title: "Consultant"}
 	command := CreateCommand{
 		Lifecycle:               Lifecycle{ValidFrom: "2026-10-11"},
 		StaffCode:               &staff,
 		Employment:              &InitialEmployment{LegalEntityID: workforceEntity, LocationCode: LocationShanghai},
 		Education:               &InitialEducation{Level: EducationMaster},
-		JobAssignment:           &InitialJobAssignment{DepartmentID: workforceDept, JobFamilyID: workforceFamily, CareerLevelID: workforceLevel, Position: PositionPayload{Title: "Consultant"}},
+		JobAssignment:           &InitialJobAssignment{DepartmentID: workforceDept, JobFamilyID: &jobFamily, CareerLevelID: &careerLevel, Position: &position},
 		ExpectedCatalogRevision: &catalog,
 		ExpectedGraphRevision:   &graph,
 	}
@@ -98,6 +100,26 @@ func TestInitialWorkforceCommandBuildsCompleteEmployeeFacts(t *testing.T) {
 	}
 	if !validWorkforceChange(workforce) {
 		t.Fatalf("invalid complete workforce command: %#v", workforce)
+	}
+}
+
+func TestInitialWorkforceCommandAllowsUnclassifiedDepartmentAssignment(t *testing.T) {
+	staff, catalog, graph := "S002", "3", "3"
+	command := CreateCommand{
+		Lifecycle:               Lifecycle{ValidFrom: "2026-10-11"},
+		StaffCode:               &staff,
+		Employment:              &InitialEmployment{LegalEntityID: workforceEntity, LocationCode: LocationShanghai},
+		JobAssignment:           &InitialJobAssignment{DepartmentID: workforceDept},
+		ExpectedCatalogRevision: &catalog,
+		ExpectedGraphRevision:   &graph,
+	}
+	workforce, ok := initialWorkforceCommand(command, workforceEmployee)
+	if !ok || len(workforce.Changes) != 3 || !validWorkforceChange(workforce) {
+		t.Fatalf("optional initial workforce = %#v has=%v", workforce, ok)
+	}
+	assignment := workforce.Changes[2]
+	if assignment.Kind != "job_assignment" || assignment.JobFamilyID != nil || assignment.CareerLevelID != nil || assignment.Position != nil {
+		t.Fatalf("unclassified assignment = %#v", assignment)
 	}
 }
 

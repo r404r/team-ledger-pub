@@ -48,6 +48,11 @@ func TestAPIPersonnelImportTemplateAndPreviewAreAuthorizedAndReadOnly(t *testing
 			if preview.RowCount != 1 || len(preview.Rows) != 1 || len(preview.Errors) != 0 || preview.CatalogRevision != "3" || preview.GraphRevision != "3" || preview.Rows[0].StaffCode != "EMP-IMPORT-001" || preview.Rows[0].HireDate != "2026-10-16" || preview.Rows[0].BranchID != catalogs.Items[0].ID || preview.Rows[0].DepartmentID != catalogs.Items[3].ID || preview.Rows[0].JobFamilyID != catalogs.Items[4].ID || preview.Rows[0].CareerLevelID != catalogs.Items[5].ID || f.Count(t, "employee") != 0 {
 				t.Fatalf("read-only preview = %#v employees=%d", preview, f.Count(t, "employee"))
 			}
+			if len(preview.LegalEntities) != 1 || preview.LegalEntities[0].Code != "BR" || preview.LegalEntities[0].Label != "Synthetic Branch" ||
+				len(preview.BusinessGroups) != 1 || len(preview.Divisions) != 1 || len(preview.Departments) != 1 ||
+				len(preview.JobFamilies) != 1 || len(preview.CareerLevels) != 1 || preview.CareerLevels[0].Rank != 1 {
+				t.Fatalf("catalog mapping options = %#v", preview)
+			}
 
 			numericRow := append([]string(nil), row...)
 			numericRow[0], numericRow[9] = "7107", "46311"
@@ -64,7 +69,7 @@ func TestAPIPersonnelImportTemplateAndPreviewAreAuthorizedAndReadOnly(t *testing
 			}
 
 			labelRow := append([]string(nil), row...)
-			labelRow[4], labelRow[5], labelRow[6], labelRow[7], labelRow[11] = "Synthetic Branch", "Synthetic Group", "Synthetic Division", "Synthetic Department", "Consulting"
+			labelRow[4], labelRow[5], labelRow[6], labelRow[7], labelRow[11] = " synthetic branch ", "SYNTHETIC GROUP", "Synthetic Division", "Synthetic Department", "Consulting"
 			labelRequest := apiRequest(t, f, f.Owner, http.MethodPost, previewPath, string(batchWorkbook(t, headers, labelRow)), "")
 			labelRequest.Header.Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 			var labelPreview organization.PersonnelImportPreview
@@ -88,6 +93,20 @@ func TestAPIPersonnelImportTemplateAndPreviewAreAuthorizedAndReadOnly(t *testing
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, reviewPath, string(reviewJSON), ""), http.StatusOK, &reviewed)
 			if len(reviewed.Errors) != 1 || reviewed.Errors[0].Code != "unknown_education_level" || reviewed.Rows[0].Location != "Shanghai" || reviewed.Rows[0].HireDate != "2026-10-16" || reviewed.Rows[0].BranchCode != "BR" {
 				t.Fatalf("editable review = %#v", reviewed)
+			}
+			optionalReview := organization.PersonnelImportReviewCommand{Rows: []organization.PersonnelImportReviewRow{{
+				RowNumber: 2, StaffCode: "OPTIONAL-001", LocalName: "可选字段员工", Location: "Shanghai",
+				BranchCode: "BR", BusinessGroupCode: "BG", DivisionCode: "DIV", DepartmentCode: "DEP",
+				HireDate: "2026-10-16",
+			}}}
+			optionalJSON, err := json.Marshal(optionalReview)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var optionalPreview organization.PersonnelImportPreview
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, reviewPath, string(optionalJSON), ""), http.StatusOK, &optionalPreview)
+			if len(optionalPreview.Errors) != 0 || optionalPreview.Rows[0].JobFamilyID != "" || optionalPreview.Rows[0].CareerLevelID != "" {
+				t.Fatalf("optional review = %#v", optionalPreview)
 			}
 
 			largeReview := organization.PersonnelImportReviewCommand{Rows: make([]organization.PersonnelImportReviewRow, 100)}
