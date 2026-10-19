@@ -37,7 +37,25 @@ type ImportRow = {
 }
 type ImportIssue = { row_number: number; sheet: string; cell?: string; field: string; code: string }
 type EducationLevel = { code: string; rank: number }
-type Preview = { rows: ImportRow[]; errors: ImportIssue[]; warnings: ImportIssue[]; education_levels: EducationLevel[]; row_count: number; catalog_revision: string; graph_revision: string }
+type CatalogOption = { id: string; code: string; label?: string; rank?: number }
+type Preview = {
+  rows: ImportRow[]
+  errors: ImportIssue[]
+  warnings: ImportIssue[]
+  education_levels: EducationLevel[]
+  legal_entities: CatalogOption[]
+  business_groups: CatalogOption[]
+  divisions: CatalogOption[]
+  departments: CatalogOption[]
+  job_families: CatalogOption[]
+  career_levels: CatalogOption[]
+  row_count: number
+  catalog_revision: string
+  graph_revision: string
+}
+type CatalogField = 'branch_code' | 'business_group_code' | 'division_code' | 'department_code' | 'job_family_code' | 'career_level_code'
+type CatalogKind = 'legal_entity' | 'business_group' | 'division' | 'department' | 'job_family' | 'career_level'
+type CatalogDraft = { field: CatalogField; kind: CatalogKind; source: string; code: string; label: string; valid_from: string; rank?: number }
 type WorkbookDiagnostic = { sheet?: string; cell?: string; code: string }
 type WorkbookFailure = { status: number; requestID?: string; diagnostic?: WorkbookDiagnostic }
 type Employee = {
@@ -77,6 +95,7 @@ const reportingComplete = ref(false)
 const fileGeneration = ref(0)
 const dirty = ref(false)
 const educationRanks = ref<Record<string, number>>({})
+const catalogDrafts = ref<CatalogDraft[]>([])
 let controller: AbortController | null = null
 
 const busy = computed(() => phase.value !== 'idle')
@@ -95,6 +114,15 @@ const unknownEducationLevels = computed(() => {
     .map(issue => rows.get(issue.row_number)?.education_level ?? '')
     .filter(Boolean))]
 })
+const catalogFieldDefinitions: { field: CatalogField; kind: CatalogKind; label: string; limit: number }[] = [
+  { field: 'branch_code', kind: 'legal_entity', label: 'Branch', limit: 64 },
+  { field: 'business_group_code', kind: 'business_group', label: 'Business Group', limit: 64 },
+  { field: 'division_code', kind: 'division', label: 'Division', limit: 64 },
+  { field: 'department_code', kind: 'department', label: 'Department', limit: 64 },
+  { field: 'job_family_code', kind: 'job_family', label: 'Job Family', limit: 32 },
+  { field: 'career_level_code', kind: 'career_level', label: 'Career Level', limit: 32 },
+]
+const catalogFieldLabels = Object.fromEntries(catalogFieldDefinitions.map(item => [item.field, item.label])) as Record<CatalogField, string>
 const issueMessages: Record<string, string> = {
   text_required: '该单元格类型需要人工编辑',
   staff_code_required: 'Staff Code 必填',
@@ -211,11 +239,47 @@ function resetResults() {
   notice.value = ''
   dirty.value = false
   educationRanks.value = {}
+  catalogDrafts.value = []
 }
+
+function utf8Length(value: string) {
+  return new TextEncoder().encode(value).length
+}
+
+function buildCatalogDrafts(safePreview: Preview) {
+  const drafts: CatalogDraft[] = []
+  const seen = new Set<string>()
+  let nextRank = safePreview.career_levels.reduce((maximum, level) => Math.max(maximum, level.rank ?? 0), 0) + 1
+  for (const issue of safePreview.errors) {
+    if (issue.code !== 'unknown_catalog_code') continue
+    const definition = catalogFieldDefinitions.find(item => item.field === issue.field)
+    const row = safePreview.rows.find(item => item.row_number === issue.row_number)
+    if (!definition || !row) continue
+    const source = row[definition.field].trim()
+    const key = `${definition.field}\u0000${source}`
+    if (!source || seen.has(key)) continue
+    seen.add(key)
+    const code = utf8Length(source) <= definition.limit ? source : ''
+    const matchingDates = safePreview.rows.filter(item => item[definition.field].trim() === source).map(item => item.hire_date).filter(Boolean).sort()
+    drafts.push({
+      field: definition.field,
+      kind: definition.kind,
+      source,
+      code,
+      label: source,
+      valid_from: matchingDates[0] ?? props.asOf,
+      ...(definition.kind === 'career_level' ? { rank: nextRank++ } : {}),
+    })
+  }
+  catalogDrafts.value = drafts
+}
+
 function acceptPreview(parsed: Preview, message: string) {
+  const catalogLists = [parsed?.legal_entities, parsed?.business_groups, parsed?.divisions, parsed?.departments, parsed?.job_families, parsed?.career_levels]
   if (!parsed || !Array.isArray(parsed.rows) || !Array.isArray(parsed.errors) || !parsed.errors.every(validImportIssue) ||
     !Array.isArray(parsed.warnings) || !parsed.warnings.every(validImportIssue) || !Array.isArray(parsed.education_levels) ||
     !parsed.education_levels.every(level => typeof level?.code === 'string' && level.code.length > 0 && Number.isInteger(level.rank) && level.rank > 0) ||
+    !catalogLists.every(list => Array.isArray(list) && list.every(option => typeof option?.id === 'string' && typeof option?.code === 'string')) ||
     parsed.row_count !== parsed.rows.length || parsed.row_count < 1 || parsed.row_count > 100) throw { status: 503 } satisfies WorkbookFailure
   const catalogRevision = typeof parsed.catalog_revision === 'string' ? parsed.catalog_revision : ''
   const graphRevision = typeof parsed.graph_revision === 'string' ? parsed.graph_revision : ''
@@ -230,7 +294,8 @@ function acceptPreview(parsed: Preview, message: string) {
   const unknown = [...new Set(safePreview.rows.map(row => row.education_level).filter(code => code && !known.has(code)))]
   let nextRank = safePreview.education_levels.reduce((maximum, level) => Math.max(maximum, level.rank), 0) + 1
   educationRanks.value = Object.fromEntries(unknown.map(code => [code, nextRank++]))
-  notice.value = safePreview.errors.length ? `${message}发现 ${safePreview.errors.length} 个错误；可直接编辑预览表，再执行“校验编辑内容”。` : `${message}已校验 ${safePreview.row_count} 行，尚未创建人员。`
+  buildCatalogDrafts(safePreview)
+  notice.value = safePreview.errors.length ? `${message}发现 ${safePreview.errors.length} 个错误；可直接编辑预览表，或显式适配缺失目录，再重新校验。` : `${message}已校验 ${safePreview.row_count} 行，尚未创建人员。`
 }
 
 function markEdited() {
@@ -263,19 +328,23 @@ function reviewPayload() {
   }))
 }
 
+async function requestReview(message: string) {
+  const response = await api(`/orgs/${props.session.org_id}/employees/import-review`, {
+    method: 'POST',
+    headers: csrfHeaders(true),
+    body: JSON.stringify({ rows: reviewPayload() }),
+  })
+  if (!response.ok) throw { status: response.status } satisfies WorkbookFailure
+  acceptPreview(await response.json() as Preview, message)
+}
+
 async function reviewRows() {
   if (busy.value || !preview.value || executionLocked.value) return
   phase.value = 'reviewing'
   errorMessage.value = ''
   controller = new AbortController()
   try {
-    const response = await api(`/orgs/${props.session.org_id}/employees/import-review`, {
-      method: 'POST',
-      headers: csrfHeaders(true),
-      body: JSON.stringify({ rows: reviewPayload() }),
-    })
-    if (!response.ok) throw { status: response.status } satisfies WorkbookFailure
-    acceptPreview(await response.json() as Preview, '编辑内容')
+    await requestReview('编辑内容')
   } catch (error) {
     if ((error as Error).name !== 'AbortError') errorMessage.value = workbookFailure(error)
   } finally {
@@ -308,8 +377,7 @@ async function appendEducationLevels() {
       }),
     })
     if (!response.ok) throw Object.assign(new Error(String(response.status)), { status: response.status })
-    phase.value = 'idle'
-    await reviewRows()
+    await requestReview('学历目录追加后')
   } catch (error) {
     const status = (error as { status?: number }).status
     if (status === 401) emit('session-expired')
@@ -318,6 +386,106 @@ async function appendEducationLevels() {
     if (phase.value === 'cataloging') stopOperation()
   }
 }
+type CatalogChangeResult = { catalog_revision: string; graph_revision: string; items: { kind: string; id: string }[] }
+
+async function submitCatalogChanges(changes: Record<string, unknown>[]) {
+  if (!preview.value) throw Object.assign(new Error('422'), { status: 422 })
+  const response = await api(`/orgs/${props.session.org_id}/workforce-catalog-changes`, {
+    method: 'POST',
+    headers: csrfHeaders(true, crypto.randomUUID()),
+    body: JSON.stringify({
+      expected_catalog_revision: preview.value.catalog_revision,
+      expected_graph_revision: preview.value.graph_revision,
+      changes,
+    }),
+  })
+  if (!response.ok) throw Object.assign(new Error(String(response.status)), { status: response.status })
+  const result = await response.json() as CatalogChangeResult
+  if (!/^[1-9]\d*$/.test(result.catalog_revision) || !/^[1-9]\d*$/.test(result.graph_revision) || !Array.isArray(result.items) || result.items.length !== changes.length) {
+    throw Object.assign(new Error('503'), { status: 503 })
+  }
+  return result
+}
+
+function catalogDraftError(drafts: CatalogDraft[]) {
+  const seen = new Set<string>()
+  for (const draft of drafts) {
+    const definition = catalogFieldDefinitions.find(item => item.field === draft.field)!
+    if (!draft.code || draft.code.trim() !== draft.code || utf8Length(draft.code) > definition.limit) return `${catalogFieldLabels[draft.field]} 的Code不能为空、含首尾空格或超过${definition.limit}字节。`
+    if (!draft.label || draft.label.trim() !== draft.label || utf8Length(draft.label) > 200) return `${catalogFieldLabels[draft.field]} 的显示名不能为空、含首尾空格或超过200字节。`
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(draft.valid_from)) return `${catalogFieldLabels[draft.field]} 的生效日必须为YYYY-MM-DD。`
+    if (draft.kind === 'career_level' && (!Number.isInteger(draft.rank) || draft.rank! < 1 || draft.rank! > 10000)) return 'Career Level排序必须是1–10000的整数。'
+    const key = `${draft.kind}\u0000${draft.code.toLocaleLowerCase('en-US')}`
+    if (seen.has(key)) return `同类目录Code重复：${draft.code}`
+    seen.add(key)
+  }
+  return ''
+}
+
+function hierarchyChanges(createdIDs: Set<string>) {
+  const byChild = new Map<string, { parent: string; valid_from: string }>()
+  for (const row of executions.value) {
+    for (const pair of [
+      { child: row.division_id, parent: row.business_group_id },
+      { child: row.department_id, parent: row.division_id },
+    ]) {
+      if (!createdIDs.has(pair.child) || !pair.parent) continue
+      const existing = byChild.get(pair.child)
+      if (existing && existing.parent !== pair.parent) throw Object.assign(new Error('hierarchy'), { status: 422 })
+      if (!existing || row.hire_date < existing.valid_from) byChild.set(pair.child, { parent: pair.parent, valid_from: row.hire_date })
+    }
+  }
+  return [...byChild].map(([child, relation]) => ({ action: 'create', kind: 'org_unit_parent', ref: child, parent_ref: relation.parent, valid_from: relation.valid_from }))
+}
+
+async function appendMissingCatalogs() {
+  if (busy.value || !preview.value || !catalogDrafts.value.length || executionLocked.value) return
+  const drafts = catalogDrafts.value.map(draft => ({ ...draft }))
+  const validation = catalogDraftError(drafts)
+  if (validation) {
+    errorMessage.value = validation
+    return
+  }
+  phase.value = 'cataloging'
+  errorMessage.value = ''
+  controller = new AbortController()
+  try {
+    const changes = drafts.map(draft => ({
+      action: 'create',
+      kind: draft.kind,
+      code: draft.code,
+      label: draft.label,
+      valid_from: draft.valid_from,
+      ...(draft.kind === 'career_level' ? { rank: draft.rank } : {}),
+    }))
+    const result = await submitCatalogChanges(changes)
+    const createdIDs = new Set(result.items.map(item => item.id))
+    for (const row of executions.value) {
+      for (const draft of drafts) {
+        if (row[draft.field].trim() === draft.source) row[draft.field] = draft.code
+      }
+    }
+    if (preview.value) {
+      preview.value.catalog_revision = result.catalog_revision
+      preview.value.graph_revision = result.graph_revision
+    }
+    await requestReview('缺失目录新增后')
+    const relations = hierarchyChanges(createdIDs)
+    if (relations.length) {
+      await submitCatalogChanges(relations)
+      await requestReview('目录层级建立后')
+    }
+  } catch (error) {
+    const status = (error as { status?: number }).status
+    if (status === 401) emit('session-expired')
+    else if (status === 409) errorMessage.value = '目录已被其他操作修改；请重新校验后再适配。'
+    else if (status === 422) errorMessage.value = '同一Division或Department在文件中对应多个上级；请修正组织路径后重新校验。'
+    else errorMessage.value = '目录新增结果未能确认；员工尚未创建。请先到组织树核对，再点击“校验编辑内容”。'
+  } finally {
+    if (phase.value === 'cataloging') stopOperation()
+  }
+}
+
 
 async function chooseWorkbook(event: Event) {
   if (busy.value || executionLocked.value) return
@@ -491,12 +659,12 @@ function createBody(row: RowExecution, catalog: Catalog) {
     lifecycle: { valid_from: row.hire_date, valid_to: row.departure_date },
     staff_code: row.staff_code,
     employment: { legal_entity_id: row.branch_id, location_code: row.location },
-    education: { level: row.education_level },
+    ...(row.education_level ? { education: { level: row.education_level } } : {}),
     job_assignment: {
       department_id: row.department_id,
-      job_family_id: row.job_family_id,
-      career_level_id: row.career_level_id,
-      position: { title: row.position },
+      ...(row.job_family_id ? { job_family_id: row.job_family_id } : {}),
+      ...(row.career_level_id ? { career_level_id: row.career_level_id } : {}),
+      ...(row.position ? { position: { title: row.position } } : {}),
     },
     expected_catalog_revision: catalog.catalog_revision,
     expected_graph_revision: catalog.graph_revision,
@@ -658,7 +826,7 @@ onBeforeUnmount(() => stopOperation())
       <div class="import-intro">
         <div>
           <h2>批量创建人员</h2>
-          <p>最多 100 人。完整导入身份、雇佣关系、组织任职、学历及直属主管；薪资不在此功能导入。Staff Code 可为文本或整数单元格；日期可为 Excel 日期、YYYY-MM-DD、YYYY/M/D、M/D/YYYY、YYYY.M.D 或 YYYY年M月D日。预览中的全部字段均可修正。</p>
+          <p>最多 100 人。Staff Code、姓名、Location、Branch、BG、Division、Department与入职日必填；学历、职位、职系、职级可空。薪资不在此功能导入。Staff Code 可为文本或整数单元格；日期可为 Excel 日期、YYYY-MM-DD、YYYY/M/D、M/D/YYYY、YYYY.M.D 或 YYYY年M月D日。全部字段均可在预览中修正。</p>
         </div>
         <button type="button" class="secondary" :disabled="busy" @click="downloadTemplate">下载 XLSX 模板</button>
       </div>
@@ -698,6 +866,23 @@ onBeforeUnmount(() => stopOperation())
           <label v-for="code in unknownEducationLevels" :key="code"><span>{{ code }}</span><input v-model.number="educationRanks[code]" type="number" min="1" max="10000" step="1" :disabled="busy || executionLocked" aria-label="学历排序"></label>
           <button type="button" class="secondary" :disabled="busy || executionLocked || !preview.catalog_revision" @click="appendEducationLevels">{{ phase === 'cataloging' ? '正在追加…' : '确认追加并重新校验' }}</button>
         </section>
+        <section v-if="catalogDrafts.length" class="catalog-adaptation">
+          <div class="catalog-adaptation-head">
+            <div><strong>适配缺失目录</strong><p>系统不会静默创建主数据。请先核对Code、显示名、生效日与职级排序；确认后新增目录、建立本文件中的BG → Division → Department关系，并重新校验。</p></div>
+            <button type="button" class="secondary" :disabled="busy || executionLocked || !preview.catalog_revision" @click="appendMissingCatalogs">{{ phase === 'cataloging' ? '正在建立目录…' : '确认新增目录并重新校验' }}</button>
+          </div>
+          <div class="catalog-adaptation-grid">
+            <div class="catalog-draft catalog-draft-header"><span>类型 / 原值</span><span>Code</span><span>显示名</span><span>生效日</span><span>排序</span></div>
+            <div v-for="draft in catalogDrafts" :key="`${draft.field}-${draft.source}`" class="catalog-draft">
+              <span><strong>{{ catalogFieldLabels[draft.field] }}</strong><small>{{ draft.source }}</small></span>
+              <input v-model="draft.code" :aria-label="`${catalogFieldLabels[draft.field]} Code`" :disabled="busy || executionLocked">
+              <input v-model="draft.label" :aria-label="`${catalogFieldLabels[draft.field]} 显示名`" :disabled="busy || executionLocked">
+              <input v-model="draft.valid_from" type="date" :aria-label="`${catalogFieldLabels[draft.field]} 生效日`" :disabled="busy || executionLocked">
+              <input v-if="draft.kind === 'career_level'" v-model.number="draft.rank" type="number" min="1" max="10000" step="1" aria-label="Career Level排序" :disabled="busy || executionLocked">
+              <span v-else>—</span>
+            </div>
+          </div>
+        </section>
         <div class="import-table-wrap">
           <table>
             <thead><tr><th>行</th><th>Staff Code</th><th>本地姓名</th><th>英文姓名</th><th>Location</th><th>Branch</th><th>Business Group</th><th>Division</th><th>Department</th><th>学历</th><th>入职日</th><th>职位</th><th>职系</th><th>职级</th><th>HOD Staff Code</th><th>退职日</th><th>邮箱</th><th>电话</th><th>资料摘要</th><th>结果</th></tr></thead>
@@ -708,15 +893,15 @@ onBeforeUnmount(() => stopOperation())
                 <td><input v-model="row.local_name" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
                 <td><input v-model="row.english_name" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
                 <td><input v-model="row.location" class="edit-input" list="personnel-locations" :disabled="busy || executionLocked" @input="markEdited"></td>
-                <td><input v-model="row.branch_code" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
-                <td><input v-model="row.business_group_code" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
-                <td><input v-model="row.division_code" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
-                <td><input v-model="row.department_code" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.branch_code" class="edit-input" list="personnel-branches" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.business_group_code" class="edit-input" list="personnel-business-groups" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.division_code" class="edit-input" list="personnel-divisions" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.department_code" class="edit-input" list="personnel-departments" :disabled="busy || executionLocked" @input="markEdited"></td>
                 <td><input v-model="row.education_level" class="edit-input" list="personnel-education-levels" :disabled="busy || executionLocked" @input="markEdited"></td>
                 <td><input v-model="row.hire_date" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
                 <td><input v-model="row.position" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
-                <td><input v-model="row.job_family_code" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
-                <td><input v-model="row.career_level_code" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.job_family_code" class="edit-input" list="personnel-job-families" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.career_level_code" class="edit-input" list="personnel-career-levels" :disabled="busy || executionLocked" @input="markEdited"></td>
                 <td><input v-model="row.manager_staff_code" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
                 <td><input v-model="row.departure_date" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
                 <td><input v-model="row.email" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
@@ -727,8 +912,14 @@ onBeforeUnmount(() => stopOperation())
             </tbody>
           </table>
         </div>
-          <datalist id="personnel-locations"><option value="Shanghai"></option><option value="Wuxi"></option><option value="Tokyo"></option></datalist>
-          <datalist id="personnel-education-levels"><option v-for="level in preview.education_levels" :key="level.code" :value="level.code"></option></datalist>
+        <datalist id="personnel-locations"><option value="Shanghai"></option><option value="Wuxi"></option><option value="Tokyo"></option></datalist>
+        <datalist id="personnel-education-levels"><option v-for="level in preview.education_levels" :key="level.code" :value="level.code"></option></datalist>
+        <datalist id="personnel-branches"><option v-for="item in preview.legal_entities" :key="item.id" :value="item.code">{{ item.label }}</option></datalist>
+        <datalist id="personnel-business-groups"><option v-for="item in preview.business_groups" :key="item.id" :value="item.code">{{ item.label }}</option></datalist>
+        <datalist id="personnel-divisions"><option v-for="item in preview.divisions" :key="item.id" :value="item.code">{{ item.label }}</option></datalist>
+        <datalist id="personnel-departments"><option v-for="item in preview.departments" :key="item.id" :value="item.code">{{ item.label }}</option></datalist>
+        <datalist id="personnel-job-families"><option v-for="item in preview.job_families" :key="item.id" :value="item.code">{{ item.label }}</option></datalist>
+        <datalist id="personnel-career-levels"><option v-for="item in preview.career_levels" :key="item.id" :value="item.code">{{ item.label }}</option></datalist>
       </div>
     </div>
   </details>
@@ -764,6 +955,16 @@ details[open] .summary-action::after { content: '收起'; font-size: .78rem; }
 .education-extension p { margin-top: .25rem; color: var(--ink-600); font-size: .76rem; }
 .education-extension label { display: grid; gap: .25rem; color: var(--ink-700); font-size: .74rem; font-weight: 700; }
 .education-extension input { width: 7rem; }
+.catalog-adaptation { margin: .75rem 0 1rem; padding: .9rem; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-muted); }
+.catalog-adaptation-head { display: flex; align-items: end; justify-content: space-between; gap: 1rem; margin-bottom: .8rem; }
+.catalog-adaptation-head strong, .catalog-adaptation-head p { display: block; margin: 0; }
+.catalog-adaptation-head p { max-width: 54rem; margin-top: .25rem; color: var(--ink-600); font-size: .76rem; line-height: 1.5; }
+.catalog-adaptation-grid { display: grid; gap: .35rem; overflow-x: auto; }
+.catalog-draft { display: grid; grid-template-columns: minmax(10rem, 1.15fr) minmax(9rem, 1fr) minmax(10rem, 1.25fr) 10rem 6rem; gap: .5rem; align-items: center; min-width: 52rem; }
+.catalog-draft > span { color: var(--ink-700); font-size: .75rem; }
+.catalog-draft > span small { display: block; margin-top: .15rem; color: var(--ink-600); overflow-wrap: anywhere; }
+.catalog-draft input { width: 100%; min-height: 2.35rem; padding: .4rem .5rem; }
+.catalog-draft-header { color: var(--ink-600); font-size: .7rem; font-weight: 750; }
 .import-table-wrap { overflow-x: auto; border: 1px solid var(--line-soft); border-radius: var(--radius-md); }
 table { width: 100%; min-width: 170rem; border-collapse: collapse; }
 th, td { padding: .7rem .8rem; border-bottom: 1px solid var(--line-soft); text-align: left; vertical-align: top; font-size: .75rem; }

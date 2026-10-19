@@ -24,7 +24,17 @@ function json(status: number, body: unknown) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 }
 function previewBody(body: Record<string, unknown>) {
-  return { warnings: [], education_levels: [{ code: 'Master', rank: 3 }, { code: 'Bachelor', rank: 2 }, { code: 'Diploma', rank: 1 }], ...body }
+  return {
+    warnings: [],
+    education_levels: [{ code: 'Master', rank: 3 }, { code: 'Bachelor', rank: 2 }, { code: 'Diploma', rank: 1 }],
+    legal_entities: [{ id: BRANCH, code: 'BRANCH-A', label: 'Branch A' }],
+    business_groups: [{ id: BUSINESS_GROUP, code: 'BG-A', label: 'Group A' }],
+    divisions: [{ id: DIVISION, code: 'DIV-A', label: 'Division A' }],
+    departments: [{ id: DEPARTMENT, code: 'DEP-A', label: 'Department A' }],
+    job_families: [{ id: JOB_FAMILY, code: 'JF-A', label: 'Job Family A' }],
+    career_levels: [{ id: CAREER_LEVEL, code: 'P1', label: 'P1', rank: 1 }],
+    ...body,
+  }
 }
 function workbookFile() {
   return new File(['synthetic workbook'], 'people.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
@@ -171,6 +181,143 @@ describe('personnel batch import panel', () => {
     expect(requests.some(request => request.path.endsWith('/import-review'))).toBe(true)
     expect(page.text()).not.toContain('追加新学历目录')
     expect(page.findAll('button').find(button => button.text() === '确认并批量创建')!.attributes('disabled')).toBeUndefined()
+    page.unmount()
+  })
+
+  it('creates explicitly confirmed missing catalogs and inferred organization links before revalidation', async () => {
+    const requests: { path: string; body: Record<string, unknown> }[] = []
+    let catalogCall = 0
+    let reviewCall = 0
+    const rawRow = {
+      ...workforce,
+      row_number: 2,
+      staff_code: 'LEGACY-001',
+      local_name: '旧表员工',
+      branch_code: 'Legacy Branch',
+      business_group_code: 'Legacy Group',
+      division_code: 'Legacy Division',
+      department_code: 'Legacy Department',
+      job_family_code: 'Legacy Family',
+      career_level_code: 'L1',
+      branch_id: '',
+      business_group_id: '',
+      division_id: '',
+      department_id: '',
+      job_family_id: '',
+      career_level_id: '',
+      hire_date: AS_OF,
+      departure_date: null,
+    }
+    const unknown = ['branch_code', 'business_group_code', 'division_code', 'department_code', 'job_family_code', 'career_level_code'].map((field, index) => ({
+      row_number: 2,
+      sheet: 'Employees',
+      cell: `${String.fromCharCode(69 + index)}2`,
+      field,
+      code: 'unknown_catalog_code',
+    }))
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const path = new URL(String(input), location.href).pathname
+      const body = typeof init.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : {}
+      requests.push({ path, body })
+      if (path.endsWith('/import-preview')) return json(200, previewBody({ row_count: 1, catalog_revision: '4', graph_revision: '9', errors: unknown, rows: [rawRow] }))
+      if (path.endsWith('/workforce-catalog-changes')) {
+        catalogCall++
+        return catalogCall === 1
+          ? json(201, { catalog_revision: '5', graph_revision: '10', items: [
+            { kind: 'legal_entity', id: BRANCH }, { kind: 'business_group', id: BUSINESS_GROUP },
+            { kind: 'division', id: DIVISION }, { kind: 'department', id: DEPARTMENT },
+            { kind: 'job_family', id: JOB_FAMILY }, { kind: 'career_level', id: CAREER_LEVEL },
+          ] })
+          : json(201, { catalog_revision: '6', graph_revision: '11', items: [{ kind: 'org_unit_parent', id: ORG }, { kind: 'org_unit_parent', id: SUBJECT }] })
+      }
+      if (path.endsWith('/import-review')) {
+        reviewCall++
+        const resolved = { ...rawRow, branch_id: BRANCH, business_group_id: BUSINESS_GROUP, division_id: DIVISION, department_id: DEPARTMENT, job_family_id: JOB_FAMILY, career_level_id: CAREER_LEVEL }
+        return json(200, previewBody({
+          row_count: 1,
+          catalog_revision: reviewCall === 1 ? '5' : '6',
+          graph_revision: reviewCall === 1 ? '10' : '11',
+          errors: reviewCall === 1 ? [
+            { row_number: 2, sheet: 'Employees', cell: 'H2', field: 'department_code', code: 'organization_hierarchy_mismatch' },
+          ] : [],
+          rows: [resolved],
+        }))
+      }
+      throw new Error(`unexpected request ${path}`)
+    })
+    const page = mount(PersonnelImportPanel, { props: { session: SESSION, asOf: AS_OF } })
+    await selectAndPreview(page)
+    expect(page.text()).toContain('适配缺失目录')
+    expect(page.findAll('.catalog-draft')).toHaveLength(7)
+    await page.findAll('button').find(button => button.text() === '确认新增目录并重新校验')!.trigger('click')
+    await flushPromises()
+    const catalogRequests = requests.filter(request => request.path.endsWith('/workforce-catalog-changes'))
+    expect(catalogRequests).toHaveLength(2)
+    expect(catalogRequests[0]!.body).toMatchObject({
+      expected_catalog_revision: '4',
+      expected_graph_revision: '9',
+      changes: [
+        { action: 'create', kind: 'legal_entity', code: 'Legacy Branch', label: 'Legacy Branch', valid_from: AS_OF },
+        { action: 'create', kind: 'business_group', code: 'Legacy Group', label: 'Legacy Group', valid_from: AS_OF },
+        { action: 'create', kind: 'division', code: 'Legacy Division', label: 'Legacy Division', valid_from: AS_OF },
+        { action: 'create', kind: 'department', code: 'Legacy Department', label: 'Legacy Department', valid_from: AS_OF },
+        { action: 'create', kind: 'job_family', code: 'Legacy Family', label: 'Legacy Family', valid_from: AS_OF },
+        { action: 'create', kind: 'career_level', code: 'L1', label: 'L1', valid_from: AS_OF, rank: 2 },
+      ],
+    })
+    expect(catalogRequests[1]!.body).toMatchObject({
+      expected_catalog_revision: '5',
+      expected_graph_revision: '10',
+      changes: [
+        { action: 'create', kind: 'org_unit_parent', ref: DIVISION, parent_ref: BUSINESS_GROUP, valid_from: AS_OF },
+        { action: 'create', kind: 'org_unit_parent', ref: DEPARTMENT, parent_ref: DIVISION, valid_from: AS_OF },
+      ],
+    })
+    expect(page.text()).not.toContain('适配缺失目录')
+    expect(page.findAll('button').find(button => button.text() === '确认并批量创建')!.attributes('disabled')).toBeUndefined()
+    page.unmount()
+  })
+
+  it('omits blank optional workforce facts from employee creation', async () => {
+    const creates: Record<string, unknown>[] = []
+    const row = {
+      ...workforce,
+      row_number: 2,
+      staff_code: 'OPTIONAL-001',
+      local_name: '可选字段员工',
+      education_level: '',
+      position: '',
+      job_family_code: '',
+      career_level_code: '',
+      job_family_id: '',
+      career_level_id: '',
+      hire_date: AS_OF,
+      departure_date: null,
+    }
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const path = new URL(String(input), location.href).pathname
+      if (path.endsWith('/import-preview')) return json(200, previewBody({ row_count: 1, catalog_revision: '4', graph_revision: '9', errors: [], rows: [row] }))
+      if (path === '/api/v1/session') return json(200, SESSION)
+      if (path === `/api/v1/orgs/${ORG}/employees`) {
+        creates.push(JSON.parse(String(init.body)) as Record<string, unknown>)
+        return json(201, { id: EMPLOYEE, profile_revision: '1', workforce_revision: '2', graph_revision: '9' })
+      }
+      throw new Error(`unexpected request ${path}`)
+    })
+    const page = mount(PersonnelImportPanel, { props: { session: SESSION, asOf: AS_OF } })
+    await selectAndPreview(page)
+    await page.findAll('button').find(button => button.text() === '确认并批量创建')!.trigger('click')
+    await flushPromises()
+    expect(creates).toEqual([{
+      profile: { local_name: '可选字段员工' },
+      lifecycle: { valid_from: AS_OF, valid_to: null },
+      staff_code: 'OPTIONAL-001',
+      employment: { legal_entity_id: BRANCH, location_code: 'Shanghai' },
+      job_assignment: { department_id: DEPARTMENT },
+      expected_catalog_revision: '4',
+      expected_graph_revision: '9',
+    }])
+    expect(page.text()).toContain('批量处理完成：已创建 1')
     page.unmount()
   })
 
