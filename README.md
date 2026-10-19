@@ -7,6 +7,7 @@
 - Public文档归并范围及验证：[DEV-024 PLAN](docs/plans/DEV-024.md)。
 - 人员XLSX兼容、可编辑预览与org级学历目录：[DEV-046 PLAN](docs/plans/DEV-046.md) · [验证记录](docs/validation/DEV-046.md)。
 - 指定日期工资批量录入：[DEV-047 PLAN](docs/plans/DEV-047.md) · [验证记录](docs/validation/DEV-047.md)。
+- 人员导入可选字段与显式目录适配：[DEV-048 PLAN](docs/plans/DEV-048.md) · [验证记录](docs/validation/DEV-048.md)。
 
 ## Docker 安装与运维
 
@@ -456,7 +457,7 @@ docker compose --env-file .env.docker logs --tail=200 \
 | TOTP设备遗失，但恢复码仍在 | 在登录页选择“使用恢复码”，输入username、当前密码和一次性恢复码，只进入受限恢复页；设置新验证器并保存新的恢复码。恢复码不能直接进入业务页面。 |
 | TOTP设备和恢复码都遗失 | 不能从网页关闭MFA或绕过第二因素；由有权维护者按下述“离线MFA重置”操作。 |
 | 审计页或用户管理提示缺少权限 | fresh/bootstrap `admin.user`从v15起固定拥有`audit.read`、`access_grant.manage`和`identity.manage` direct grant；先确认已升级到当前v19、已重新登录且近期MFA有效。v16另给该管理员38项当前可委派authority，但不自动创建目标用户的职责assignment或业务grant。v17 Staff关联账号只取得本人/当前一层直属下属的窄默认读取与面谈创建资格；非关联账号仍默认零业务/安全权限。 |
-| 最新人员模板上传后仍提示错误 | 展开 **批量上传人员** 查看每条`Employees!单元格 · 字段`错误或警告。Staff Code必须有值；文本保留前导零，Excel整数cell按原始十进制转文本，decimal/scientific/sign数字须在预览表修正。日期接受已列文本格式、Excel 1900/1904日期系统的整数日期cell和OOXML日期；serial 60、负数、fraction或非零时间须修正。Location和目录可按唯一code/名称规范；歧义不猜。未知学历会保留在可编辑表中，须明确追加该组织的学历名称和唯一rank后重新校验。每次编辑后必须点 **校验编辑内容**；只有错误为零且目录版本有效才可确认创建。公式、宏和外部链接仍拒绝。结构错误/服务端故障显示request ID；API日志可按`PERSONNEL_IMPORT_REJECTED`、`PERSONNEL_IMPORT_ROW_REJECTED`或request ID定位，日志不记录单元格内容。 |
+| 最新人员模板上传后仍提示错误 | 展开 **批量上传人员** 查看每条`Employees!单元格 · 字段`错误或警告。Staff Code必须有值；文本保留前导零，Excel整数cell按原始十进制转文本，decimal/scientific/sign数字须在预览表修正。日期接受已列文本格式、Excel 1900/1904日期系统的整数日期cell和OOXML日期；serial 60、负数、fraction或非零时间须修正。学历、职位、Job Family、Career Level允许留空；非空时仍须通过字段/目录校验。Branch、BG、Division、Department为创建初始雇佣/任职的必填目录。Location与目录按唯一code或显示名解析，忽略安全的首尾空白及ASCII大小写；重名不猜。未知学历须明确追加名称/rank；其他未知目录会显示 **适配缺失目录**，可改成现有code，或核对Code、显示名、生效日、职级rank后明确新增并建立BG → Division → Department父链。每次编辑或目录变更后必须服务端重验；只有错误为零且revision有效才可创建。公式、宏和外部链接仍拒绝。结构错误/服务端故障显示request ID；API日志可按`PERSONNEL_IMPORT_REJECTED`、`PERSONNEL_IMPORT_ROW_REJECTED`或request ID定位，日志不记录单元格内容。 |
 
 只有在**确认是全新测试安装且所有数据都可以永久删除**时，才能彻底重置：
 

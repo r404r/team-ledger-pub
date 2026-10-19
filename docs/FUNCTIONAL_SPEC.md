@@ -384,6 +384,8 @@ DEV-032在P-ORG-03人员资料创建页增加可折叠批量入口及安全XLSX�
 DEV-045修复“服务端已解析出rows，但页面显示服务暂时不可用”的客户端契约错误：当全部行在目录解析前已发现字段错误时，preview允许暂不返回catalog/graph revision；页面必须保留并显示`Employees!单元格`、字段和固定原因，错误清零后的下一次preview才要求两个正revision并允许创建。入职日和退职日仍只接受文本，不转换Excel date serial；导入边界接受四位年份的`YYYY-M-D`、`YYYY/M/D`、`YYYY.M.D`、`YYYY年M月D日`以及固定按月/日/年解释的`M/D/YYYY`、`M-D-YYYY`、`M.D.YYYY`，进入业务校验前统一为`YYYY-MM-DD`。不存在日期固定报实际J/O列，退职日不晚于入职日固定报O列；服务日志仅含request ID、sheet/cell/row/field/code。
 DEV-046取消人员导入“所有单元格必须是文本”的不必要限制。XLSX parser保留Text/Number/OOXML Date/Boolean/Error类型及工作簿1900/1904日期系统：Staff Code数字整数按原始十进制转文本并警告，Excel整数日期或OOXML零时刻日期转ISO并警告；小数/科学记数Staff Code、1900虚构2月29日、fraction日期、布尔/错误值保持原raw并阻断，公式/宏/外部关系仍整份拒绝。Location大小写及唯一目录label可规范为受控值并警告，重名不猜测。preview分开返回`errors`与`warnings`，18字段可直接编辑；任一编辑使创建失效，只有`POST .../import-review`重新执行完整服务端校验后才能创建。v18把固定全局学历三值迁移为org级受控目录，保留每个组织的Master/Bachelor/Diploma；未知学历保留并允许操作者明确填写rank后经OP-ORG-09追加，preview绝不自动建目录。
 
+DEV-048把旧表兼容边界与canonical可选事实对齐：学历、职位、Job Family、Career Level可空；空学历不创建education，空职系/职级/职位在仍含Department的job assignment中保持NULL/无position payload。Branch、BG、Division、Department仍为初始雇佣与任职必填。非空目录值先按code，再按去除首尾空白且不区分ASCII大小写的唯一code/显示名解析；preview同时返回各类当前有效候选供行内选择。未知Branch/BG/Division/Department/Job Family/Career Level不会自动写库：页面聚合原值并展示可编辑Code、显示名、生效日和Career Level rank；只有操作者明确确认才分两步调用OP-ORG-09创建目录及BG → Division → Department父链，随后重新review。一个子节点在文件内出现多个上级时阻断；无schema migration，不覆盖既有目录。
+
 ```mermaid
 flowchart LR
     operator["组织/人员维护者"]
@@ -394,8 +396,10 @@ flowchart LR
     education{"出现未知学历？"}
     append["明确名称＋rank<br/>OP-ORG-09追加org目录<br/>推进catalog revision并审计"]
     review["POST import-review<br/>字段/重复工号/日期/主管环<br/>目录/父链/revision完整重验"]
+    catalogs{"出现未知Branch / BG / Division / Department<br/>Job Family / Career Level？"}
+    adapt["核对Code＋显示名＋生效日＋rank<br/>明确OP-ORG-09新增目录与父链<br/>CAS＋receipt＋audit"]
     confirm{"errors=0、revision齐全<br/>且明确确认？"}
-    create["逐行OP-ORG-05原子创建<br/>profile＋lifecycle＋identifier<br/>employment＋education＋assignment"]
+    create["逐行OP-ORG-05原子创建<br/>必填profile/lifecycle/identifier/employment/department<br/>可选education/job family/career level/position"]
     createResult{"单行提交结果"}
     createPause["暂停批次<br/>保留原key/body并明确重放"]
     endpoints{"员工与主管ID<br/>均已确认？"}
@@ -409,7 +413,9 @@ flowchart LR
     operator --> template --> workbook --> preview --> education
     education -->|"是；明确追加"| append --> review
     education -->|"否或改为既有值"| edit --> review
-    review --> confirm
+    review --> catalogs
+    catalogs -->|"是；映射或明确新增"| adapt --> review
+    catalogs -->|"否"| confirm
     confirm -->|"否：继续编辑"| edit
     confirm -->|"是"| create --> createResult
     createResult -->|"结果不确定"| createPause --> create
@@ -583,7 +589,7 @@ P-ORG-03资料页标`as_of`与当前授权判断日；profile是当前获准版�
 | AC-ORG-10 | P-ORG-01/02/03；OP-ORG-01/04/07/09/10 | SQLite新文件和PG空schema分别安装至当前v19；v1-v11拒绝；合法v12–v18按冻结顺序升级至v19并保留业务。v17不推断Staff政策；v18按org迁移学历目录；v19只追加工资基线子类型 | v13–v19 SQLite migration实跑；PostgreSQL v19实跑状态见DEV-047验证 |
 | AC-ORG-11 | P-ORG-03；OP-ORG-06/07/09/10 | 先记录Bachelor，再记录日期更早的Master和日期更晚的Diploma，Highest Education按当前org目录rank仍为Master；未登记level拒绝，明确追加新level后可使用。Direct Manager与HOD读出同一administrative reporting fact且不授financial；独立HOD kind或不同人员拒绝 | 双库/API/UI永久测试覆盖 |
 | AC-ORG-12 | P-ORG-03；OP-ORG-07/09/10、OP-SEC-02/03/06 | 单个OP-ORG-10命令结束旧employment/assignment/reporting并新增合法后继，facts/projection/revisions/epochs/receipt/audit同Tx；任一目录、Staff Code owner、manager endpoint、单一任职或授权失败时SQLite/PG零部分事实。新grant只接受org/department/employee scope与reporting_line/job_assignment ref，team/team_membership类型一律拒绝；assignment结束后successor/rehire不复活绑定grant | 双库/API/UI永久测试覆盖组合写、旧team输入拒绝、department scope、job_assignment relation-bound、业务日coverage、DB kind/owner约束及end/replace不复活 |
-| AC-ORG-13 | P-ORG-03；OP-ORG-05/09 | XLSX数字整数Staff Code、1900/1904 Excel整数日期、OOXML date及受控label安全规范并逐格warning；公式、虚构1900-02-29、fraction日期、decimal/scientific工号、歧义label保持拒绝。全部18字段可编辑，dirty时创建禁用，服务端重验后才放行；未知学历不自动创建，只能明确rank追加当前org目录 | DEV-046 parser/API/migration/Vue永久测试及真实页面smoke |
+| AC-ORG-13 | P-ORG-03；OP-ORG-05/09 | XLSX数字整数Staff Code、1900/1904 Excel整数日期、OOXML date及受控label安全规范并逐格warning；公式、虚构1900-02-29、fraction日期、decimal/scientific工号、歧义label保持拒绝。全部18字段可编辑，dirty时创建禁用，服务端重验后才放行。学历/职位/职系/职级可空且不伪造事实；未知学历只可明确rank追加，其他未知目录只可行内映射或明确创建目录/父链；多上级冲突拒绝 | DEV-046/048 parser、双库API、migration-safe及Vue永久测试与真实页面smoke |
 
 ## 3. F-INT-001 · 面谈、分区笔记、行动项与历史交接
 **R3当前边界**：面谈、分区笔记、行动项与历史交接已实装；AI消费者由F-AI-001的受限worker和人审机制处理，真实provider质量与外传仍未批准。当前契约和验收以本节、源码与永久测试为准。
