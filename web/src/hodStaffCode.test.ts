@@ -3,7 +3,7 @@ import { normalizeHodStaffCode } from './hodStaffCode'
 
 describe('HOD Staff Code normalization', () => {
   it.each([
-    ['composite code and name', '002046-San Zhang', '002046'],
+    ['composite code and name', '002046-San Zhang', 'intentionally-wrong'],
     ['spaces around hyphen', '002046 - San Zhang', '002046'],
     ['outer whitespace', '  002046  -  San Zhang ', '002046'],
     ['only the first hyphen splits', '002046-San-Zhang', '002046'],
