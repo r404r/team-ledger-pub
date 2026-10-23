@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+
+  go-postgres:
+    name: ${{ matrix.race == 'on' && 'race' || 'go-postgres' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.race == 'on' && 60 || 30 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        race: ${{ fromJSON(github.event_name == 'push' && '["off", "on"]' || '["off"]') }}
+    services:
+      postgres:
+        image: postgres:17-bookworm
+        env:
+          POSTGRES_PASSWORD: synthetic-ci-admin
+          POSTGRES_DB: teamledger_test
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -U postgres -d teamledger_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: go.mod
+      - name: Configure verified TLS and unprivileged PostgreSQL role
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: bash .github/scripts/setup-postgres.sh "$POSTGRES_CONTAINER"
+      - name: Test SQLite WAL and PostgreSQL
+        env:
+          RACE: ${{ matrix.race }}
+        run: |
+          args=()
+          if [[ "$RACE" == on ]]; then
+            args+=(-race -timeout=30m)
+          fi
+          go test "${args[@]}" -p 2 -count=1 ./...
+
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm test -- --run
+      - run: npm run build
