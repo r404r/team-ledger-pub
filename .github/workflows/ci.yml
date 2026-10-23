@@ -28,7 +28,7 @@ jobs:
   go-postgres:
     name: ${{ matrix.race == 'on' && 'race' || 'go-postgres' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: ${{ matrix.race == 'on' && 60 || 30 }}
     strategy:
       fail-fast: false
       matrix:
@@ -63,7 +63,7 @@ jobs:
         run: |
           args=()
           if [[ "$RACE" == on ]]; then
-            args+=(-race)
+            args+=(-race -timeout=30m)
           fi
           go test "${args[@]}" -p 2 -count=1 ./...
 

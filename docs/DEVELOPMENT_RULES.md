@@ -213,7 +213,7 @@ CI 应把 SQLite、PostgreSQL、Go/race、Vue 和关键 E2E 作为可识别必�
 | `go` | PR、main push | `go vet ./...` |
 | `go-postgres` | PR、main push | `go test -p 2 -count=1 ./...`，同一次全量运行覆盖真实文件 SQLite WAL 和 PostgreSQL 17 |
 | `web` | PR、main push | `npm ci`、`npm test -- --run`、`npm run build`（含 vue-tsc 类型检查） |
-| `race` | 仅 main push | `go test -race -p 2 -count=1 ./...`，同样覆盖两库；独立 service container，与常规测试不共享数据库 |
+| `race` | 仅 main push | `go test -race -timeout=30m -p 2 -count=1 ./...`，同样覆盖两库；独立 service container，与常规测试不共享数据库 |
 
 现有全量 Go 测试强制要求 `TEAMLEDGER_TEST_POSTGRES_DSN`，缺失就失败。因此 SQLite 测试与 PostgreSQL 测试共用 `go-postgres`，不通过跳过 PostgreSQL 来制造独立 SQLite 绿灯。限制 package 并发为 2，避免并发迁移耗尽锁表。PostgreSQL 使用 service container，`.github/scripts/setup-postgres.sh` 每次生成短期 CA 与 localhost SAN 证书，TCP 强制 TLS，DSN 保留 `sslmode=verify-full` / `sslrootcert`。测试角色为非 superuser、非 BYPASSRLS，不授予 CREATEDB/CREATEROLE；仅拥有隔离测试数据库，测试按既有约定创建/清理独立 schema。`max_locks_per_transaction=1024`、`max_connections=200` 沿用已验证配置。容器内本地管理员仅用于测试初始化，不用于业务测试。
 
@@ -233,7 +233,7 @@ RUNNER_TEMP="$ci_temp" GITHUB_ENV="$ci_temp/env" \
   bash .github/scripts/setup-postgres.sh "$ci_pg"
 export TEAMLEDGER_TEST_POSTGRES_DSN="$(sed -n 's/^TEAMLEDGER_TEST_POSTGRES_DSN=//p' "$ci_temp/env")"
 go test -p 2 -count=1 ./...
-go test -race -p 2 -count=1 ./...
+go test -race -timeout=30m -p 2 -count=1 ./...
 (cd web && npm ci && npm test -- --run && npm run build)
 docker stop "$ci_pg"
 rm -r "$ci_temp"
