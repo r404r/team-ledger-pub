@@ -43,5 +43,6 @@
 - [DEV-048验证摘要](validation/DEV-048.md)
 - [DEV-049 HOD Staff Code复合格式与同批次顺序无关的上级解析](plans/DEV-049.md)：`工号-姓名`规范化、本批次∪现有员工的主管校验、自我汇报/闭环阻断及两遍提交。
 - [DEV-049验证摘要](validation/DEV-049.md)
+- [WOR-18基础持续集成](plans/WOR-18.md)：PR/main 的双库 Go、Web 检查及 main race 门禁；复现命令见开发规则第 10.1 节。
 
 历史私有计划、review会话、本机路径和旧文档commit台账不复制到public仓库；它们不是当前产品契约。当前行为以本仓库源码、迁移、永久测试和上述文档为准。

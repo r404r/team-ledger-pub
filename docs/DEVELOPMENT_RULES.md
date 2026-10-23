@@ -1,7 +1,7 @@
 # TeamLedger 开发规则：TDD、双数据库与交付门禁
 
 - 日期与来源查阅日期：2026-10-15。
-- 状态：当前开发与交付规则；规则本身不代表某项功能已发布，也不声称仓库已配置生产CI。
+- 状态：当前开发与交付规则；基础 CI 见第 10.1 节，规则本身不代表某项功能已发布或通过生产启用验收。
 - 适用：独立开发者和 AI assistant；Go 模块化单体 API、Vue3/TypeScript/Vite、每次部署选择 SQLite 或 PostgreSQL 一个后端，不双写。
 - 用户约定：实际开发采用TDD；每个整体交付task完成验证与审查后必须commit并push，不补造历史提交。自2026-10-15既有环境通知起，未来持久化变更必须提供已部署版本到新版本的安全migration，不得再以空库重建替代。
 - 关联：[整体功能规范](FUNCTIONAL_SPEC.md)、[整体技术规范](TECHNICAL_SPEC.md)及仓库README。
@@ -187,7 +187,7 @@ Go 的 `testing`、table-driven tests、subtests、race detector 和 fuzzing，�
 
 ## 10. 从每步测试到集成的完整门禁
 
-下表是当前手工执行的交付门禁；仓库尚无CI workflow，不能把未配置的自动化声称为已运行。后续CI必须复用这些入口；技术规范、task PLAN和公开验证摘要记录实际环境、范围、命令和结果。
+下表是整体交付门禁；第 10.1 节的基础 CI 自动执行其中的静态检查、双库测试和 Web 构建入口，其余门禁仍需按实际 task 执行。技术规范、task PLAN和公开验证摘要记录实际环境、范围、命令和结果。
 
 | 阶段 | 必须执行/提供 | 不通过时 |
 | --- | --- | --- |
@@ -203,6 +203,43 @@ Go 的 `testing`、table-driven tests、subtests、race detector 和 fuzzing，�
 分工贡献者不在各自半成品上重复运行最终build/lint/tests/formatters；TDD和最终验证责任由唯一集成负责人承担。需要委派修改时，先交付行为测试并由集成负责人取得预期RED，再交付实现并验证GREEN/REFACTOR，禁止提前实现掩盖RED。最终候选的完整门禁只运行一次并记录真实结果。
 
 CI 应把 SQLite、PostgreSQL、Go/race、Vue 和关键 E2E 作为可识别必需结果；依赖服务不可用不能绿色通过，收集的套件/案例必须与计划一致。发布前另执行支持环境的恢复/外部集成/必要容量与 AI 评估，不能为了耗时把硬门禁改成“以后补测”。首次启用尚未具备这些环境时，如实保持未启用/未完成状态。
+
+### 10.1 基础 CI（WOR-18）
+
+入口为 `.github/workflows/ci.yml`，所有 PR（含后续提交）和推送到 `main` 时运行；不按路径过滤。同一 PR/分支的新运行取消旧运行。顶层仅授予 `contents: read`，checkout 不保留凭据，所有第三方 action 固定到 40 位 commit SHA 并注释版本。Go 版本读取 `go.mod`，Node 版本读取 `web/.nvmrc`，npm 依赖读取 `web/package-lock.json`。
+
+| Job | 触发 | 检查 |
+| --- | --- | --- |
+| `go` | PR、main push | `go vet ./...` |
+| `go-postgres` | PR、main push | `go test -p 2 -count=1 ./...`，同一次全量运行覆盖真实文件 SQLite WAL 和 PostgreSQL 17 |
+| `web` | PR、main push | `npm ci`、`npm test -- --run`、`npm run build`（含 vue-tsc 类型检查） |
+| `race` | 仅 main push | `go test -race -p 2 -count=1 ./...`，同样覆盖两库；独立 service container，与常规测试不共享数据库 |
+
+现有全量 Go 测试强制要求 `TEAMLEDGER_TEST_POSTGRES_DSN`，缺失就失败。因此 SQLite 测试与 PostgreSQL 测试共用 `go-postgres`，不通过跳过 PostgreSQL 来制造独立 SQLite 绿灯。限制 package 并发为 2，避免并发迁移耗尽锁表。PostgreSQL 使用 service container，`.github/scripts/setup-postgres.sh` 每次生成短期 CA 与 localhost SAN 证书，TCP 强制 TLS，DSN 保留 `sslmode=verify-full` / `sslrootcert`。测试角色为非 superuser、非 BYPASSRLS，不授予 CREATEDB/CREATEROLE；仅拥有隔离测试数据库，测试按既有约定创建/清理独立 schema。`max_locks_per_transaction=1024`、`max_connections=200` 沿用已验证配置。容器内本地管理员仅用于测试初始化，不用于业务测试。
+
+本地复现（Go/Node 版本同上述文件，需要 Docker 和 OpenSSL；只能对新建的一次性容器执行初始化）：
+
+```bash
+go vet ./...
+ci_temp=$(mktemp -d)
+ci_pg=$(docker run -d --rm -e POSTGRES_PASSWORD=synthetic-ci-admin \
+  -e POSTGRES_DB=teamledger_test -p 127.0.0.1::5432 \
+  --health-cmd='pg_isready -U postgres -d teamledger_test' \
+  --health-interval=2s --health-timeout=5s --health-retries=30 \
+  postgres:17-bookworm)
+# 等待新容器的 health 为 healthy，再初始化 TLS（失败则检查 docker logs）。
+docker inspect --format '{{.State.Health.Status}}' "$ci_pg"
+RUNNER_TEMP="$ci_temp" GITHUB_ENV="$ci_temp/env" \
+  bash .github/scripts/setup-postgres.sh "$ci_pg"
+export TEAMLEDGER_TEST_POSTGRES_DSN="$(sed -n 's/^TEAMLEDGER_TEST_POSTGRES_DSN=//p' "$ci_temp/env")"
+go test -p 2 -count=1 ./...
+go test -race -p 2 -count=1 ./...
+(cd web && npm ci && npm test -- --run && npm run build)
+docker stop "$ci_pg"
+rm -r "$ci_temp"
+```
+
+race 全量开销较大，默认在 main 上运行；合并前若改动并发逻辑，仍须本地执行并记录，不能以 PR 未自动运行替代原有门禁。基础 CI 不覆盖真实浏览器 E2E、生产部署、备份恢复或外部设施验收。首次接入以临时提交反转既有测试断言、观察 PR 报红、revert 并确认恢复全绿；实际 run 链接记录于 PR。
 
 ## 11. 每个开发 task 的 Definition of Done 与审查衔接
 
