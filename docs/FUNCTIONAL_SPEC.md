@@ -290,7 +290,7 @@ flowchart TB
 
 | feature ID | 当前完整功能 | 设计状态 | 当前工作实现/检查（非全产品发布） | 最近发布 / 工作revision |
 | --- | --- | --- | --- | --- |
-| F-ORG-001 | 固定Business Group→Division→Department、全集团唯一员工工号/双语资料、雇佣/org级受控教育目录/单一岗位/直属主管(HOD)有效期历史 | DES-003/004完整并获批准；DEV-046已交付 | OP-ORG-01/04..10、P-ORG-01/02/03、canonical授权、18列XLSX类型兼容、可编辑重校验及显式学历追加已实装 | 当前源码、v12/v18迁移、永久测试及页面smoke |
+| F-ORG-001 | 固定Business Group→Division→Department、全集团唯一员工工号/双语资料、雇佣/org级受控教育目录/单一岗位/直属主管(HOD)有效期历史 | DES-003/004完整并获批准；DEV-046已交付 | OP-ORG-01/04..10、P-ORG-01/02/03、canonical授权、18列XLSX类型兼容、可编辑重校验、显式学历追加及HOD复合格式/同批次顺序无关主管校验已实装 | 当前源码、v12/v18迁移、永久测试及页面smoke |
 | F-INT-001 | 面谈版本、共享/经理私有/HR保密分区、行动项、历史权限与交接 | DES-001/002；DEV-008已交付 | 8 INT OP、P-INT-01、6 AC、typed对象、独立source批准、人工最小化和有限导出已实装 | 当前源码、v6迁移和永久测试 |
 | F-COMP-001 | 个人薪资条款/纠错、salary range、Normal/Special调薪批次及指定日期工资基线批次的录入/预览/显式提交/原子激活和历史 | DES-003/005/006；DEV-047已交付 | 个人5 OP保持；默认3行、Staff Code解析、手工/XLSX同构candidate、工资基线/调薪差异规则、参考预算、不可变历史及整批activation已实装 | 当前源码、v13/v19迁移、永久测试及页面smoke |
 | F-BONUS-001 | 奖金目标、批准奖励、支付记录与敏感扩展 | DES-001/002；业务口径须显式批准 | 8 OP、P-BONUS-01、目标/奖励/批准、支付/冲销/异常、有限扩展、签名游标及受控HMAC维护已实装 | 固定代码C [`1c769d0`](https://github.com/r404r/team-ledger-pub/commit/1c769d0d5781eaf6cc797c46ab4ffc11d3940c95) |
@@ -379,12 +379,14 @@ DEV-028 T2将员工目录收敛为业务查询页：初次显示当前获准在�
 
 DEV-028 T3将创建人员收敛为一次原子业务动作：创建页必填全集团Staff Code，可从当前获准员工中查找并选择直属主管/HOD，也可明确无直属主管。OP-ORG-05同一事务写profile/lifecycle、canonical identifier及可选administrative reporting；Staff Code冲突、主管不存在/跨组织/无权引用或revision变化时不留下半成品员工。成功后页面只以receipt确认提交，再按当前授权和查看日期重读完整资料；命令推进组织图导致本次会话auth epoch变化时，主体与org不变且重核对成功才继续。人员页面把lifecycle `valid_from/valid_to`的业务中文统一显示为“入职日/退职日”，API字段及半开有效期语义不变。
 
-DEV-032在P-ORG-03人员资料创建页增加可折叠批量入口及安全XLSX解析/逐行恢复机制；DEV-033在不增加第二套employee字段的前提下，把同一入口升级为完整员工主数据创建。唯一`Employees`工作表固定18个双语表头，覆盖Staff Code、中英文姓名、Location、Branch Code、BG/Division/Department Code、学历、入职/退职日、职位、Job Family/Career Level Code、HOD Staff Code及可选联系/摘要；明确不包含薪资。选择合法XLSX后页面立即显示文件名并调用preview，不要求再点击第二个按钮；失败时保留明确的“重新校验”，preview成功且错误为零后仍须人工确认才创建。Excel明确标记的numeric/date/boolean/error cell会进入逐格`text_required`错误而不再使整份工作簿落入无细节失败；结构拒绝和逐行错误均显示`Employees!单元格`，结构拒绝同时显示request ID，服务端只记录request ID、固定错误码和安全sheet/cell，不记录单元格内容或公式。preview按每行入职日把受控code解析为ID并验证固定三层父链，返回冻结catalog/graph revision；确认后每行OP-ORG-05原子创建profile、lifecycle、identifier、employment、education及job assignment，所有两端均确认的直属主管关系最后以一次OP-ORG-10写入。文件安全边界、≤100行、逐行状态、原key/body结果确认和不自动认领重复Staff Code的规则保持不变。
+DEV-032在P-ORG-03人员资料创建页增加可折叠批量入口及安全XLSX解析机制（DEV-049起使用整批事务及原命令恢复）；DEV-033在不增加第二套employee字段的前提下，把同一入口升级为完整员工主数据创建。唯一`Employees`工作表固定18个双语表头，覆盖Staff Code、中英文姓名、Location、Branch Code、BG/Division/Department Code、学历、入职/退职日、职位、Job Family/Career Level Code、HOD Staff Code及可选联系/摘要；明确不包含薪资。选择合法XLSX后页面立即显示文件名并调用preview，不要求再点击第二个按钮；失败时保留明确的“重新校验”，preview成功且错误为零后仍须人工确认才创建。Excel明确标记的numeric/date/boolean/error cell会进入逐格`text_required`错误而不再使整份工作簿落入无细节失败；结构拒绝和逐行错误均显示`Employees!单元格`，结构拒绝同时显示request ID，服务端只记录request ID、固定错误码和安全sheet/cell，不记录单元格内容或公式。preview按每行入职日把受控code解析为ID并验证固定三层父链，返回冻结catalog/graph revision；确认后通过`POST .../employees/import-commit`，在一个事务中先创建所有profile、lifecycle、identifier、employment及可选事实，再统一绑定直属主管与任职关系。文件安全边界、≤100行、原key/body结果确认和不自动认领重复Staff Code的规则保持不变；任一步冲突整批回滚。
 
 DEV-045修复“服务端已解析出rows，但页面显示服务暂时不可用”的客户端契约错误：当全部行在目录解析前已发现字段错误时，preview允许暂不返回catalog/graph revision；页面必须保留并显示`Employees!单元格`、字段和固定原因，错误清零后的下一次preview才要求两个正revision并允许创建。入职日和退职日仍只接受文本，不转换Excel date serial；导入边界接受四位年份的`YYYY-M-D`、`YYYY/M/D`、`YYYY.M.D`、`YYYY年M月D日`以及固定按月/日/年解释的`M/D/YYYY`、`M-D-YYYY`、`M.D.YYYY`，进入业务校验前统一为`YYYY-MM-DD`。不存在日期固定报实际J/O列，退职日不晚于入职日固定报O列；服务日志仅含request ID、sheet/cell/row/field/code。
 DEV-046取消人员导入“所有单元格必须是文本”的不必要限制。XLSX parser保留Text/Number/OOXML Date/Boolean/Error类型及工作簿1900/1904日期系统：Staff Code数字整数按原始十进制转文本并警告，Excel整数日期或OOXML零时刻日期转ISO并警告；小数/科学记数Staff Code、1900虚构2月29日、fraction日期、布尔/错误值保持原raw并阻断，公式/宏/外部关系仍整份拒绝。Location大小写及唯一目录label可规范为受控值并警告，重名不猜测。preview分开返回`errors`与`warnings`，18字段可直接编辑；任一编辑使创建失效，只有`POST .../import-review`重新执行完整服务端校验后才能创建。v18把固定全局学历三值迁移为org级受控目录，保留每个组织的Master/Bachelor/Diploma；未知学历保留并允许操作者明确填写rank后经OP-ORG-09追加，preview绝不自动建目录。
 
 DEV-048把旧表兼容边界与canonical可选事实对齐：学历、职位、Job Family、Career Level可空；空学历不创建education，空职系/职级/职位在仍含Department的job assignment中保持NULL/无position payload。Branch、BG、Division、Department仍为初始雇佣与任职必填。非空目录值先按code，再按去除首尾空白且不区分ASCII大小写的唯一code/显示名解析；preview同时返回各类当前有效候选供行内选择。未知Branch/BG/Division/Department/Job Family/Career Level不会自动写库：页面聚合原值并展示可编辑Code、显示名、生效日和Career Level rank；只有操作者明确确认才分两步调用OP-ORG-09创建目录及BG → Division → Department父链，随后重新review。一个子节点在文件内出现多个上级时阻断；无schema migration，不覆盖既有目录。
+
+DEV-049规范化人员导入的`HOD Staff Code`（直属主管，可留空）：真实Staff Code不含连字符`-`，因此非空且含`-`的值（如合成示例`002046-San Zhang`、`002046 - San Zhang`）一律取第一个`-`之前并trim的文本作为主管Staff Code（`002046`），并返回warning供核对；`-San Zhang`这类无工号前缀的值阻断。可编辑预览直接显示规范化后的工号，上传preview、`import-review`重验和确认提交使用同一规范化规则。主管校验以「现有员工Staff Code ∪ 本批次全部Staff Code」为有效集合，与主管所在行先后无关：下属排在上级之前、多层逆序链均合法；既不在本批次也不在现有员工中的主管逐行报`manager_not_found`，自我汇报报`manager_self_reference`，批次内闭环报`manager_cycle`，错误始终指向原文件`Employees!N<行号>`。提交在同一事务内分两遍：先按文件顺序创建全部员工并建立`Staff Code → employee_id`映射，再用一个原子OP-ORG-10命令统一写入各行administrative reporting，全部事实、回执和成功审计同时提交或回滚；无schema migration。
 
 ```mermaid
 flowchart LR
@@ -399,15 +401,12 @@ flowchart LR
     catalogs{"出现未知Branch / BG / Division / Department<br/>Job Family / Career Level？"}
     adapt["核对Code＋显示名＋生效日＋rank<br/>明确OP-ORG-09新增目录与父链<br/>CAS＋receipt＋audit"]
     confirm{"errors=0、revision齐全<br/>且明确确认？"}
-    create["逐行OP-ORG-05原子创建<br/>必填profile/lifecycle/identifier/employment/department<br/>可选education/job family/career level/position"]
-    createResult{"单行提交结果"}
-    createPause["暂停批次<br/>保留原key/body并明确重放"]
-    endpoints{"员工与主管ID<br/>均已确认？"}
-    reporting["一次OP-ORG-10<br/>administrative reporting<br/>固定revision＋key/body"]
-    reportResult{"主管关系提交结果"}
-    reportPause["暂停<br/>只重放原主管命令"]
-    pending["人员已保留<br/>主管待维护"]
-    complete["逐行完成结果"]
+    create["POST import-commit：一个数据库事务<br/>Pass 1按原行序创建所有员工及基础事实<br/>建立完整工号到ID映射"]
+    reporting["Pass 2统一绑定上级<br/>校验endpoint、环、目录及revision"]
+    result{"整批提交结果"}
+    pause["整批结果不确定<br/>保留原key/body重放"]
+    rollback["明确失败：整批回滚<br/>重新预览后再提交"]
+    complete["整批完成；显示各行结果"]
     directory["后续由用户进入<br/>员工目录/人员详情查询"]
 
     operator --> template --> workbook --> preview --> education
@@ -417,15 +416,11 @@ flowchart LR
     catalogs -->|"是；映射或明确新增"| adapt --> review
     catalogs -->|"否"| confirm
     confirm -->|"否：继续编辑"| edit
-    confirm -->|"是"| create --> createResult
-    createResult -->|"结果不确定"| createPause --> create
-    createResult -->|"明确失败：仅该行"| complete
-    createResult -->|"receipt确认"| endpoints
-    endpoints -->|"否"| pending --> complete
-    endpoints -->|"是"| reporting --> reportResult
-    reportResult -->|"结果不确定"| reportPause --> reporting
-    reportResult -->|"明确拒绝/冲突"| pending
-    reportResult -->|"receipt确认"| complete
+    confirm -->|"是"| create --> reporting --> result
+    result -->|"结果不确定"| pause --> create
+    result -->|"拒绝或冲突"| rollback
+    rollback --> edit
+    result -->|"receipt确认"| complete
     complete -.->|"后续用户操作"| directory
 ```
 
@@ -435,7 +430,7 @@ flowchart LR
 | --- | --- | --- |
 | P-ORG-01 / F-ORG-001 | v12“组织树”：BG/Division/Department、employee安全ID、边/生命周期、as_of与graph revision；label另需PII，不返employee profile | root department/depth≤3/上限后重载；目录变更用OP-ORG-09，employee assignment/reporting用OP-ORG-10；不建team或自动grant |
 | P-ORG-02 / F-ORG-001 | v12“员工目录”：No.、Staff Code、中英文姓名、Location、Branch、BG、Division、Department、Latest Education、Date of Employment、Position、Job Family、Career Level、HOD；获PII权才含受保护正文 | department/lifecycle/as_of及body q有界过滤；结果保持服务端cursor分页，宽表仅在自身容器横向滚动；薪资不进入组织目录 |
-| P-ORG-03 / F-ORG-001及员工相关feature | 详情按目录同一字段顺序投影，内部ID/revision收进折叠数据状态；创建页以入职日读取目录并一次提交完整初始员工主数据 | 单人或18列XLSX批量均复用OP-ORG-05；XLSX安全兼容数字工号/Excel日期并逐格警告，18字段可编辑但必须经服务端`import-review`重验；未知学历只能明确追加org目录；批量主管关系复用OP-ORG-10并逐行显示结果；薪酬/面谈/奖金/AI各自授权/分页，不互相转授 |
+| P-ORG-03 / F-ORG-001及员工相关feature | 详情按目录同一字段顺序投影，内部ID/revision收进折叠数据状态；创建页以入职日读取目录并一次提交完整初始员工主数据 | 单人或18列XLSX批量均复用OP-ORG-05；XLSX安全兼容数字工号/Excel日期并逐格警告，18字段可编辑但必须经服务端`import-review`重验；未知学历只能明确追加org目录；批量提交在一个事务复用员工/OP-ORG-10事实写入，整批回滚或成功并逐行显示结果；薪酬/面谈/奖金/AI各自授权/分页，不互相转授 |
 | P-INT-01 / F-INT-001 | 当前主导航`/interviews`员工ID选择、员工面谈列表/安排页、`/interviews/:id`详情；metadata及分区/授权版本/行动各自独立 | 8 INT OP已实装；列表/详情自己的有限操作提示不依赖目录read。状态/补录、显式supersedes/理由更正、独立source批准与人工发布、额外授权NDJSON、原key/body结果确认；清理/冲突/partial明确呈现 |
 | P-COMP-01 / F-COMP-001 | `/employees/:employee_id/compensation`提供个人as_of/from/to四栏；`/orgs/:org_id/compensation-adjustments`提供批次列表、业务header及逐人录入工作台 | 个人5 OP/完整纠错保持；批次页可建Baseline/Normal/Special，默认3空行，以Staff Code回填员工/当前工资，支持增删、工资基线三列表格和模板下载、Normal/Special专属字段、手工或XLSX同构预览、冻结草稿及显式整批生效。Baseline显示指定日前权威工资和拟登记工资，不要求预算、不计调薪次数；Salary Range及已激活调薪批次更正收进折叠高级区 |
 | P-BONUS-01 / F-BONUS-001 | DEV-010固定代码路由`/employees/:employee_id/bonuses`；目标、奖励、支付/冲销、余额/异常、扩展分离（F，OP-BONUS-01），日期/状态（M） | 目标 OP-BONUS-02/07、奖励 OP-BONUS-03/04/05、支付 OP-BONUS-06、有限扩展 OP-BONUS-08；能力分别检查，命令前重验会话并按bonus/comp revision CAS，不放一个“财务编辑”总开关 |

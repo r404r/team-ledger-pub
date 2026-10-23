@@ -408,7 +408,7 @@ func strictBodyLimit(w http.ResponseWriter, r *http.Request, out any, maximum in
 		root = "catalog_command"
 	case *organization.WorkforceChangeCommand:
 		root = "workforce_command"
-	case *organization.PersonnelImportReviewCommand:
+	case *organization.PersonnelImportReviewCommand, *organization.PersonnelImportCommitCommand:
 		root = "workforce_command"
 	case *organization.DirectoryQuery:
 		root = "directory_query"

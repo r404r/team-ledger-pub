@@ -167,6 +167,9 @@ type WorkforceReader interface {
 	WorkforceCatalogHistory(context.Context, string, string, string, int) (WorkforceCatalogs, string, bool, error)
 	WorkforcePayload(context.Context, string, string) (WorkforcePayload, error)
 	EmployeeWorkforceFacts(context.Context, string, string, string) (WorkforceFacts, error)
+	// StaffCodeExists reports whether the organization holds the Staff Code with this keyed lookup digest.
+	StaffCodeExists(ctx context.Context, org, lookupKeyID string, lookupVersion uint32, digest []byte) (bool, error)
+	StaffCodeEmployeeID(ctx context.Context, org, lookupKeyID string, lookupVersion uint32, digest []byte, asOf string) (string, error)
 }
 
 // NormalizeStaffCode preserves case, internal whitespace and leading zeroes.

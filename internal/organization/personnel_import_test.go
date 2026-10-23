@@ -9,7 +9,7 @@ import (
 )
 
 func TestParsePersonnelWorkbookReturnsCanonicalPreviewWithoutPersistence(t *testing.T) {
-	row := personnelRow("EMP-001", "合成员工", "MGR-001")
+	row := personnelRow("EMP-001", "合成员工", "MGR001")
 	preview, err := parsePersonnelWorkbook(personnelWorkbook(t, [][]string{row}, -1))
 	if err != nil {
 		t.Fatal(err)
@@ -18,7 +18,7 @@ func TestParsePersonnelWorkbookReturnsCanonicalPreviewWithoutPersistence(t *test
 		t.Fatalf("preview = %#v", preview)
 	}
 	got := preview.Rows[0]
-	if got.RowNumber != 2 || got.StaffCode != "EMP-001" || got.ManagerStaffCode != "MGR-001" || got.HireDate != "2026-10-16" || got.Location != "Shanghai" || got.DepartmentCode != "DEP" || got.DepartureDate != nil {
+	if got.RowNumber != 2 || got.StaffCode != "EMP-001" || got.ManagerStaffCode != "MGR001" || got.HireDate != "2026-10-16" || got.Location != "Shanghai" || got.DepartmentCode != "DEP" || got.DepartureDate != nil {
 		t.Fatalf("canonical row = %#v", got)
 	}
 }
@@ -89,8 +89,8 @@ func TestParsePersonnelWorkbookPinsDateErrorsToTheirCells(t *testing.T) {
 
 func TestParsePersonnelWorkbookReportsDuplicateCycleAndCoercesTypedDate(t *testing.T) {
 	rows := [][]string{
-		personnelRow("EMP-001", "员工甲", "EMP-002"),
-		personnelRow("EMP-002", "员工乙", "EMP-001"),
+		personnelRow("EMP001", "员工甲", "EMP002"),
+		personnelRow("EMP002", "员工乙", "EMP001"),
 		personnelRow("DUP-001", "员工丙", ""),
 		personnelRow("DUP-001", "员工丁", ""),
 	}
@@ -222,4 +222,107 @@ func personnelWorkbook(t *testing.T, rows [][]string, numericColumn int) []byte 
 		t.Fatal(err)
 	}
 	return buffer.Bytes()
+}
+
+func TestNormalizeHODStaffCodeExtractsCodeBeforeFirstHyphen(t *testing.T) {
+	cases := []struct{ name, input, want string }{
+		{"composite code and name", "002046-San Zhang", "002046"},
+		{"spaces around hyphen", "002046 - San Zhang", "002046"},
+		{"outer whitespace", "  002046  -  San Zhang ", "002046"},
+		{"only first hyphen splits", "002046-San-Zhang", "002046"},
+		{"plain code untouched", "002046", "002046"},
+		{"blank stays blank", "", ""},
+		{"missing code before hyphen", "-San Zhang", ""},
+		{"only hyphen with whitespace", " - ", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NormalizeHODStaffCode(tc.input); got != tc.want {
+				t.Fatalf("NormalizeHODStaffCode(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParsePersonnelWorkbookExtractsHODStaffCodeFromCompositeValue(t *testing.T) {
+	rows := [][]string{
+		personnelRow("SUB001", "下属员工", "002046-San Zhang"),
+		personnelRow("SUB002", "下属员工二", "002046 - San Zhang"),
+		personnelRow("002046", "合成上级", ""),
+		personnelRow("SUB003", "超长姓名下属", "002046-"+strings.Repeat("N", 200)),
+	}
+	preview, err := parsePersonnelWorkbook(personnelWorkbook(t, rows, -1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Errors) != 0 {
+		t.Fatalf("composite HOD codes rejected: %#v", preview.Errors)
+	}
+	for _, index := range []int{0, 1, 3} {
+		if got := preview.Rows[index].ManagerStaffCode; got != "002046" {
+			t.Fatalf("row %d manager = %q, want 002046", preview.Rows[index].RowNumber, got)
+		}
+	}
+	extracted := map[string]bool{}
+	for _, warning := range preview.Warnings {
+		if warning.Code == "hod_staff_code_extracted" && warning.Field == "manager_staff_code" {
+			extracted[warning.Cell] = true
+		}
+	}
+	if len(extracted) != 3 || !extracted["N2"] || !extracted["N3"] || !extracted["N5"] {
+		t.Fatalf("extraction warnings = %#v", preview.Warnings)
+	}
+}
+
+func TestParsePersonnelWorkbookRejectsHODWithoutCodeBeforeHyphen(t *testing.T) {
+	preview, err := parsePersonnelWorkbook(personnelWorkbook(t, [][]string{personnelRow("SUB001", "下属员工", "-San Zhang")}, -1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Errors) != 1 || preview.Errors[0].Cell != "N2" || preview.Errors[0].Code != "invalid_staff_code" {
+		t.Fatalf("errors = %#v", preview.Errors)
+	}
+}
+
+func TestParsePersonnelWorkbookAcceptsSubordinatesListedBeforeTheirManagers(t *testing.T) {
+	rows := [][]string{
+		personnelRow("L4", "第四层", "L3-合成三层"),
+		personnelRow("L3", "第三层", "L2"),
+		personnelRow("L2", "第二层", "L1 - 合成一层"),
+		personnelRow("L1", "顶层", ""),
+	}
+	preview, err := parsePersonnelWorkbook(personnelWorkbook(t, rows, -1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Errors) != 0 || preview.Rows[0].ManagerStaffCode != "L3" || preview.Rows[1].ManagerStaffCode != "L2" || preview.Rows[2].ManagerStaffCode != "L1" || preview.Rows[3].ManagerStaffCode != "" {
+		t.Fatalf("reverse-order chain = %#v errors=%#v", preview.Rows, preview.Errors)
+	}
+}
+
+func TestParsePersonnelWorkbookReportsSelfReportingAndCompositeCycles(t *testing.T) {
+	rows := [][]string{
+		personnelRow("SELF1", "自我汇报", "SELF1-合成自己"),
+		personnelRow("A1", "环甲", "B1-合成乙"),
+		personnelRow("B1", "环乙", "C1"),
+		personnelRow("C1", "环丙", "A1 - 合成甲"),
+		personnelRow("OK1", "正常", "A1"),
+	}
+	preview, err := parsePersonnelWorkbook(personnelWorkbook(t, rows, -1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, issue := range preview.Errors {
+		got[issue.Cell] = issue.Code
+	}
+	want := map[string]string{"N2": "manager_self_reference", "N3": "manager_cycle", "N4": "manager_cycle", "N5": "manager_cycle"}
+	if len(got) != len(want) || len(preview.Errors) != len(want) {
+		t.Fatalf("issues = %#v, want %#v", preview.Errors, want)
+	}
+	for cell, code := range want {
+		if got[cell] != code {
+			t.Fatalf("issues = %#v, want %#v", preview.Errors, want)
+		}
+	}
 }

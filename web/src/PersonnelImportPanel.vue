@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, shallowRef } from 'vue'
+import { normalizeHodStaffCode } from './hodStaffCode'
 
 type Session = {
   subject_id: string
@@ -58,24 +59,10 @@ type CatalogKind = 'legal_entity' | 'business_group' | 'division' | 'department'
 type CatalogDraft = { field: CatalogField; kind: CatalogKind; source: string; code: string; label: string; valid_from: string; rank?: number }
 type WorkbookDiagnostic = { sheet?: string; cell?: string; code: string }
 type WorkbookFailure = { status: number; requestID?: string; diagnostic?: WorkbookDiagnostic }
-type Employee = {
-  id: string
-  lifecycle: { valid_from: string; valid_to: string | null }
-  identifiers: { kind: string; staff_code?: string }[]
-}
-type Directory = { items: Employee[]; graph_revision: string; next_cursor?: string | null; search_incomplete?: boolean }
-type Catalog = { catalog_revision: string; graph_revision: string }
-type CreateResult = { id: string; profile_revision: string; workforce_revision: string; graph_revision: string }
-type WorkforceResult = { graph_revision: string }
-type RowStatus = 'pending' | 'created' | 'manager_pending' | 'failed' | 'uncertain'
-type RowExecution = ImportRow & {
-  status: RowStatus
-  message: string
-  employeeId?: string
-  workforceRevision?: string
-  command?: { key: string; body: string; graphRevision: string }
-}
-type ReportingCommand = { key: string; body: string; rowNumbers: number[] }
+type RowStatus = 'pending' | 'created' | 'failed' | 'uncertain'
+type RowExecution = ImportRow & { status: RowStatus; message: string }
+type BatchCommand = { key: string; body: string }
+type BatchResult = { catalog_revision: string; graph_revision: string; items: { kind: string; id: string }[] }
 
 const props = defineProps<{ session: Session; asOf: string }>()
 const emit = defineEmits<{
@@ -89,9 +76,8 @@ const executions = ref<RowExecution[]>([])
 const phase = ref<'idle' | 'previewing' | 'reviewing' | 'cataloging' | 'applying' | 'downloading'>('idle')
 const errorMessage = ref('')
 const notice = ref('')
-const reportingCommand = shallowRef<ReportingCommand | null>(null)
-const reportingUncertain = ref(false)
-const reportingComplete = ref(false)
+const batchCommand = shallowRef<BatchCommand | null>(null)
+const batchFinished = ref(false)
 const fileGeneration = ref(0)
 const dirty = ref(false)
 const educationRanks = ref<Record<string, number>>({})
@@ -100,8 +86,8 @@ let controller: AbortController | null = null
 
 const busy = computed(() => phase.value !== 'idle')
 const hasPreviewErrors = computed(() => Boolean(preview.value?.errors.length) || dirty.value)
-const batchComplete = computed(() => reportingComplete.value && executions.value.length > 0 && executions.value.every(row => row.status === 'created' || row.status === 'manager_pending' || row.status === 'failed'))
-const executionLocked = computed(() => reportingComplete.value || reportingCommand.value !== null || executions.value.some(row => row.command !== undefined))
+const batchComplete = computed(() => batchFinished.value && executions.value.length > 0 && executions.value.every(row => row.status === 'created' || row.status === 'failed'))
+const executionLocked = computed(() => batchFinished.value || batchCommand.value !== null)
 const summary = computed(() => executions.value.reduce((result, row) => {
   result[row.status] = (result[row.status] ?? 0) + 1
   return result
@@ -136,7 +122,9 @@ const issueMessages: Record<string, string> = {
   cell_type_requires_edit: '布尔值、错误值或该列不支持的单元格类型需人工修改',
   departure_not_after_hire: '退职日必须晚于入职日',
   field_too_large: '字段超过允许长度，预览未回传其内容',
-  manager_cycle: '同一文件内的直属主管关系形成自引用或闭环',
+  manager_cycle: '同一文件内的直属主管关系形成闭环',
+  manager_self_reference: '直属主管不能是员工本人',
+  manager_not_found: '直属主管 Staff Code 既不在本批次，也不在现有员工中',
   unexpected_column: '存在模板以外的非空列',
   invalid_location: 'Location必须为Shanghai、Wuxi或Tokyo',
   invalid_education_level: '学历不能为空、首尾不能有空格且最多 64 字节',
@@ -152,6 +140,7 @@ const issueMessages: Record<string, string> = {
   date_text_normalized: '日期文本已规范化为 YYYY-MM-DD',
   location_case_normalized: 'Location 大小写已规范化',
   catalog_label_resolved: '已通过唯一目录显示名称匹配，并规范化为目录 Code',
+  hod_staff_code_extracted: '直属主管 Staff Code 含“-姓名”，已取第一个“-”之前的工号',
 }
 const workbookErrorMessages: Record<string, string> = {
   invalid_package: '文件不是有效的 XLSX 工作簿，或压缩包结构已损坏',
@@ -208,7 +197,6 @@ function workbookFailure(error: unknown): string {
 const statusLabels: Record<RowStatus, string> = {
   pending: '未处理',
   created: '已创建',
-  manager_pending: '已创建，主管待维护',
   failed: '失败',
   uncertain: '结果不确定',
 }
@@ -232,9 +220,8 @@ async function api(path: string, init: RequestInit = {}) {
 function resetResults() {
   preview.value = null
   executions.value = []
-  reportingCommand.value = null
-  reportingUncertain.value = false
-  reportingComplete.value = false
+  batchCommand.value = null
+  batchFinished.value = false
   errorMessage.value = ''
   notice.value = ''
   dirty.value = false
@@ -288,7 +275,7 @@ function acceptPreview(parsed: Preview, message: string) {
   if (!revisionsReady && !revisionsDeferredByErrors) throw { status: 503 } satisfies WorkbookFailure
   const safePreview = { ...parsed, catalog_revision: catalogRevision, graph_revision: graphRevision }
   preview.value = safePreview
-  executions.value = safePreview.rows.map(row => ({ ...row, status: 'pending', message: '' }))
+  executions.value = safePreview.rows.map(row => ({ ...row, manager_staff_code: normalizeHodStaffCode(row.manager_staff_code ?? '') || row.manager_staff_code, status: 'pending', message: '' }))
   dirty.value = false
   const known = new Set(safePreview.education_levels.map(level => level.code))
   const unknown = [...new Set(safePreview.rows.map(row => row.education_level).filter(code => code && !known.has(code)))]
@@ -320,7 +307,7 @@ function reviewPayload() {
     position: row.position,
     job_family_code: row.job_family_code,
     career_level_code: row.career_level_code,
-    manager_staff_code: row.manager_staff_code ?? '',
+    manager_staff_code: normalizeHodStaffCode(row.manager_staff_code ?? '') || row.manager_staff_code || '',
     departure_date: row.departure_date || null,
     email: row.email ?? '',
     phone: row.phone ?? '',
@@ -575,40 +562,11 @@ async function previewWorkbook() {
     if (phase.value === 'previewing') stopOperation()
   }
 }
-function exactStaffCode(employee: Employee, code: string) {
-  return employee.identifiers?.some(identifier => identifier.kind === 'staff_code' && identifier.staff_code === code)
-}
 async function readJSON<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await api(path, init)
   if (!response.ok) throw Object.assign(new Error(String(response.status)), { status: response.status })
   return await response.json() as T
 }
-async function resolveExistingManager(current: Session, catalog: Catalog, code: string, effectiveDate: string) {
-  const seen = new Set<string>()
-  let cursor = ''
-  for (let page = 0; page < 100; page++) {
-    const body: Record<string, unknown> = { as_of: effectiveDate, lifecycle: 'active', q: code, include_profile: true, limit: 100 }
-    if (cursor) body.cursor = cursor
-    const directory = await readJSON<Directory>(`/orgs/${current.org_id}/employees/query`, {
-      method: 'POST',
-      headers: csrfHeaders(true),
-      body: JSON.stringify(body),
-    })
-    if (directory.graph_revision !== catalog.graph_revision) throw Object.assign(new Error('409'), { status: 409 })
-    const matches = directory.items.filter(employee => exactStaffCode(employee, code))
-    if (matches.length > 1) return { matches: [] as Employee[], ambiguous: true }
-    if (matches.length === 1) return { matches, ambiguous: false }
-    if (directory.next_cursor === null || directory.next_cursor === undefined) {
-      if (directory.search_incomplete) throw Object.assign(new Error('503'), { status: 503 })
-      return { matches: [] as Employee[], ambiguous: false }
-    }
-    if (typeof directory.next_cursor !== 'string' || directory.next_cursor === '' || seen.has(directory.next_cursor)) throw Object.assign(new Error('503'), { status: 503 })
-    seen.add(directory.next_cursor)
-    cursor = directory.next_cursor
-  }
-  throw Object.assign(new Error('503'), { status: 503 })
-}
-
 async function verifyCurrentSession() {
   const current = await readJSON<Session>('/session', { headers: headers() })
   if (current.subject_id !== props.session.subject_id || current.org_id !== props.session.org_id || !['organization.read', 'organization.write', 'pii.read', 'pii.write'].every(capability => current.capabilities.includes(capability))) {
@@ -616,156 +574,6 @@ async function verifyCurrentSession() {
   }
   return current
 }
-async function preflight() {
-  const current = await verifyCurrentSession()
-  if (!preview.value) throw Object.assign(new Error('preview'), { status: 422 })
-  const catalog = { catalog_revision: preview.value.catalog_revision, graph_revision: preview.value.graph_revision }
-  const batchCodes = new Set(executions.value.map(row => row.staff_code))
-  const externalPairs = new Map<string, { code: string; effectiveDate: string }>()
-  for (const row of executions.value.filter(item => item.status !== 'failed' && item.status !== 'manager_pending' && item.manager_staff_code && !batchCodes.has(item.manager_staff_code))) {
-    externalPairs.set(`${row.manager_staff_code}\u0000${row.hire_date}`, { code: row.manager_staff_code!, effectiveDate: row.hire_date })
-  }
-  const managers = new Map<string, string>()
-  let managerError = false
-  for (const [key, pair] of externalPairs) {
-    const resolved = await resolveExistingManager(current, catalog, pair.code, pair.effectiveDate)
-    const matches = resolved.matches
-    if (resolved.ambiguous || matches.length !== 1) {
-      for (const row of executions.value.filter(item => item.status !== 'failed' && item.status !== 'manager_pending' && item.manager_staff_code === pair.code && item.hire_date === pair.effectiveDate)) {
-        if (row.employeeId) {
-          row.status = 'manager_pending'
-          row.message = '人员已创建；直属主管在该入职日已退职、不可读或不再唯一，主管待维护'
-        } else {
-          row.status = 'failed'
-          row.message = resolved.ambiguous ? '直属主管 Staff Code 匹配不唯一' : '直属主管在该入职日不存在、已退职或当前不可读'
-          managerError = true
-        }
-      }
-    } else {
-      managers.set(key, matches[0]!.id)
-    }
-  }
-  if (managerError) throw Object.assign(new Error('manager'), { status: 422 })
-  return { current, catalog, managers }
-}
-function createBody(row: RowExecution, catalog: Catalog) {
-  const profile: Record<string, unknown> = {}
-  if (row.local_name) profile.local_name = row.local_name
-  if (row.english_name) profile.english_name = row.english_name
-  if (row.email || row.phone) profile.work_contact = { ...(row.email ? { email: row.email } : {}), ...(row.phone ? { phone: row.phone } : {}) }
-  if (row.profile_summary) profile.profile_summary = row.profile_summary
-  return JSON.stringify({
-    profile,
-    lifecycle: { valid_from: row.hire_date, valid_to: row.departure_date },
-    staff_code: row.staff_code,
-    employment: { legal_entity_id: row.branch_id, location_code: row.location },
-    ...(row.education_level ? { education: { level: row.education_level } } : {}),
-    job_assignment: {
-      department_id: row.department_id,
-      ...(row.job_family_id ? { job_family_id: row.job_family_id } : {}),
-      ...(row.career_level_id ? { career_level_id: row.career_level_id } : {}),
-      ...(row.position ? { position: { title: row.position } } : {}),
-    },
-    expected_catalog_revision: catalog.catalog_revision,
-    expected_graph_revision: catalog.graph_revision,
-  })
-}
-async function submitEmployee(row: RowExecution, catalog: Catalog) {
-  row.command ??= { key: crypto.randomUUID(), body: createBody(row, catalog), graphRevision: catalog.graph_revision }
-  try {
-    const response = await api(`/orgs/${props.session.org_id}/employees`, {
-      method: 'POST', headers: csrfHeaders(true, row.command.key), body: row.command.body,
-    })
-    if (!response.ok) {
-      if (response.status === 401) throw Object.assign(new Error('401'), { status: 401 })
-      if (response.status >= 500 || response.status === 408) throw Object.assign(new Error(String(response.status)), { status: response.status })
-      row.status = 'failed'
-      row.message = response.status === 409 ? 'Staff Code 已存在或组织版本已变化，未创建；请重新预览后核对' : '资料未被接受，未创建'
-      return true
-    }
-    const result = await response.json() as CreateResult
-    if (!result.id || !result.workforce_revision || result.graph_revision !== row.command.graphRevision) throw Object.assign(new Error('503'), { status: 503 })
-    row.employeeId = result.id
-    row.workforceRevision = result.workforce_revision
-    row.status = 'created'
-    row.message = '基本资料与 Staff Code 已创建'
-    return true
-  } catch (error) {
-    const status = (error as { status?: number }).status
-    if (status === 401) throw error
-    row.status = 'uncertain'
-    row.message = '创建结果不确定；必须以原命令确认'
-    return false
-  }
-}
-function freezeReportingCommand(catalog: Catalog, managers: Map<string, string>) {
-  const byCode = new Map(executions.value.filter(row => row.employeeId).map(row => [row.staff_code, row.employeeId!]))
-  const rowNumbers: number[] = []
-  const expected: Record<string, string> = {}
-  const changes: Record<string, unknown>[] = []
-  for (const row of executions.value) {
-    if (row.status !== 'created' || !row.manager_staff_code || !row.employeeId || !row.workforceRevision) continue
-    const manager = byCode.get(row.manager_staff_code) ?? managers.get(`${row.manager_staff_code}\u0000${row.hire_date}`)
-    if (!manager) {
-      row.status = 'manager_pending'
-      row.message = '人员已创建；同批主管未成功创建，主管待维护'
-      continue
-    }
-    expected[row.employeeId] = row.workforceRevision
-    rowNumbers.push(row.row_number)
-    changes.push({ action: 'add', kind: 'reporting', employee_id: row.employeeId, manager_employee_id: manager, reporting_kind: 'administrative', valid_from: row.hire_date, valid_to: row.departure_date })
-  }
-  if (!changes.length) return null
-  return {
-    key: crypto.randomUUID(),
-    rowNumbers,
-    body: JSON.stringify({ expected_catalog_revision: catalog.catalog_revision, expected_graph_revision: catalog.graph_revision, expected_employee_revisions: expected, reason: 'Personnel XLSX import', changes }),
-  }
-}
-async function submitReporting(command: ReportingCommand, catalog: Catalog) {
-  try {
-    const response = await api(`/orgs/${props.session.org_id}/workforce-changes`, { method: 'POST', headers: csrfHeaders(true, command.key), body: command.body })
-    if (!response.ok) {
-      if (response.status === 401) throw Object.assign(new Error('401'), { status: 401 })
-      if (response.status >= 500 || response.status === 408) throw Object.assign(new Error(String(response.status)), { status: response.status })
-      for (const row of executions.value.filter(item => command.rowNumbers.includes(item.row_number))) {
-        row.status = 'manager_pending'
-        row.message = '人员已创建；主管关系因版本或业务冲突未写入'
-      }
-      reportingCommand.value = null
-      reportingComplete.value = true
-      return true
-    }
-    const result = await response.json() as WorkforceResult
-    for (const row of executions.value.filter(item => command.rowNumbers.includes(item.row_number))) {
-      row.status = 'created'
-      row.message = '人员、Staff Code 与直属主管已创建'
-    }
-    reportingUncertain.value = false
-    reportingCommand.value = null
-    reportingComplete.value = true
-    try {
-      const next = await readJSON<Session>('/session', { headers: headers() })
-      if (next.subject_id === props.session.subject_id && next.org_id === props.session.org_id) emit('session-updated', { session: next, catalogRevision: catalog.catalog_revision, graphRevision: result.graph_revision })
-    } catch { /* committed result remains visible; outer shell will recheck on next operation */ }
-    return true
-  } catch (error) {
-    if ((error as { status?: number }).status === 401) throw error
-    reportingUncertain.value = true
-    for (const row of executions.value.filter(item => command.rowNumbers.includes(item.row_number))) {
-      row.status = 'uncertain'
-      row.message = '主管关系提交结果不确定；必须以原命令确认'
-    }
-    return false
-  }
-}
-function setCompletionNotice() {
-  const created = executions.value.filter(row => row.status === 'created').length
-  const pending = executions.value.filter(row => row.status === 'manager_pending').length
-  const failed = executions.value.filter(row => row.status === 'failed').length
-  notice.value = `批量处理完成：已创建 ${created}，主管待维护 ${pending}，失败 ${failed}。`
-}
-
 async function applyBatch() {
   if (busy.value || !preview.value || hasPreviewErrors.value || batchComplete.value) return
   phase.value = 'applying'
@@ -773,41 +581,50 @@ async function applyBatch() {
   notice.value = ''
   controller = new AbortController()
   try {
-    if (reportingUncertain.value && reportingCommand.value) {
-      await verifyCurrentSession()
-      const catalog = await readJSON<Catalog>(`/orgs/${props.session.org_id}/workforce-catalogs?${new URLSearchParams({ as_of: props.asOf, limit: '100' })}`, { headers: headers() })
-      if (await submitReporting(reportingCommand.value, catalog)) setCompletionNotice()
+    await verifyCurrentSession()
+    batchCommand.value ??= {
+      key: crypto.randomUUID(),
+      body: JSON.stringify({ rows: reviewPayload(), expected_catalog_revision: preview.value.catalog_revision, expected_graph_revision: preview.value.graph_revision }),
+    }
+    const response = await api(`/orgs/${props.session.org_id}/employees/import-commit`, {
+      method: 'POST', headers: csrfHeaders(true, batchCommand.value.key), body: batchCommand.value.body,
+    })
+    if (!response.ok) {
+      if (response.status === 401 || response.status >= 500 || response.status === 408) throw Object.assign(new Error(String(response.status)), { status: response.status })
+      for (const row of executions.value) {
+        row.status = 'failed'
+        row.message = response.status === 409 ? 'Staff Code 已存在或组织版本已变化，整批未创建；请重新预览后核对' : '整批资料未被接受，未创建'
+      }
+      batchCommand.value = null
+      batchFinished.value = true
+      notice.value = `批量处理完成：已创建 0，失败 ${executions.value.length}。`
       return
     }
-    const uncertainCreates = executions.value.filter(row => row.status === 'uncertain' && row.command && !row.employeeId)
-    if (uncertainCreates.length) {
-      await verifyCurrentSession()
-      for (const row of uncertainCreates) {
-        if (!await submitEmployee(row, { catalog_revision: '', graph_revision: row.command!.graphRevision })) {
-          notice.value = '批量创建仍无法确认；请继续使用原提交确认。'
-          return
-        }
-      }
-    }
-    const { catalog, managers } = await preflight()
+    const result = await response.json() as BatchResult
+    if (!result.graph_revision || !result.catalog_revision || !Array.isArray(result.items) || result.items.length !== executions.value.length || result.items.some(item => item.kind !== 'employee' || !item.id)) throw new Error('invalid batch result')
     for (const row of executions.value) {
-      if (row.status === 'created' || row.status === 'manager_pending' || row.status === 'failed') continue
-      if (!await submitEmployee(row, catalog)) {
-        notice.value = '批量创建已暂停；请确认结果不确定的原提交后继续。'
-        return
-      }
+      row.status = 'created'
+      row.message = '人员、Staff Code 与直属主管已保存'
     }
-    reportingCommand.value ??= freezeReportingCommand(catalog, managers)
-    if (!reportingCommand.value) reportingComplete.value = true
-    if (reportingCommand.value && !await submitReporting(reportingCommand.value, catalog)) {
-      notice.value = '主管关系提交结果不确定；请使用原命令确认。'
-      return
-    }
-    setCompletionNotice()
+    batchCommand.value = null
+    batchFinished.value = true
+    notice.value = `批量处理完成：已创建 ${executions.value.length}，失败 0。`
+    try {
+      const next = await readJSON<Session>('/session', { headers: headers() })
+      if (next.subject_id === props.session.subject_id && next.org_id === props.session.org_id) emit('session-updated', { session: next, catalogRevision: result.catalog_revision, graphRevision: result.graph_revision })
+    } catch { /* The confirmed batch remains visible if session refresh fails. */ }
   } catch (error) {
     const status = (error as { status?: number }).status
     if (status === 401) emit('session-expired')
-    errorMessage.value = status === 403 ? '当前权限不足，批量处理已停止；此前已确认结果保持不变。' : status === 422 ? '主管预检未通过，未开始新的创建；此前已确认结果保持不变。' : '批量处理前置核对失败，未开始新的创建；此前已确认结果保持不变。'
+    if (batchCommand.value) {
+      for (const row of executions.value) {
+        row.status = 'uncertain'
+        row.message = '整批提交结果不确定；必须以原命令确认'
+      }
+      notice.value = '整批提交结果不确定；请使用原命令确认。'
+    } else {
+      errorMessage.value = status === 403 ? '当前权限不足，批量处理已停止。' : '批量处理前置核对失败，未开始创建。'
+    }
   } finally {
     if (phase.value === 'applying') stopOperation()
   }
@@ -826,7 +643,7 @@ onBeforeUnmount(() => stopOperation())
       <div class="import-intro">
         <div>
           <h2>批量创建人员</h2>
-          <p>最多 100 人。Staff Code、姓名、Location、Branch、BG、Division、Department与入职日必填；学历、职位、职系、职级可空。薪资不在此功能导入。Staff Code 可为文本或整数单元格；日期可为 Excel 日期、YYYY-MM-DD、YYYY/M/D、M/D/YYYY、YYYY.M.D 或 YYYY年M月D日。全部字段均可在预览中修正。</p>
+          <p>最多 100 人。Staff Code、姓名、Location、Branch、BG、Division、Department与入职日必填；学历、职位、职系、职级、直属主管 HOD Staff Code 可空；HOD 可填“工号-姓名”，系统取第一个“-”之前的工号，主管可位于本文件任意行或已在系统中。薪资不在此功能导入。Staff Code 可为文本或整数单元格；日期可为 Excel 日期、YYYY-MM-DD、YYYY/M/D、M/D/YYYY、YYYY.M.D 或 YYYY年M月D日。全部字段均可在预览中修正。</p>
         </div>
         <button type="button" class="secondary" :disabled="busy" @click="downloadTemplate">下载 XLSX 模板</button>
       </div>
@@ -850,7 +667,6 @@ onBeforeUnmount(() => stopOperation())
           <span v-if="preview.errors.length">{{ preview.errors.length }} 个错误</span><span v-if="preview.warnings.length">{{ preview.warnings.length }} 个兼容转换提醒</span><span v-if="dirty">编辑待校验</span>
           <template v-if="executions.length">
             <span>已创建 {{ summary.created ?? 0 }}</span>
-            <span>主管待维护 {{ summary.manager_pending ?? 0 }}</span>
             <span>失败 {{ summary.failed ?? 0 }}</span>
             <span>结果不确定 {{ summary.uncertain ?? 0 }}</span>
           </template>
@@ -975,7 +791,7 @@ textarea.edit-input { width: 14rem; resize: vertical; }
 .profile-summary { max-width: 18rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 .row-status { display: inline-flex; padding: .15rem .45rem; border-radius: 999px; background: var(--surface-muted); font-weight: 720; }
 .is-created { background: var(--success-50); color: var(--success-700); }
-.is-manager_pending, .is-uncertain { background: var(--accent-100); color: var(--accent-700); }
+.is-uncertain { background: var(--accent-100); color: var(--accent-700); }
 .is-failed { background: var(--danger-50); color: var(--danger-700); }
 .notice { color: var(--brand-800); }
 .error { color: var(--danger-700); }

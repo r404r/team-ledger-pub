@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -284,6 +285,38 @@ func (f *Fixture) seed(ctx context.Context) error {
 	return tx.Commit()
 }
 
+// The cached file contains only the migrated empty schema. Each fixture receives
+// its own file, reruns schema validation and seeds independent synthetic facts.
+var sqliteFixtureSchema struct {
+	sync.Mutex
+	bytes []byte
+}
+
+func prepareSQLiteFixture(ctx context.Context, path string) error {
+	sqliteFixtureSchema.Lock()
+	defer sqliteFixtureSchema.Unlock()
+	if sqliteFixtureSchema.bytes == nil {
+		repo, err := store.Open(ctx, "sqlite", path)
+		if err != nil {
+			return err
+		}
+		if err = repo.Migrate(ctx); err != nil {
+			repo.Close()
+			return err
+		}
+		if err = repo.Close(); err != nil {
+			return err
+		}
+		schema, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		sqliteFixtureSchema.bytes = schema
+		return nil
+	}
+	return os.WriteFile(path, sqliteFixtureSchema.bytes, 0600)
+}
+
 func NewHarness(t testing.TB, backend string) *Fixture {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -291,6 +324,11 @@ func NewHarness(t testing.TB, backend string) *Fixture {
 	dsn := filepath.Join(t.TempDir(), "fixture.db")
 	var base *store.Repository
 	var schema string
+	if backend == "sqlite" {
+		if err := prepareSQLiteFixture(ctx, dsn); err != nil {
+			t.Fatal("isolated SQLite schema initialization failed:", err)
+		}
+	}
 	if backend == "postgres" {
 		original := os.Getenv("TEAMLEDGER_TEST_POSTGRES_DSN")
 		if original == "" {

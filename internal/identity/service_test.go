@@ -264,16 +264,22 @@ func TestOIDCStateBrowserPKCEExpiryOnceAndConcurrentCallbacks(t *testing.T) {
 			before := h.f.Count(t, "session")
 			var group sync.WaitGroup
 			accepted := make(chan identity.LoginResult, 8)
+			failures := make(chan error, 8)
+			start := make(chan struct{})
 			for range 8 {
 				group.Add(1)
 				go func() {
 					defer group.Done()
+					<-start
 					result, err := h.s.Complete(ctx, request)
 					if err == nil {
 						accepted <- result
+					} else {
+						failures <- err
 					}
 				}()
 			}
+			close(start)
 			group.Wait()
 			close(accepted)
 			var successes int
@@ -282,7 +288,7 @@ func TestOIDCStateBrowserPKCEExpiryOnceAndConcurrentCallbacks(t *testing.T) {
 				consumerSession(t, h, cookieHash(t, result.SessionCookie))
 			}
 			if successes != 1 || h.f.Count(t, "session") != before+1 {
-				t.Fatal("once callback races must produce exactly one persisted session")
+				t.Fatalf("once callback races must produce exactly one persisted session: successes=%d sessions=%d before=%d rejected=%d", successes, h.f.Count(t, "session"), before, len(failures))
 			}
 			// An unfinished encrypted proof also survives a new service/repository instance.
 			a = h.begin(t, "login", nil)

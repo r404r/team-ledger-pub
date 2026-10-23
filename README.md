@@ -8,6 +8,7 @@
 - 人员XLSX兼容、可编辑预览与org级学历目录：[DEV-046 PLAN](docs/plans/DEV-046.md) · [验证记录](docs/validation/DEV-046.md)。
 - 指定日期工资批量录入：[DEV-047 PLAN](docs/plans/DEV-047.md) · [验证记录](docs/validation/DEV-047.md)。
 - 人员导入可选字段与显式目录适配：[DEV-048 PLAN](docs/plans/DEV-048.md) · [验证记录](docs/validation/DEV-048.md)。
+- 人员导入HOD Staff Code复合格式与同批次逆序上级解析：[DEV-049 PLAN](docs/plans/DEV-049.md) · [验证记录](docs/validation/DEV-049.md)。
 
 ## Docker 安装与运维
 

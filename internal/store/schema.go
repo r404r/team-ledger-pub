@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"reflect"
 	"strings"
+	"sync"
 
 	"github.com/r404r/team-ledger/internal/fault"
 )
@@ -26,32 +27,7 @@ func (r *Repository) checkStructure(ctx context.Context, db queryer, version int
 	if r.Backend == "postgres" {
 		return r.checkPostgresStructure(ctx, db, version)
 	}
-	reference, err := sql.Open("sqlite", "file:teamledger_schema_reference?mode=memory&cache=private&_pragma=foreign_keys(1)")
-	if err != nil {
-		return fault.Unavailable
-	}
-	reference.SetMaxOpenConns(1)
-	defer reference.Close()
-	tx, err := reference.BeginTx(ctx, nil)
-	if err != nil {
-		return fault.Unavailable
-	}
-	defer tx.Rollback()
-	for current := 1; current <= version; current++ {
-		ddl, checksum, e := r.migration(current)
-		if e != nil {
-			return e
-		}
-		for _, statement := range migrationStatements(ddl) {
-			if _, e = tx.ExecContext(ctx, statement); e != nil {
-				return safeError(e)
-			}
-		}
-		if _, e = tx.ExecContext(ctx, "INSERT INTO schema_version(version,backend,checksum) VALUES(?,?,?)", current, "sqlite", checksum); e != nil {
-			return safeError(e)
-		}
-	}
-	expected, err := sqliteCatalog(ctx, tx)
+	expected, err := sqliteReferenceCatalog(ctx, r, version)
 	if err != nil {
 		return err
 	}
@@ -63,6 +39,48 @@ func (r *Repository) checkStructure(ctx context.Context, db queryer, version int
 		return fault.Unavailable
 	}
 	return nil
+}
+
+// Only the trusted, embedded migration reference is cached. Each check still reads
+// the target database's current definitions, ledger and foreign-key state.
+var sqliteReferences sync.Map
+
+func sqliteReferenceCatalog(ctx context.Context, r *Repository, version int) (map[string]string, error) {
+	if cached, ok := sqliteReferences.Load(version); ok {
+		return cached.(map[string]string), nil
+	}
+
+	reference, err := sql.Open("sqlite", "file:teamledger_schema_reference?mode=memory&cache=private&_pragma=foreign_keys(1)")
+	if err != nil {
+		return nil, fault.Unavailable
+	}
+	reference.SetMaxOpenConns(1)
+	defer reference.Close()
+	tx, err := reference.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fault.Unavailable
+	}
+	defer tx.Rollback()
+	for current := 1; current <= version; current++ {
+		ddl, checksum, e := r.migration(current)
+		if e != nil {
+			return nil, e
+		}
+		for _, statement := range migrationStatements(ddl) {
+			if _, e = tx.ExecContext(ctx, statement); e != nil {
+				return nil, safeError(e)
+			}
+		}
+		if _, e = tx.ExecContext(ctx, "INSERT INTO schema_version(version,backend,checksum) VALUES(?,?,?)", current, "sqlite", checksum); e != nil {
+			return nil, safeError(e)
+		}
+	}
+	expected, err := sqliteCatalog(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	cached, _ := sqliteReferences.LoadOrStore(version, expected)
+	return cached.(map[string]string), nil
 }
 
 func sqliteCatalog(ctx context.Context, db queryer) (map[string]string, error) {

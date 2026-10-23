@@ -54,6 +54,13 @@ func (r *Repository) withIdentityModeTx(ctx context.Context, expectedMode string
 		}
 	}
 	if expectedMode != "" {
+		// Acquire SQLite's writer before the mode read, matching PostgreSQL's
+		// FOR UPDATE ordering and avoiding a WAL read-snapshot upgrade race.
+		if r.Backend == "sqlite" {
+			if _, err = tx.ExecContext(ctx, "UPDATE identity_mode_state SET revision=revision WHERE id=1"); err != nil {
+				return safeError(err)
+			}
+		}
 		var mode string
 		if err = tx.QueryRowContext(ctx, q.sql("SELECT mode FROM identity_mode_state WHERE id=1", "SELECT mode FROM identity_mode_state WHERE id=1 FOR UPDATE")).Scan(&mode); err != nil || mode != expectedMode {
 			return fault.Unauthenticated

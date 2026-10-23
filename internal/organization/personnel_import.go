@@ -46,7 +46,9 @@ var personnelImportFields = []string{
 	"career_level_code", "manager_staff_code", "departure_date", "email", "phone", "profile_summary",
 }
 
-var personnelImportFieldLimits = []int{64, 256, 256, 16, 64, 64, 64, 64, 64, 32, 1024, 32, 32, 64, 32, 320, 64, 16 << 10}
+// The HOD Staff Code column accepts "<Staff Code>-<Staff Name>", so its raw limit is wider than
+// a Staff Code; the extracted code is still bound to the 64-byte Staff Code limit.
+var personnelImportFieldLimits = []int{64, 256, 256, 16, 64, 64, 64, 64, 64, 32, 1024, 32, 32, 320, 32, 320, 64, 16 << 10}
 
 type PersonnelImportRow struct {
 	RowNumber         int     `json:"row_number"`
@@ -224,6 +226,9 @@ func (s *Service) ReviewPersonnelImport(ctx context.Context, request Request, or
 	if err := s.resolvePersonnelImportCatalogs(ctx, org, &preview, snapshot.Allows("pii.read", "pii", "", request.Purpose, s.clock())); err != nil {
 		return PersonnelImportPreview{}, err
 	}
+	if err := s.resolvePersonnelManagers(ctx, org, &preview); err != nil {
+		return PersonnelImportPreview{}, err
+	}
 	return preview, nil
 }
 
@@ -256,6 +261,9 @@ func (s *Service) PreviewPersonnelImport(ctx context.Context, request Request, o
 		return PersonnelImportPreview{}, err
 	}
 	if err = s.resolvePersonnelImportCatalogs(ctx, org, &preview, snapshot.Allows("pii.read", "pii", "", request.Purpose, s.clock())); err != nil {
+		return PersonnelImportPreview{}, err
+	}
+	if err = s.resolvePersonnelManagers(ctx, org, &preview); err != nil {
 		return PersonnelImportPreview{}, err
 	}
 	return preview, nil
@@ -659,12 +667,29 @@ func validatePersonnelRow(source xlsx.Row, preview *PersonnelImportPreview, inde
 		}
 	}
 	if row.ManagerStaffCode != "" && !hasIssue("manager_staff_code") {
-		if normalized, ok := NormalizeStaffCode(row.ManagerStaffCode); !ok {
+		extracted := NormalizeHODStaffCode(row.ManagerStaffCode)
+		if normalized, ok := NormalizeStaffCode(extracted); !ok {
 			issue("manager_staff_code", "invalid_staff_code")
 		} else {
+			if extracted != row.ManagerStaffCode {
+				warning("manager_staff_code", "hod_staff_code_extracted")
+			}
 			row.ManagerStaffCode = normalized
 		}
 	}
+}
+
+// NormalizeHODStaffCode reduces a "HOD Staff Code" cell to the manager's plain Staff Code.
+// A real Staff Code never contains a hyphen, so a non-empty value with one is the composite
+// "<Staff Code>-<Staff Name>": the text before the first hyphen is kept, trimmed. Values without
+// a hyphen, including blank, are returned unchanged. Every import path that reads a HOD cell
+// must use this function so Preview and Commit resolve the same manager code.
+func NormalizeHODStaffCode(raw string) string {
+	code, _, composite := strings.Cut(raw, "-")
+	if !composite {
+		return raw
+	}
+	return strings.TrimSpace(code)
 }
 
 type personnelCatalogEntry struct {
@@ -879,6 +904,14 @@ func validatePersonnelReferences(preview *PersonnelImportPreview) {
 		}
 	}
 
+	selfReporting := map[int]bool{}
+	for index, row := range preview.Rows {
+		if row.ManagerStaffCode != "" && row.ManagerStaffCode == row.StaffCode {
+			selfReporting[index] = true
+			preview.Errors = append(preview.Errors, personnelImportIssue(row.RowNumber, "manager_staff_code", "manager_self_reference"))
+		}
+	}
+
 	state := make([]uint8, len(preview.Rows))
 	stack := make([]int, 0, len(preview.Rows))
 	stackAt := make(map[int]int, len(preview.Rows))
@@ -889,7 +922,7 @@ func validatePersonnelReferences(preview *PersonnelImportPreview) {
 		stackAt[index] = len(stack)
 		stack = append(stack, index)
 		managerIndexes := byCode[preview.Rows[index].ManagerStaffCode]
-		if len(managerIndexes) == 1 {
+		if len(managerIndexes) == 1 && !selfReporting[index] {
 			manager := managerIndexes[0]
 			if state[manager] == 0 {
 				visit(manager)
@@ -911,4 +944,52 @@ func validatePersonnelReferences(preview *PersonnelImportPreview) {
 	for index := range cycleRows {
 		preview.Errors = append(preview.Errors, personnelImportIssue(preview.Rows[index].RowNumber, "manager_staff_code", "manager_cycle"))
 	}
+}
+
+// resolvePersonnelManagers checks every HOD Staff Code against the union of this batch's Staff Codes
+// and the organization's existing Staff Codes. A manager listed on a later row, or in the database,
+// is valid; a code in neither set blocks only the row that cites it. Rows keep their original numbers.
+func (s *Service) resolvePersonnelManagers(ctx context.Context, org string, preview *PersonnelImportPreview) error {
+	batch := make(map[string]struct{}, len(preview.Rows))
+	for _, row := range preview.Rows {
+		if row.StaffCode != "" {
+			batch[row.StaffCode] = struct{}{}
+		}
+	}
+	existing := map[string]bool{}
+	for _, row := range preview.Rows {
+		code := row.ManagerStaffCode
+		if code == "" || previewHasIssue(preview, row.RowNumber, "manager_staff_code") {
+			continue
+		}
+		if _, inBatch := batch[code]; inBatch {
+			continue
+		}
+		found, checked := existing[code]
+		if !checked {
+			digest, keyID, version, err := s.staffCodeLookup(ctx, org, code)
+			if err != nil {
+				return err
+			}
+			found, err = s.Store.StaffCodeExists(ctx, org, keyID, version, digest)
+			clear(digest)
+			if err != nil {
+				return err
+			}
+			existing[code] = found
+		}
+		if !found {
+			preview.Errors = append(preview.Errors, personnelImportIssue(row.RowNumber, "manager_staff_code", "manager_not_found"))
+		}
+	}
+	return nil
+}
+
+func previewHasIssue(preview *PersonnelImportPreview, rowNumber int, field string) bool {
+	for _, existing := range preview.Errors {
+		if existing.RowNumber == rowNumber && existing.Field == field {
+			return true
+		}
+	}
+	return false
 }

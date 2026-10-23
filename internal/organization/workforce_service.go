@@ -321,6 +321,24 @@ func (s *Service) ChangeWorkforce(ctx context.Context, request Request, org stri
 	}
 	return result, nil
 }
+
+// staffCodeLookup derives the keyed lookup digest that identifies a normalized Staff Code within an
+// organization, shared by identifier writes and by read-only existence checks.
+func (s *Service) staffCodeLookup(ctx context.Context, org, normalized string) ([]byte, string, uint32, error) {
+	frame := []byte("staff-code\x00" + org + "\x00" + normalized)
+	if s.StaffCodeMAC != nil {
+		macValue, err := s.StaffCodeMAC(ctx, frame)
+		if err != nil || macValue.Version == 0 || macValue.KeyID == "" || len(macValue.Digest) != sha256.Size {
+			clear(macValue.Digest)
+			return nil, "", 0, fault.Unavailable
+		}
+		return macValue.Digest, macValue.KeyID, macValue.Version, nil
+	}
+	mac := hmac.New(sha256.New, s.DigestKey)
+	_, _ = mac.Write(frame)
+	return mac.Sum(nil), "legacy-process-key", 1, nil
+}
+
 func (s *Service) prepareWorkforceWrite(ctx context.Context, org, subject string, command WorkforceChangeCommand) (WorkforceWrite, error) {
 	write := WorkforceWrite{ID: value.NewID(), OrgID: org, SubjectID: subject, RecordedAt: s.clock(), Items: make([]WorkforcePreparedItem, len(command.Changes))}
 	if command.Reason != nil {
@@ -341,18 +359,10 @@ func (s *Service) prepareWorkforceWrite(ctx context.Context, org, subject string
 		case "identifier":
 			if item.Action != "end" {
 				normalized, _ := NormalizeStaffCode(*item.StaffCode)
-				frame := []byte("staff-code\x00" + org + "\x00" + normalized)
-				if s.StaffCodeMAC != nil {
-					macValue, err := s.StaffCodeMAC(ctx, frame)
-					if err != nil || macValue.Version == 0 || macValue.KeyID == "" || len(macValue.Digest) != sha256.Size {
-						clear(macValue.Digest)
-						return WorkforceWrite{}, fault.Unavailable
-					}
-					prepared.Digest, prepared.DigestKeyID, prepared.DigestKeyVersion = macValue.Digest, macValue.KeyID, macValue.Version
-				} else {
-					mac := hmac.New(sha256.New, s.DigestKey)
-					_, _ = mac.Write(frame)
-					prepared.Digest, prepared.DigestKeyID, prepared.DigestKeyVersion = mac.Sum(nil), "legacy-process-key", 1
+				var err error
+				prepared.Digest, prepared.DigestKeyID, prepared.DigestKeyVersion, err = s.staffCodeLookup(ctx, org, normalized)
+				if err != nil {
+					return WorkforceWrite{}, err
 				}
 				payload, err := s.sealWorkforceFact(ctx, org, item.EmployeeID, prepared.ID, "employee_identifier", "pii.employee_identifier.v1", struct {
 					StaffCode string `json:"staff_code"`

@@ -29,13 +29,6 @@ func (f fixedIdentityMode) IdentityMode(context.Context) (string, error) {
 	return f.mode, f.err
 }
 
-// Only the test executable dispatches this helper; the product has no test mode.
-func TestAPIStartupChildProcess(t *testing.T) {
-	if os.Getenv("TEAMLEDGER_TEST_API_CHILD") == "1" {
-		main()
-	}
-}
-
 func TestValidListenerScopes(t *testing.T) {
 	for _, test := range []struct {
 		name, address, scope string
@@ -74,6 +67,13 @@ func TestIdentityModeMatchesRuntimeDatabaseState(t *testing.T) {
 }
 
 func TestAPIStartupRequiresProtectedTLSAndLocalKeyd(t *testing.T) {
+	executable := filepath.Join(t.TempDir(), "api")
+	buildContext, stopBuild := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer stopBuild()
+	build := exec.CommandContext(buildContext, "go", "build", "-o", executable, ".")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("API build failed: %v\n%s", err, output)
+	}
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			f := testsupport.NewHarness(t, backend)
@@ -161,14 +161,10 @@ func TestAPIStartupRequiresProtectedTLSAndLocalKeyd(t *testing.T) {
 					address := listener.Addr().String()
 					_ = listener.Close()
 					origin := "https://" + address
-					executable, err := os.Executable()
-					if err != nil {
-						t.Fatal(err)
-					}
 					ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 					defer cancel()
-					command := exec.CommandContext(ctx, executable, "-test.run=^TestAPIStartupChildProcess$")
-					env := map[string]string{"BACKEND": backend, "DSN": f.DSN, "LISTEN": address, "PUBLIC_ORIGIN": origin, "TLS_CERT_FILE": filepath.Join(dir, "cert.pem"), "TLS_KEY_FILE": filepath.Join(dir, "api.key"), "KEYD_SOCKET": socket, "WEB_DIR": dir, "DEPLOYMENT_ID": "synthetic-deployment", "TEST_API_CHILD": "1", "COMPENSATION_POLICY_FILE": "", "IDENTITY_MODE": "local"}
+					command := exec.CommandContext(ctx, executable)
+					env := map[string]string{"BACKEND": backend, "DSN": f.DSN, "LISTEN": address, "PUBLIC_ORIGIN": origin, "TLS_CERT_FILE": filepath.Join(dir, "cert.pem"), "TLS_KEY_FILE": filepath.Join(dir, "api.key"), "KEYD_SOCKET": socket, "WEB_DIR": dir, "DEPLOYMENT_ID": "synthetic-deployment", "COMPENSATION_POLICY_FILE": "", "IDENTITY_MODE": "local"}
 					command.Env = os.Environ()
 					for name, value := range env {
 						command.Env = append(command.Env, "TEAMLEDGER_"+name+"="+value)

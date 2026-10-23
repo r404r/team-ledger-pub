@@ -22,7 +22,7 @@ func personnelWorkbookUpload(r *http.Request) bool {
 
 func (h *handler) personnelImportRoute(w http.ResponseWriter, r *http.Request, request organization.Request) bool {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/"), "/")
-	if len(parts) != 4 || parts[0] != "orgs" || parts[2] != "employees" || (parts[3] != "import-template" && parts[3] != "import-preview" && parts[3] != "import-review") {
+	if len(parts) != 4 || parts[0] != "orgs" || parts[2] != "employees" || (parts[3] != "import-template" && parts[3] != "import-preview" && parts[3] != "import-review" && parts[3] != "import-commit") {
 		return false
 	}
 	if !value.ValidID(parts[1]) || request.Purpose != "organization_management" {
@@ -44,6 +44,24 @@ func (h *handler) personnelImportRoute(w http.ResponseWriter, r *http.Request, r
 		w.Header().Set("Content-Length", strconv.Itoa(len(workbook)))
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(workbook)
+		return true
+	}
+	if parts[3] == "import-commit" {
+		if r.Method != http.MethodPost || r.URL.RawQuery != "" {
+			h.fail(w, fault.NotFound, request.RequestID)
+			return true
+		}
+		var command organization.PersonnelImportCommitCommand
+		if err := strictBodyLimit(w, r, &command, 5<<20); err != nil {
+			h.fail(w, err, request.RequestID)
+			return true
+		}
+		result, err := h.service.CommitPersonnelImport(r.Context(), request, parts[1], command)
+		if err != nil {
+			h.fail(w, err, request.RequestID)
+			return true
+		}
+		h.reply(w, http.StatusCreated, result)
 		return true
 	}
 	if parts[3] == "import-review" {

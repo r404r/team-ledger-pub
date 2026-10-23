@@ -27,6 +27,37 @@ func (r *Repository) EmployeeWorkforceFacts(ctx context.Context, org, employee, 
 	return r.read().EmployeeWorkforceFacts(ctx, org, employee, asOf)
 }
 
+func (r *Repository) StaffCodeExists(ctx context.Context, org, lookupKeyID string, lookupVersion uint32, digest []byte) (bool, error) {
+	return r.read().StaffCodeExists(ctx, org, lookupKeyID, lookupVersion, digest)
+}
+
+// StaffCodeExists reports whether any employee in the organization has ever held the Staff Code
+// whose keyed lookup digest is given, regardless of validity window.
+func (r reader) StaffCodeExists(ctx context.Context, org, lookupKeyID string, lookupVersion uint32, digest []byte) (bool, error) {
+	var found int
+	err := r.db.QueryRowContext(ctx, r.structureSQL("SELECT 1 FROM employee_business_identifier WHERE org_id=? AND kind='staff_code' AND lookup_key_id=? AND lookup_key_version=? AND lookup_digest=? LIMIT 1"), org, lookupKeyID, lookupVersion, digest).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, safeError(err)
+	}
+	return true, nil
+}
+
+func (r *Repository) StaffCodeEmployeeID(ctx context.Context, org, keyID string, version uint32, digest []byte, asOf string) (string, error) {
+	return r.read().StaffCodeEmployeeID(ctx, org, keyID, version, digest, asOf)
+}
+
+func (r reader) StaffCodeEmployeeID(ctx context.Context, org, keyID string, version uint32, digest []byte, asOf string) (string, error) {
+	var id string
+	err := r.db.QueryRowContext(ctx, r.structureSQL("SELECT employee_id FROM employee_business_identifier WHERE org_id=? AND kind='staff_code' AND lookup_key_id=? AND lookup_key_version=? AND lookup_digest=? AND valid_from<=? AND (valid_to IS NULL OR valid_to>?) LIMIT 1"), org, keyID, version, digest, asOf, asOf).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return id, safeError(err)
+}
+
 func (r reader) WorkforceCatalogs(ctx context.Context, org, asOf string) (organization.WorkforceCatalogs, error) {
 	out := organization.WorkforceCatalogs{
 		LegalEntities: []organization.LegalEntityView{}, Locations: []string{}, OrgUnits: []organization.OrgUnitView{}, OrgUnitParents: []organization.OrgUnitParentView{},
