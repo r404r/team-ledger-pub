@@ -1,6 +1,6 @@
 # TeamLedger · 整体最新技术文档
 
-- 当前修订日期：**2026-10-17**。本文件与源码同属 `team-ledger`，是当前架构、HTTP语义、安全边界和运行设计的唯一公开技术说明。
+- 当前修订日期：**2026-10-25**（DEV-052 仅调整公开文档表述）。本文件与源码同属 `team-ledger`，提供当前架构、HTTP语义、安全边界和运行设计的公开技术说明。
 - 当前实现基线：Go模块化单体、Vue、SQLite/PostgreSQL schema v19、本地keyd、local密码＋首次改密＋TOTP/OIDC互斥身份模式、standalone/Staff关联账号、org级受控学历目录、Normal/Special及指定日期工资基线批次、`identity.manage`用户管理、bootstrap管理员38项当前可委派authority、同库独立audit receiver及Docker Compose独立部署。
 - 历史Task ID用于说明实现阶段；历史私有计划、审查会话、本机路径及旧文档commit台账不属于public文档。实现事实以本仓库源码、v19迁移、永久测试和当前文档为准。
 - 功能/page/OP/AC登记见[功能规范](FUNCTIONAL_SPEC.md)，开发与验证门禁见[开发规则](DEVELOPMENT_RULES.md)，Docker操作见[README](../README.md)。
@@ -1382,7 +1382,7 @@ PG身份维护窄入口直接以同descriptor已检查的完整PEM CA bytes构�
 
 ## 10. 生产启用与TDD映射
 
-下表是完整目标与生产启用验收，不以任一历史切片覆盖其余范围。历史设计模型不当产品验收。实际开发按[开发规则](DEVELOPMENT_RULES.md)RED→最小真实GREEN→REFACTOR；测试、DDL、契约和版本证据只在本仓库维护，不复制测试假成功。
+下表是完整目标与生产启用验收，不以任一历史切片覆盖其余范围。历史设计模型不当产品验收。实际开发按[开发规则](DEVELOPMENT_RULES.md)RED→最小真实GREEN→REFACTOR；测试、DDL、契约及公开版本证据与本仓库源码对应，不复制测试假成功。
 
 | feature / 责任 | TDD核心可观察案例 | 集成/启用必要证据 |
 | --- | --- | --- |
@@ -1415,4 +1415,4 @@ PG身份维护窄入口直接以同descriptor已检查的完整PEM CA bytes构�
 - **S4**：[Vue Security](https://vuejs.org/guide/best-practices/security.html)，非可信模板/HTML风险，具体敏感缓存限制为本项目设计。
 - **S5**：[Go GCM官方实现文档](https://go.dev/src/crypto/cipher/gcm.go)，支持payload及一次性派生key的AES-GCM边界；同一派生key只Seal一次，不把随机nonce碰撞预算留给实现猜测。[RFC 5649](https://www.rfc-editor.org/rfc/rfc5649)定义带完整性检查的AES Key Wrap with Padding，本设计用于32-byte DEK wrapper；代码task须锁定实现并用RFC向量、篡改和上下文错配验证。
 
-未在本规范列出第一方来源或运行证据的数据库、加密、key rotation、backup、AI及法域结论，一律不得标记已验证。未来重大结论或政策变更先更新task计划，再同步本文件、功能规范、源码、契约、迁移和验证；全部当前文档只在本仓库维护。
+未在本规范列出第一方来源或运行证据的数据库、加密、key rotation、backup、AI及法域结论，一律不得标记已验证。未来重大结论或政策变更先更新task计划，再同步本文件、功能规范、源码、契约、迁移和验证；本仓库提供与源码配套的公开文档。
