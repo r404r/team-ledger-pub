@@ -1394,7 +1394,7 @@ PG身份维护窄入口直接以同descriptor已检查的完整PEM CA bytes构�
 | F-SEC-001 / identity/authz/sensitive/audit | 授权先于keyd；本地首次改密/TOTP/recovery受限session；`identity.manage`与grant/audit分离；38项bootstrap authority精确tuple/object边界；standalone/Staff关联原子创建及动态一层默认scope；持久replay；openat2/no-replace/lock；AAD/KWP；18-domain inventory与DB ack；MAC staging | bootstrap固定三项安全direct grant＋38项当前可委派authority、用户list/create幂等/分页/拒绝、Staff关联员工/面谈窄默认权与越界拒绝、首次改密直达API隔离；显式目标assignment仍用于普通grant；RFC向量、登记/登录/step-up/恢复/离线reset；secret不入DB明文/日志；真实OIDC/介质责任另验 |
 | F-DB-001 / adapters/ops | PK/FK/owner/CAS/失败回滚、每连接FK、busy/死锁、v12–v19 checksum及前向migration | SQLite/PG空schema安装至v19；v1-v11/未知目标拒绝；exact v12–v18顺序升v19、exact v19重启；业务/教育/MFA/审计/authority/账号映射及原调薪保留；备份恢复、生产构建API/UI smoke与负载目标 |
 
-纵向实施顺序与功能规范一致：安全/双库最小真实读写→组织历史→分区面谈/交接→薪资批准纠错→奖金事实→确定规则/AI人审→生产运行启用门禁；每片已有真实界面/API/存储/授权，不先堆空package再宣称功能。安全与恢复从相关切片落实，末项是上线验收不是此前许可忽略。Go行为table/fuzz/race、双库真实集成、Vue/Vitest和关键浏览器E2E各自证据不互替；分工不跑检查，集成负责人统一验证最终候选，整体task两轮串行实际luna review。
+纵向实施顺序与功能规范一致：安全/双库最小真实读写→组织历史→分区面谈/交接→薪资批准纠错→奖金事实→确定规则/AI人审→生产运行启用门禁；每片已有真实界面/API/存储/授权，不先堆空package再宣称功能。安全与恢复从相关切片落实，末项是上线验收不是此前许可忽略。Go行为table/fuzz/race、双库真实集成、Vue/Vitest和关键浏览器E2E各自证据不互替；分工不跑检查，集成负责人统一验证最终候选，整体task两轮串行实际独立审查。
 
 生产密钥来源已由DES-007批准为本地受保护root file＋同部署keyd；DES-008进一步批准两份分离加密可移动介质、本地identity mode与Compose同库audit receiver。DEV-021已固定可执行离线流程；具体保管人、实际介质和解锁职责仍是生产部署决定，不是实现阻塞。IdP仅在可选`oidc` mode需要。容量与AI/保留等业务政策仍待实际启用决定；RPO/RTO/PITR等灾备目标明确scope外。
 
