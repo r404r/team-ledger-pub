@@ -298,7 +298,9 @@ func TestEmployeeScopedSessionCanReadAndCorrectOnlyGrantedEmployee(t *testing.T)
 				t.Fatal("employee scope cannot read approved profile")
 			}
 			var history organization.HistoryPage
-			apiSend(t, f, apiRequest(t, f, f.Owner, "GET", "/api/v1/employees/"+first.ID+"/organization-history?from=2026-10-01&to=2026-11-01&limit=10", "", ""), 200, &history)
+			from := f.Now.Format("2006-01-02")
+			to := f.Now.AddDate(0, 0, 1).Format("2006-01-02")
+			apiSend(t, f, apiRequest(t, f, f.Owner, "GET", "/api/v1/employees/"+first.ID+"/organization-history?from="+from+"&to="+to+"&limit=10", "", ""), 200, &history)
 			if len(history.Items) != 0 {
 				t.Fatalf("employee-scoped empty organization history = %#v", history)
 			}

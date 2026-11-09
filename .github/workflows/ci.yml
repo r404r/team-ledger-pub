@@ -25,14 +25,37 @@ jobs:
           go-version-file: go.mod
       - run: go vet ./...
 
+  test-matrix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      include: ${{ steps.packages.outputs.include }}
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: go.mod
+      - id: packages
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          packages=$(go list ./... | jq -Rsc 'split("\n") | map(select(length > 0))')
+          include=$(jq -cn --arg event "$EVENT_NAME" --argjson packages "$packages" '
+            [{race: "off", package: "./..."}] +
+            (if $event == "push" then $packages | map({race: "on", package: .}) else [] end)')
+          echo "include=$include" >> "$GITHUB_OUTPUT"
+
   go-postgres:
-    name: ${{ matrix.race == 'on' && 'race' || 'go-postgres' }}
+    needs: test-matrix
+    name: ${{ matrix.race == 'on' && format('race ({0})', matrix.package) || 'go-postgres' }}
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ matrix.race == 'on' && 60 || 30 }}
     strategy:
       fail-fast: false
       matrix:
-        race: ${{ fromJSON(github.event_name == 'push' && '["off", "on"]' || '["off"]') }}
+        include: ${{ fromJSON(needs.test-matrix.outputs.include) }}
     services:
       postgres:
         image: postgres:17-bookworm
@@ -60,12 +83,24 @@ jobs:
       - name: Test SQLite WAL and PostgreSQL
         env:
           RACE: ${{ matrix.race }}
+          TEST_PACKAGE: ${{ matrix.package }}
         run: |
           args=()
           if [[ "$RACE" == on ]]; then
             args+=(-race -timeout=30m)
           fi
-          go test "${args[@]}" -p 2 -count=1 ./...
+          go test "${args[@]}" -p 2 -count=1 "$TEST_PACKAGE"
+
+  race:
+    if: ${{ always() && github.event_name == 'push' }}
+    needs: go-postgres
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every package to finish successfully
+        env:
+          TEST_RESULT: ${{ needs.go-postgres.result }}
+        run: test "$TEST_RESULT" = success
 
   web:
     runs-on: ubuntu-24.04
