@@ -185,12 +185,13 @@ func TestAdjustmentBatchSpecialUsesControlledReasonAndReportsYearCounts(t *testi
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/employees", createJSON, value.NewID()), http.StatusCreated, &employee)
 			legalEntity := prepareBatchEmployee(t, f, employee.ID, "T-001", "Tokyo", "JPY")
 			var batch compensation.BatchView
-			create := compensation.CreateBatchCommand{Name: "2026 Special", CycleYear: 2026, AdjustmentType: compensation.BatchSpecial, LegalEntityID: legalEntity, DefaultEffectiveDate: "2025-03-01", SpecialReasonCode: "market_adjustment", SpecialReasonText: "market alignment", BudgetCurrency: "JPY", BudgetAmount: "1000000"}
+			previousMarch := fmt.Sprintf("%04d-03", f.Now.Year()-1)
+			create := compensation.CreateBatchCommand{Name: "2026 Special", CycleYear: 2026, AdjustmentType: compensation.BatchSpecial, LegalEntityID: legalEntity, DefaultEffectiveDate: previousMarch + "-01", SpecialReasonCode: "market_adjustment", SpecialReasonText: "market alignment", BudgetCurrency: "JPY", BudgetAmount: "1000000"}
 			apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPost, "/api/v1/compensation-adjustment-batches", structureJSON(t, create), value.NewID()), http.StatusCreated, &batch)
 			if err := f.Exec(t.Context(), "INSERT INTO compensation_special_reason(org_id,code,label,active) VALUES(?,?,?,1)", "INSERT INTO compensation_special_reason(org_id,code,label,active) VALUES($1,$2,$3,TRUE)", f.OrgID, "obsolete_reason", "Obsolete"); err != nil {
 				t.Fatal(err)
 			}
-			invalid := compensation.ReplaceBatchLinesCommand{Revision: "1", Lines: []compensation.BatchLineCommand{{EmployeeID: employee.ID, StaffCode: "T-001", Currency: "JPY", SalaryBefore: "0", IncreaseAmount: "1000", SalaryAfter: "1000", EffectiveMonth: "2025-03", ReasonCode: "obsolete_reason", ReasonText: "market alignment"}}}
+			invalid := compensation.ReplaceBatchLinesCommand{Revision: "1", Lines: []compensation.BatchLineCommand{{EmployeeID: employee.ID, StaffCode: "T-001", Currency: "JPY", SalaryBefore: "0", IncreaseAmount: "1000", SalaryAfter: "1000", EffectiveMonth: previousMarch, ReasonCode: "obsolete_reason", ReasonText: "market alignment"}}}
 			apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPatch, "/api/v1/compensation-adjustment-batches/"+batch.ID+"/draft", structureJSON(t, invalid), value.NewID()), http.StatusUnprocessableEntity, nil)
 			valid := invalid
 			valid.Lines[0].ReasonCode = "market_adjustment"
@@ -204,7 +205,7 @@ func TestAdjustmentBatchSpecialUsesControlledReasonAndReportsYearCounts(t *testi
 				t.Fatalf("activated effective-year count not visible: %#v", batch.Lines[0].AdjustmentCounts)
 			}
 			var current compensation.CurrentView
-			apiSend(t, f, financeHTTPRequest(t, f, f.FinR, http.MethodGet, "/api/v1/employees/"+employee.ID+"/compensation?as_of=2025-03-01", "", ""), http.StatusOK, &current)
+			apiSend(t, f, financeHTTPRequest(t, f, f.FinR, http.MethodGet, "/api/v1/employees/"+employee.ID+"/compensation?as_of="+previousMarch+"-01", "", ""), http.StatusOK, &current)
 			if current.CurrentTerm == nil || current.CurrentTerm.Terms.AmountMinor == nil || *current.CurrentTerm.Terms.AmountMinor != "1000" || current.CurrentTerm.Terms.Currency != "JPY" {
 				t.Fatalf("special activation did not publish JPY salary: %#v", current)
 			}
