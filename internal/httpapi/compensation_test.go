@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/r404r/team-ledger/internal/compensation"
 	"github.com/r404r/team-ledger/internal/organization"
@@ -73,7 +74,9 @@ func TestFinanceHTTPIndependentApprovalExactMoneyAndStrictNestedInput(t *testing
 			}
 			draft = edited
 			var proposals compensation.ChangesView
-			history := base + "/changes?from=2026-01-01T00:00:00Z&to=2027-01-01T00:00:00Z&record_kind=proposals"
+			from := f.Now.Add(-time.Hour).Format(time.RFC3339Nano)
+			to := f.Now.Add(time.Hour).Format(time.RFC3339Nano)
+			history := base + "/changes?from=" + url.QueryEscape(from) + "&to=" + url.QueryEscape(to) + "&record_kind=proposals"
 			apiSend(t, f, financeHTTPRequest(t, f, f.FinR, "GET", history, "", ""), 200, &proposals)
 			if len(proposals.Proposals) != 1 || proposals.Proposals[0].Revision != draft.Revision || proposals.Proposals[0].Reason != edit.Reason {
 				t.Fatal("proposal history must reload current draft fields and revision independently from salary")

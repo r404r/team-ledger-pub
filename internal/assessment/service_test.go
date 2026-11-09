@@ -62,6 +62,9 @@ func TestAssessmentPolicyWindowsFactsAndPartialCoverage(t *testing.T) {
 	assessmentBackends(t, func(t *testing.T, f *testsupport.Fixture) {
 		ctx := context.Background()
 		employee := assessmentEmployee(t, f)
+		// Keep both the scheduled and actual facts inside distinct weekly windows.
+		anchor := f.Now.AddDate(0, 0, -14).Format("2006-01-02")
+		through := f.Now.AddDate(0, 0, 21).Format("2006-01-02")
 
 		unconfigured, err := f.Assessment.Status(ctx, assessmentRequest(f.FollowupManager), employee, assessment.StatusQuery{})
 		if err != nil || unconfigured.State != "unconfigured" || unconfigured.Policy != nil || len(unconfigured.Items) != 0 {
@@ -70,7 +73,7 @@ func TestAssessmentPolicyWindowsFactsAndPartialCoverage(t *testing.T) {
 
 		command := assessment.PolicyCommand{
 			ExpectedRevision: "0", Cadence: assessment.Cadence{Unit: "week", Count: 1},
-			AnchorDate: "2026-10-01", Timezone: "UTC", DueOffsetDays: 1, LocalDueTime: "17:00", WindowThrough: "2026-11-01",
+			AnchorDate: anchor, Timezone: "UTC", DueOffsetDays: 1, LocalDueTime: "17:00", WindowThrough: through,
 			Purpose: "interview_followup", AIMode: "periodic_structured_v1", RequiredFields: []string{"actual_ended_at", "actual_started_at"},
 		}
 		if _, err = f.Assessment.PutPolicy(ctx, assessmentRequest(f.Reader), employee, command); !errors.Is(err, fault.NotFound) {
@@ -113,7 +116,7 @@ func TestAssessmentPolicyWindowsFactsAndPartialCoverage(t *testing.T) {
 			t.Fatal("real interview completion:", err)
 		}
 
-		status, err := f.Assessment.Status(ctx, assessmentRequest(f.FollowupManager), employee, assessment.StatusQuery{From: "2026-10-01", To: "2026-11-01"})
+		status, err := f.Assessment.Status(ctx, assessmentRequest(f.FollowupManager), employee, assessment.StatusQuery{From: anchor, To: through})
 		if err != nil || status.State != "configured" || status.AIState != "blocked" || status.AIBlockReason != "automation_not_enabled" || status.Coverage.Interviews != "complete" || status.Coverage.Actions != "complete" {
 			t.Fatal("configured deterministic status:", status, err)
 		}

@@ -151,7 +151,10 @@ func TestAPIWorkforceHierarchyBuildsAcrossCatalogTransactions(t *testing.T) {
 				t.Fatalf("workforce organization tree = %#v", tree)
 			}
 			var history organization.HistoryPage
-			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodGet, "/api/v1/employees/"+employee.ID+"/organization-history?from=2026-10-01&to=2026-11-01&limit=10", "", ""), http.StatusOK, &history)
+			// History filters the recording date, independently of valid_from.
+			from := f.Now.Format("2006-01-02")
+			to := f.Now.AddDate(0, 0, 1).Format("2006-01-02")
+			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodGet, "/api/v1/employees/"+employee.ID+"/organization-history?from="+from+"&to="+to+"&limit=10", "", ""), http.StatusOK, &history)
 			if len(history.Items) != 1 || len(history.Items[0].Items) != 5 || history.Items[0].Items[0].EmployeeID != employee.ID || history.Items[0].Reason == nil || *history.Items[0].Reason != "Synthetic workforce reason" {
 				t.Fatalf("workforce history projection = %#v", history)
 			}
