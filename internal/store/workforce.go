@@ -35,7 +35,7 @@ func (r *Repository) StaffCodeExists(ctx context.Context, org, lookupKeyID strin
 // whose keyed lookup digest is given, regardless of validity window.
 func (r reader) StaffCodeExists(ctx context.Context, org, lookupKeyID string, lookupVersion uint32, digest []byte) (bool, error) {
 	var found int
-	err := r.db.QueryRowContext(ctx, r.structureSQL("SELECT 1 FROM employee_business_identifier WHERE org_id=? AND kind='staff_code' AND lookup_key_id=? AND lookup_key_version=? AND lookup_digest=? LIMIT 1"), org, lookupKeyID, lookupVersion, digest).Scan(&found)
+	err := r.db.QueryRowContext(ctx, r.structureSQL("SELECT 1 FROM staff_code_identifier WHERE org_id=? AND kind='staff_code' AND lookup_key_id=? AND lookup_key_version=? AND lookup_digest=? LIMIT 1"), org, lookupKeyID, lookupVersion, digest).Scan(&found)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -51,7 +51,7 @@ func (r *Repository) StaffCodeEmployeeID(ctx context.Context, org, keyID string,
 
 func (r reader) StaffCodeEmployeeID(ctx context.Context, org, keyID string, version uint32, digest []byte, asOf string) (string, error) {
 	var id string
-	err := r.db.QueryRowContext(ctx, r.structureSQL("SELECT employee_id FROM employee_business_identifier WHERE org_id=? AND kind='staff_code' AND lookup_key_id=? AND lookup_key_version=? AND lookup_digest=? AND valid_from<=? AND (valid_to IS NULL OR valid_to>?) LIMIT 1"), org, keyID, version, digest, asOf, asOf).Scan(&id)
+	err := r.db.QueryRowContext(ctx, r.structureSQL("SELECT employee_id FROM staff_code_identifier WHERE org_id=? AND kind='staff_code' AND lookup_key_id=? AND lookup_key_version=? AND lookup_digest=? AND valid_from<=? AND (valid_to IS NULL OR valid_to>?) LIMIT 1"), org, keyID, version, digest, asOf, asOf).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -340,7 +340,7 @@ func (r reader) EmployeeWorkforceFacts(ctx context.Context, org, employee, asOf 
 		Identifiers: []organization.IdentifierView{}, Employment: []organization.EmploymentView{}, Education: []organization.EducationView{},
 		JobAssignments: []organization.JobAssignmentView{}, ReportingLines: []organization.ReportingView{},
 	}
-	rows, err := r.db.QueryContext(ctx, r.structureSQL("SELECT id,kind,payload_id,"+r.structureDate("valid_from")+","+r.structureDate("valid_to")+" FROM employee_business_identifier WHERE org_id=? AND employee_id=? AND valid_from<=? AND (valid_to IS NULL OR valid_to>?) ORDER BY valid_from,id"), org, employee, asOf, asOf)
+	rows, err := r.db.QueryContext(ctx, r.structureSQL("SELECT id,kind,payload_id,"+r.structureDate("valid_from")+","+r.structureDate("valid_to")+" FROM staff_code_identifier WHERE org_id=? AND employee_id=? AND valid_from<=? AND (valid_to IS NULL OR valid_to>?) ORDER BY valid_from,id"), org, employee, asOf, asOf)
 	if err != nil {
 		return out, safeError(err)
 	}

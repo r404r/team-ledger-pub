@@ -29,7 +29,7 @@ func TestV19FreshInstallPreservesCleanWorkforceBaseline(t *testing.T) {
 	if err = repo.DB.QueryRowContext(ctx, "SELECT count(*),max(version) FROM schema_version").Scan(&versionRows, &version); err != nil {
 		t.Fatal(err)
 	}
-	if versionRows != 19 || version != 19 {
+	if versionRows != 20 || version != 20 {
 		t.Fatalf("fresh baseline ledger = %d rows/max %d, want complete v1..v19 checksums", versionRows, version)
 	}
 
@@ -100,7 +100,7 @@ func TestV19PostgresInstallHasNoTeamEraTables(t *testing.T) {
 	if err := f.Repo.DB.QueryRowContext(ctx, "SELECT count(*),max(version) FROM schema_version").Scan(&versionRows, &version); err != nil {
 		t.Fatal(err)
 	}
-	if versionRows != 19 || version != 19 {
+	if versionRows != 20 || version != 20 {
 		t.Fatalf("fresh PostgreSQL baseline ledger = %d rows/max %d", versionRows, version)
 	}
 	for _, name := range []string{"team", "team_parent_history", "team_membership", "position_assignment"} {

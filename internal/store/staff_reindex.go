@@ -20,6 +20,10 @@ type StaffIndexReplacement struct {
 }
 
 func (r *Repository) StaffIndexSources(ctx context.Context) ([]StaffIndexSource, error) {
+	var projected int
+	if err := r.DB.QueryRowContext(ctx, "SELECT count(*) FROM staff_code_normalization").Scan(&projected); err != nil || projected != 0 {
+		return nil, fault.Conflict
+	}
 	rows, err := r.DB.QueryContext(ctx, "SELECT i.id,i.org_id,i.employee_id,i.lookup_digest,p.record_id,p.version_id,p.owner_kind,p.purpose,p.schema_type,p.schema_version,p.format_version,p.algorithm,p.dek_id,p.kek_id,p.kek_version,p.wrapped_dek,p.sealed_bytes FROM employee_business_identifier i JOIN workforce_payload p ON p.org_id=i.org_id AND p.id=i.payload_id WHERE i.kind='staff_code' ORDER BY i.org_id,i.id")
 	if err != nil {
 		return nil, safeError(err)
@@ -41,6 +45,10 @@ func (r *Repository) StaffIndexSources(ctx context.Context) ([]StaffIndexSource,
 }
 
 func (r *Repository) ApplyStaffIndexReplacements(ctx context.Context, target sensitive.KeyReference, replacements []StaffIndexReplacement) error {
+	var projections int
+	if err := r.DB.QueryRowContext(ctx, "SELECT count(*) FROM staff_code_normalization").Scan(&projections); err != nil || projections != 0 {
+		return fault.Conflict
+	}
 	if target.KeyID == "" || target.Version == 0 {
 		return fault.Invalid
 	}

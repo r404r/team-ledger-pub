@@ -118,7 +118,7 @@ func TestParsePersonnelWorkbookCoercesIntegerStaffCodeWithoutDuplicateErrors(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(preview.Errors) != 0 || preview.Rows[0].StaffCode != "7107" || len(preview.Warnings) != 1 || preview.Warnings[0].Code != "numeric_staff_code_coerced" {
+	if len(preview.Errors) != 0 || preview.Rows[0].StaffCode != "007107" || len(preview.Warnings) != 2 || preview.Warnings[0].Code != "numeric_staff_code_coerced" {
 		t.Fatalf("preview = %#v", preview)
 	}
 }
@@ -323,6 +323,28 @@ func TestParsePersonnelWorkbookReportsSelfReportingAndCompositeCycles(t *testing
 	for cell, code := range want {
 		if got[cell] != code {
 			t.Fatalf("issues = %#v, want %#v", preview.Errors, want)
+		}
+	}
+}
+
+func TestPersonnelImportPadsBothStaffAndExtractedHOD(t *testing.T) {
+	preview, err := parsePersonnelWorkbook(personnelWorkbook(t, [][]string{
+		personnelRow("SUB001", "Synthetic Subordinate", "2213-Name"),
+		personnelRow("2213", "Synthetic Manager", ""),
+	}, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Errors) != 0 || preview.Rows[0].ManagerStaffCode != "002213" || preview.Rows[1].StaffCode != "002213" {
+		t.Fatal("numeric manager normalization failed")
+	}
+	warnings := map[string]int{}
+	for _, issue := range preview.Warnings {
+		warnings[issue.Field+":"+issue.Code]++
+	}
+	for _, key := range []string{"staff_code:staff_code_zero_padded", "manager_staff_code:staff_code_zero_padded", "manager_staff_code:hod_staff_code_extracted"} {
+		if warnings[key] != 1 {
+			t.Errorf("missing warning %s", key)
 		}
 	}
 }

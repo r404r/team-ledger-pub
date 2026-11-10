@@ -268,7 +268,7 @@ func (r reader) sql(s, p string) string {
 }
 func (r *Repository) read() reader { return reader{r.DB, r.Backend} }
 
-const currentSchemaVersion = 19
+const currentSchemaVersion = 20
 
 func (r *Repository) migration(version int) (string, string, error) {
 	if (r.Backend != "sqlite" && r.Backend != "postgres") || version < 1 || version > currentSchemaVersion {
@@ -360,6 +360,10 @@ func (r *Repository) CheckSchema(ctx context.Context) error {
 	defer tx.Rollback()
 	if err = r.checkSchemaVersion(ctx, tx, currentSchemaVersion); err != nil {
 		return err
+	}
+	var phase string
+	if err = tx.QueryRowContext(ctx, "SELECT phase FROM staff_code_normalization_state WHERE id=1").Scan(&phase); err != nil || phase != "ready" {
+		return fault.Unavailable
 	}
 	return safeError(tx.Commit())
 }

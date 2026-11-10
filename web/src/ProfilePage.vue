@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { normalizeStaffCode } from './staffCode'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import PersonnelImportPanel from './PersonnelImportPanel.vue'
 
@@ -852,6 +853,7 @@ onBeforeUnmount(() => {
               <label class="profile-field" for="profile-staff-code">
                 <span>Staff Code <small>工号 · 必填</small></span>
                 <input id="profile-staff-code" v-model="form.staffCode" name="staff_code" maxlength="64" required :readonly="commandUncertain" autocomplete="off" />
+                <small v-if="normalizeStaffCode(form.staffCode) && normalizeStaffCode(form.staffCode) !== form.staffCode">将保存为 {{ normalizeStaffCode(form.staffCode) }}（以服务端校验为准）</small>
               </label>
               <div class="profile-manager-search">
                 <label class="profile-field" for="profile-manager-search">

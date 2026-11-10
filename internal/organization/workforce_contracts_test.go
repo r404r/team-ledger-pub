@@ -10,6 +10,17 @@ func TestStaffCodeNormalizationPreservesBusinessIdentity(t *testing.T) {
 		input, want string
 		valid       bool
 	}{
+		{"1", "000001", true},
+		{"2213", "002213", true},
+		{"12345", "012345", true},
+		{"002213", "002213", true},
+		{"1234567", "1234567", true},
+		{"1234567890", "1234567890", true},
+		{"12345678901", "", false},
+		{"A123", "A123", true},
+		{"１２３", "１２３", true},
+		{" 2213", "", false},
+		{"2213 ", "", false},
 		{"001 AbC", "001 AbC", true},
 		{"e\u0301-01", "é-01", true},
 		{" AbC", "", false},

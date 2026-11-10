@@ -165,7 +165,7 @@ func (r *Repository) checkPostgresStructure(ctx context.Context, db queryer, ver
 			return e
 		}
 		for _, statement := range migrationStatements(ddl) {
-			for _, function := range []string{"delegation_authority_immutable", "structure_fact_immutable", "structure_relation_immutable", "structure_item_owner", "interview_fact_immutable", "interview_owner_immutable", "interview_source_approval", "interview_source_limit", "interview_transition_guard", "action_transition_guard", "compensation_grant_owner_immutable", "compensation_fact_immutable", "compensation_proposal_guard", "compensation_aggregate_guard", "bonus_fact_immutable", "hmac_state_org_insert", "assessment_fact_immutable", "followup_window_owner_immutable", "assessment_input_guard", "assessment_payload_immutable", "invalidate_assessment_grant", "invalidate_assessment", "invalidate_proposed_assessment_grant", "invalidate_proposed_assessment", "invalidate_assessment_grant_change", "bump_assessment_source_epoch", "bump_assessment_grant_epoch", "key_rewrap_write_guard", "compensation_batch_payload_update_guard", "salary_range_payload_update_guard", "compensation_batch_import_candidate_update_guard", "compensation_batch_header_payload_guard", "compensation_batch_header_owner_guard", "audit_receiver_immutable", "seed_default_education_levels"} {
+			for _, function := range []string{"delegation_authority_immutable", "structure_fact_immutable", "structure_relation_immutable", "structure_item_owner", "interview_fact_immutable", "interview_owner_immutable", "interview_source_approval", "interview_source_limit", "interview_transition_guard", "action_transition_guard", "compensation_grant_owner_immutable", "compensation_fact_immutable", "compensation_proposal_guard", "compensation_aggregate_guard", "bonus_fact_immutable", "hmac_state_org_insert", "assessment_fact_immutable", "followup_window_owner_immutable", "assessment_input_guard", "assessment_payload_immutable", "invalidate_assessment_grant", "invalidate_assessment", "invalidate_proposed_assessment_grant", "invalidate_proposed_assessment", "invalidate_assessment_grant_change", "bump_assessment_source_epoch", "bump_assessment_grant_epoch", "key_rewrap_write_guard", "compensation_batch_payload_update_guard", "salary_range_payload_update_guard", "compensation_batch_import_candidate_update_guard", "compensation_batch_header_payload_guard", "compensation_batch_header_owner_guard", "audit_receiver_immutable", "seed_default_education_levels", "staff_normalization_guard"} {
 				statement = strings.Replace(statement, "CREATE FUNCTION "+function, "CREATE FUNCTION pg_temp."+function, 1)
 				statement = strings.Replace(statement, "EXECUTE FUNCTION "+function, "EXECUTE FUNCTION pg_temp."+function, 1)
 			}
@@ -206,9 +206,11 @@ SELECT 'table',c.relname::text,jsonb_build_array(c.relkind,CASE WHEN n.oid=pg_my
 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
 WHERE n.nspname=$1 AND c.relkind IN('r','p','v','m','f','S')
 UNION ALL
+SELECT 'view',c.relname::text,pg_get_viewdef(c.oid,true) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relkind='v'
+UNION ALL
 SELECT 'column',c.relname||'.'||a.attnum::text,jsonb_build_array(a.attname,format_type(a.atttypid,a.atttypmod),a.attcollation::regcollation::text,a.attnotnull,a.attidentity,a.attgenerated,pg_get_expr(d.adbin,d.adrelid))::text
 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_attribute a ON a.attrelid=c.oid LEFT JOIN pg_attrdef d ON d.adrelid=c.oid AND d.adnum=a.attnum
-WHERE n.nspname=$1 AND a.attnum>0 AND NOT a.attisdropped
+WHERE n.nspname=$1 AND c.relkind IN('r','p','v','m','f') AND a.attnum>0 AND NOT a.attisdropped
 UNION ALL
 SELECT 'constraint',c.relname||'.'||k.conname,jsonb_build_array(k.contype,k.convalidated,k.condeferrable,k.condeferred,pg_get_constraintdef(k.oid,true))::text
 FROM pg_constraint k JOIN pg_class c ON c.oid=k.conrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1

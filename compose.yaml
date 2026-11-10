@@ -341,6 +341,25 @@ services:
       - no-new-privileges:true
     restart: "no"
 
+  staff-normalize:
+    <<: *team-ledger-image
+    profiles: ["staff-normalize"]
+    user: "${TEAMLEDGER_MAINTENANCE_UID:?set TEAMLEDGER_MAINTENANCE_UID}:${TEAMLEDGER_GID:?set TEAMLEDGER_GID}"
+    entrypoint: ["/app/teamledger-staff-normalize"]
+    volumes:
+      - team-ledger-data:/var/lib/teamledger
+      - team-ledger-run:/run/teamledger-keyd
+      - ./docker/maintenance:/run/teamledger-maintenance:ro
+      - ./docker/maintenance:/etc/teamledger:ro
+      - ${TEAMLEDGER_BACKUP_DIR:-./backups}:/backup
+    read_only: true
+    tmpfs:
+      - /tmp:mode=0700,uid=${TEAMLEDGER_MAINTENANCE_UID:?set TEAMLEDGER_MAINTENANCE_UID},gid=${TEAMLEDGER_GID:?set TEAMLEDGER_GID}
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
   key-offline-export:
     <<: *team-ledger-image
     profiles: ["offline-keys"]

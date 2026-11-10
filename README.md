@@ -761,3 +761,6 @@ docker compose --env-file .env.docker --profile maintenance run --rm maintenance
 ```
 
 `identity_subject_lookup`、`local_username_lookup`、`staff_code_lookup`和`csrf_token`须分别stage，不得共用manifest或目标key。OIDC source是AAD绑定mapping/org/subject的`identity.mapping.v1`密文；local username和Staff Code也只从各自受保护source重建。source缺失、集合漂移、错误manifest、目标key/version不一致或任一CAS失败均保持不可写，不做部分切换。所有持久MAC事实保存exact key ID/version。`command_receipt`、`assessment_generation`当前没有安全到期/全量重建policy，`local_password_pepper`当前没有credential dependency maintenance入口；`teamledger-keyctl-local`拒绝这三个domain的generic stage/activate，不能以通用命令绕过。cursor最长15分钟；cursor key变化只令旧cursor安全失效。历史password pepper仍按credential的exact reference验证，成功登录后惰性升级。
+
+
+DEV-061 的数字工号规范化与既有环境升级入口见 [Staff Code 升级维护](docs/STAFF_CODE_UPGRADE.md)。已有数据先只读 preflight，核对源版本和备份恢复，再显式 apply；不能先启动新 API 或用空库重建替代升级。

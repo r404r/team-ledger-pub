@@ -146,8 +146,8 @@ func (r *Repository) CreateLocalUser(ctx context.Context, input identity.LocalUs
 		}
 		day := input.Now.In(location).Format("2006-01-02")
 		lookup := q.sql(
-			"SELECT i.employee_id FROM employee_business_identifier i JOIN employee e ON e.org_id=i.org_id AND e.id=i.employee_id WHERE i.org_id=? AND i.kind='staff_code' AND i.lookup_key_id=? AND i.lookup_key_version=? AND i.lookup_digest=? AND i.valid_from<=? AND (i.valid_to IS NULL OR i.valid_to>?) AND e.valid_from<=? AND (e.valid_to IS NULL OR e.valid_to>?) LIMIT 1",
-			"SELECT i.employee_id FROM employee_business_identifier i JOIN employee e ON e.org_id=i.org_id AND e.id=i.employee_id WHERE i.org_id=$1 AND i.kind='staff_code' AND i.lookup_key_id=$2 AND i.lookup_key_version=$3 AND i.lookup_digest=$4 AND i.valid_from<=$5 AND (i.valid_to IS NULL OR i.valid_to>$6) AND e.valid_from<=$7 AND (e.valid_to IS NULL OR e.valid_to>$8) LIMIT 1 FOR UPDATE OF i,e")
+			"SELECT i.employee_id FROM staff_code_identifier i JOIN employee_business_identifier h ON h.org_id=i.org_id AND h.id=i.id JOIN employee e ON e.org_id=i.org_id AND e.id=i.employee_id WHERE i.org_id=? AND i.kind='staff_code' AND i.lookup_key_id=? AND i.lookup_key_version=? AND i.lookup_digest=? AND i.valid_from<=? AND (i.valid_to IS NULL OR i.valid_to>?) AND e.valid_from<=? AND (e.valid_to IS NULL OR e.valid_to>?) LIMIT 1",
+			"SELECT i.employee_id FROM staff_code_identifier i JOIN employee_business_identifier h ON h.org_id=i.org_id AND h.id=i.id JOIN employee e ON e.org_id=i.org_id AND e.id=i.employee_id WHERE i.org_id=$1 AND i.kind='staff_code' AND i.lookup_key_id=$2 AND i.lookup_key_version=$3 AND i.lookup_digest=$4 AND i.valid_from<=$5 AND (i.valid_to IS NULL OR i.valid_to>$6) AND e.valid_from<=$7 AND (e.valid_to IS NULL OR e.valid_to>$8) LIMIT 1 FOR UPDATE OF h,e")
 		if err = tx.QueryRowContext(ctx, lookup, current.OrgID, input.StaffLookupKey.KeyID, input.StaffLookupKey.Version, input.StaffLookupDigest, day, day, day, day).Scan(&employeeID); errors.Is(err, sql.ErrNoRows) {
 			return identity.LocalUserResult{}, fault.NotFound
 		} else if err != nil {

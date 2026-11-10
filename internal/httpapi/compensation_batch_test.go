@@ -22,7 +22,7 @@ func TestAdjustmentBatchNormalActivatesExactScaleZeroSalaryAtomically(t *testing
 			f := testsupport.NewHarness(t, backend)
 			var employee organization.Result
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/employees", createJSON, value.NewID()), http.StatusCreated, &employee)
-			legalEntity := prepareBatchEmployee(t, f, employee.ID, "S-001", "Shanghai", "CNY")
+			legalEntity := prepareBatchEmployee(t, f, employee.ID, "2213", "Shanghai", "CNY")
 
 			create := compensation.CreateBatchCommand{Name: "2026 Normal", CycleYear: 2026, AdjustmentType: compensation.BatchNormal, LegalEntityID: legalEntity, DefaultEffectiveDate: "2026-04-01", BudgetCurrency: "CNY", BudgetAmount: "1000000"}
 			createKey := value.NewID()
@@ -37,7 +37,7 @@ func TestAdjustmentBatchNormalActivatesExactScaleZeroSalaryAtomically(t *testing
 				t.Fatal("create replay did not recover the single committed batch")
 			}
 
-			bad := compensation.ReplaceBatchLinesCommand{Revision: batch.Revision, Lines: []compensation.BatchLineCommand{{EmployeeID: employee.ID, StaffCode: "S-001", Currency: "CNY", SalaryBefore: "0", IncreaseAmount: "-1", SalaryAfter: "0", PerformanceGrade: "G"}}}
+			bad := compensation.ReplaceBatchLinesCommand{Revision: batch.Revision, Lines: []compensation.BatchLineCommand{{EmployeeID: employee.ID, StaffCode: "2213", Currency: "CNY", SalaryBefore: "0", IncreaseAmount: "-1", SalaryAfter: "0", PerformanceGrade: "G"}}}
 			apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPatch, "/api/v1/compensation-adjustment-batches/"+batch.ID+"/draft", structureJSON(t, bad), value.NewID()), http.StatusUnprocessableEntity, nil)
 			wrongStaff := compensation.ReplaceBatchLinesCommand{Revision: batch.Revision, Lines: []compensation.BatchLineCommand{{EmployeeID: employee.ID, StaffCode: "S-WRONG", Currency: "CNY", SalaryBefore: "0", IncreaseAmount: "1", SalaryAfter: "1", PerformanceGrade: "G"}}}
 			apiSend(t, f, financeHTTPRequest(t, f, f.CompW, http.MethodPatch, "/api/v1/compensation-adjustment-batches/"+batch.ID+"/draft", structureJSON(t, wrongStaff), value.NewID()), http.StatusConflict, nil)
@@ -46,7 +46,7 @@ func TestAdjustmentBatchNormalActivatesExactScaleZeroSalaryAtomically(t *testing
 			}
 
 			headers := []string{"Staff Code", "Currency", "Salary Before Adjustment", "Increase amount", "Salary After Adjustment", "Performance Grade", "Average Merit Increase", "Department Suggested Increase"}
-			row := []string{"S-001", "CNY", "0", "650", "650", "G", "6.0%", "6%"}
+			row := []string{"2213", "CNY", "0", "650", "650", "G", "6.0%", "6%"}
 			workbook := batchWorkbook(t, headers, row)
 			invalidRow := append([]string(nil), row...)
 			invalidRow[5] = ""
@@ -61,7 +61,7 @@ func TestAdjustmentBatchNormalActivatesExactScaleZeroSalaryAtomically(t *testing
 			var candidate compensation.ImportCandidateView
 			importPath = "/api/v1/compensation-adjustment-batches/" + batch.ID + "/imports?revision=" + batch.Revision
 			apiSend(t, f, financeHTTPRequestBytes(t, f, f.CompW, http.MethodPost, importPath, workbook, importKey, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"), http.StatusCreated, &candidate)
-			if candidate.State != "valid" || candidate.LineCount != 1 || len(candidate.Lines) != 1 || candidate.Lines[0].StaffCode != "S-001" || candidate.Lines[0].IncreaseAmount != "650" || candidate.Lines[0].EffectiveDate != "2026-04-01" || f.Count(t, "compensation_batch_line") != 0 {
+			if candidate.State != "valid" || candidate.LineCount != 1 || len(candidate.Lines) != 1 || candidate.Lines[0].StaffCode != "002213" || candidate.Lines[0].IncreaseAmount != "650" || candidate.Lines[0].EffectiveDate != "2026-04-01" || f.Count(t, "compensation_batch_line") != 0 {
 				t.Fatalf("import mutated draft or returned invalid candidate: %#v", candidate)
 			}
 			apiSend(t, f, financeHTTPRequestBytes(t, f, f.CompW, http.MethodPost, importPath, workbook, importKey, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"), http.StatusCreated, &candidate)

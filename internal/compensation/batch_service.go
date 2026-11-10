@@ -310,6 +310,7 @@ func (s *Service) replaceAdjustmentBatchLines(ctx context.Context, req Request, 
 	lines := make([]BatchLineRecord, 0, len(normalized))
 	for i := range normalized {
 		line := normalized[i]
+		line.StaffCode, _ = organization.NormalizeStaffCode(line.StaffCode)
 		if err := s.require(snapshot, line.EmployeeID, nil, "compensation.propose"); err != nil {
 			return BatchView{}, err
 		}
@@ -512,6 +513,7 @@ func (s *Service) stageAdjustmentCandidate(ctx context.Context, req Request, sna
 		if inputErr == nil {
 			for i := range normalized {
 				line := normalized[i].BatchLineCommand
+				line.StaffCode, _ = organization.NormalizeStaffCode(line.StaffCode)
 				basis, err := s.resolveBatchBasis(ctx, batch, line)
 				if err != nil {
 					inputErr = err

@@ -10,6 +10,7 @@ import (
 	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/value"
 	"github.com/r404r/team-ledger/internal/xlsx"
+	"golang.org/x/text/unicode/norm"
 )
 
 const (
@@ -587,6 +588,9 @@ func validatePersonnelRow(source xlsx.Row, preview *PersonnelImportPreview, inde
 		if normalized, ok := NormalizeStaffCode(row.StaffCode); !ok {
 			issue("staff_code", "invalid_staff_code")
 		} else {
+			if normalized != norm.NFC.String(row.StaffCode) {
+				warning("staff_code", "staff_code_zero_padded")
+			}
 			row.StaffCode = normalized
 		}
 	}
@@ -673,6 +677,9 @@ func validatePersonnelRow(source xlsx.Row, preview *PersonnelImportPreview, inde
 		} else {
 			if extracted != row.ManagerStaffCode {
 				warning("manager_staff_code", "hod_staff_code_extracted")
+			}
+			if normalized != norm.NFC.String(extracted) {
+				warning("manager_staff_code", "staff_code_zero_padded")
 			}
 			row.ManagerStaffCode = normalized
 		}

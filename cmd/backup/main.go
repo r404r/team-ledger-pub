@@ -27,7 +27,7 @@ func protected(path string, limit int) ([]byte, error) { return configfile.Read(
 
 var keyEnvelopeMagic = [8]byte{'T', 'L', 'B', 'K', 'E', 'Y', 'D', 1}
 
-const supportedSchemaVersion = 19
+const supportedSchemaVersion = 20
 
 func writeArchiveKey(out io.Writer, key sensitive.WrappedKey) error {
 	if len(key.Data) != 150 {
@@ -178,11 +178,12 @@ var pgDumpBinary = "/usr/bin/pg_dump"
 
 var pgRestoreBinary = "/usr/bin/pg_restore"
 
-func serviceQuote(value string) (string, error) {
-	if value == "" || strings.ContainsAny(value, "\x00\r\n") {
+// Service files contain raw INI values, rather than conninfo string quoting.
+func serviceValue(value string) (string, error) {
+	if value == "" || strings.ContainsAny(value, "\x00\r\n") || strings.TrimSpace(value) != value {
 		return "", errors.New("invalid PostgreSQL service value")
 	}
-	return "'" + strings.ReplaceAll(strings.ReplaceAll(value, "\\", "\\\\"), "'", "\\'") + "'", nil
+	return value, nil
 }
 
 func pgPassEscape(value string) string {
@@ -195,7 +196,7 @@ func postgresClientFiles(dsn, caPath, directory string) (string, string, string,
 		return "", "", "", errors.New("invalid PostgreSQL URL")
 	}
 	password, ok := u.User.Password()
-	if !ok || password == "" {
+	if !ok || password == "" || strings.ContainsAny(password, "\x00\r\n") {
 		return "", "", "", errors.New("PostgreSQL password required")
 	}
 	query := u.Query()
@@ -241,7 +242,7 @@ func postgresClientFiles(dsn, caPath, directory string) (string, string, string,
 	}
 	values := []string{u.Hostname(), port, database, u.User.Username(), caCopy, passFile}
 	for i := range values {
-		values[i], e = serviceQuote(values[i])
+		values[i], e = serviceValue(values[i])
 		if e != nil {
 			return "", "", "", e
 		}
@@ -285,7 +286,9 @@ func createPostgres(ctx context.Context, dsn, caPath, archivePath string, keyd *
 		return e
 	}
 	dumpPath := filepath.Join(work, "database.dump")
-	args := []string{"--format=custom", "--serializable-deferrable", "--no-owner", "--no-acl", "--snapshot=" + snapshot, "--file=" + dumpPath, "--dbname=service=teamledger_backup"}
+	// The exporting transaction already acquired a serializable/deferrable snapshot.
+	// The importing pg_dump must use that snapshot without requesting DEFERRABLE.
+	args := []string{"--format=custom", "--no-owner", "--no-acl", "--snapshot=" + snapshot, "--file=" + dumpPath, "--dbname=service=teamledger_backup"}
 	if schema != "" {
 		args = append(args, "--schema="+schema)
 	}
@@ -369,7 +372,7 @@ func restore(ctx context.Context, archivePath, target string, keyd *sensitive.Ke
 	if closeErr != nil {
 		return closeErr
 	}
-	if manifest.Backend != "sqlite" || manifest.SchemaVersion != supportedSchemaVersion {
+	if manifest.Backend != "sqlite" || (manifest.SchemaVersion < 19 || manifest.SchemaVersion > supportedSchemaVersion) {
 		return errors.New("incompatible backup")
 	}
 	repo, e := store.Open(ctx, "sqlite", tempPath)
@@ -377,8 +380,8 @@ func restore(ctx context.Context, archivePath, target string, keyd *sensitive.Ke
 		return e
 	}
 	defer repo.Close()
-	if e = repo.CheckSchema(ctx); e != nil {
-		return e
+	if version, checkErr := repo.CheckMaintenanceSchema(ctx); checkErr != nil || version != manifest.SchemaVersion {
+		return errors.New("restored schema does not match backup")
 	}
 	wrappers, e := loadWrappers(keyd)
 	if e != nil {
@@ -493,7 +496,7 @@ func restorePostgres(ctx context.Context, archivePath, targetDSN, caPath string,
 	if closeErr != nil {
 		return closeErr
 	}
-	if manifest.Backend != "postgres" || manifest.SchemaVersion != supportedSchemaVersion {
+	if manifest.Backend != "postgres" || (manifest.SchemaVersion < 19 || manifest.SchemaVersion > supportedSchemaVersion) {
 		return errors.New("incompatible backup")
 	}
 	restoreList, e := postgresRestoreList(ctx, dumpPath, work)
@@ -521,8 +524,8 @@ func restorePostgres(ctx context.Context, archivePath, targetDSN, caPath string,
 		return e
 	}
 	defer repo.Close()
-	if e = repo.CheckSchema(ctx); e != nil {
-		return e
+	if version, checkErr := repo.CheckMaintenanceSchema(ctx); checkErr != nil || version != manifest.SchemaVersion {
+		return errors.New("restored schema does not match backup")
 	}
 	wrappers, e := loadWrappers(keyd)
 	if e != nil {

@@ -1,6 +1,7 @@
 # FUNCTIONAL_SPEC · TeamLedger 全量功能规范
 
-- 当前修订日期：**2026-10-25**（DEV-052 仅调整公开文档表述）。本文件与源码同属 `team-ledger`，提供当前功能、页面、数据流和验收语义的公开说明。
+- 当前修订日期：**2026-11-10**（DEV-061 候选，待审查/合并）。本文件与源码同属 `team-ledger`，提供当前功能、页面、数据流和验收语义的公开说明。
+- DEV-061 候选（2026-11-10，待审查/合并）：纯 ASCII 数字 Staff Code 不足 6 位左补零；6–10 位保留，超过 10 位拒绝。画面保存/显示规范值，短值仍可搜索；升级保持全部历史归属及回执。见[升级维护说明](STAFF_CODE_UPGRADE.md)。
 - 当前追溯规模：7 feature、10页面、53个稳定OP ID（v19可调用51项；OP-ORG-02/03为退休ID）、61 AC。
 - DEV-015至DEV-047已交付员工主数据、业务化调薪与指定日期工资基线批次、canonical授权、本地keyd、内置账号＋TOTP、管理员基线及全量当前可委派authority、用户追加/首次改密、独立audit receiver、离线key副本、长期MAC/index安全边界及认证/授权页面连续性修复；这不等于生产OIDC身份、真实介质责任、AI provider或生产发布批准。
 - 历史Task ID仅用于说明实现阶段；历史私有计划、审查会话和本机验证路径不属于public文档。可执行事实以本仓库源码、迁移、测试及当前文档为准。
@@ -15,7 +16,7 @@
 
 ```mermaid
 flowchart TB
-    org["F-ORG-001 组织与员工主数据<br/>DEV-015已固定：全集团唯一工号、双语姓名<br/>法分公司/固定地点、BG→Division→Department<br/>单一任职、HOD及DEV-017 canonical授权"]
+    org["F-ORG-001 组织与员工主数据<br/>DEV-015已固定：全集团唯一工号、双语姓名<br/>法分公司/固定地点、BG→Division→Department<br/>单一任职、HOD及DEV-017 canonical授权<br/>DEV-061候选：数字工号补零及受控升级"]
     interview["F-INT-001 面谈；R3受控已验<br/>安排/状态、三分区immutable版本<br/>独立共享行动、exact历史与最小交接"]
     comp["F-COMP-001 薪资<br/>个人条款/审批/完整纠错已交付<br/>Normal/Special调薪与Baseline工资批次已实装<br/>Staff Code多行/XLSX预览、不可变历史与整批激活"]
     bonus["F-BONUS-001 奖金；R5固定代码C已验<br/>目标、奖励/独立审批、支付与冲销<br/>匹配余额/异常、有限敏感扩展"]
@@ -66,6 +67,8 @@ flowchart TB
     offline["两份分离AES-256-GCM可移动介质<br/>同export完整inventory；pair只读verify<br/>DEV-021已实装；非完整灾备"]
     tx["短业务事务<br/>重验当前授权/版本、guard/CAS<br/>原子写policy/window/receipt/审计"]
     store[("F-DB-001 单一持久后端<br/>SQLite 或 PostgreSQL；当前schema v19<br/>业务事实、账号/MFA、staff_default.v1、org级学历目录、工资基线、audit event/outbox<br/>及receiver ledger")]
+    maintenanceOperator["获准维护操作者<br/>确认源版本、停写与备份恢复"]
+    staffUpgrade["DEV-061候选 staff-normalize<br/>只读历史工号/永久归属检查<br/>显式单事务规范密文、HMAC、兼容投影及无正文receipt"]
     staffDefault["Staff关联动态默认scope<br/>当前本人＋administrative一层直属<br/>员工metadata/PII、面谈metadata＋创建"]
     receipt["已提交事实与安全回执<br/>不确定结果只确认原命令"]
     query["授权人员的查询<br/>as_of业务投影；历史UTC录入窗口"]
@@ -77,6 +80,10 @@ flowchart TB
     receiver["Compose独立receiver进程<br/>mTLS＋同库append-only hash chain<br/>DEV-020已实装验证"]
     audit["P-SEC-02授权审计查看／P-SEC-03用户管理<br/>只返回对应安全metadata"]
 
+    maintenanceOperator --> staffUpgrade
+    store -->|"全历史密文与永久owner；仅进程内解密"| staffUpgrade
+    staffUpgrade -->|"获准PII wrapper及Staff lookup MAC"| keyd
+    staffUpgrade -->|"前向v20、原子投影、保留历史引用与旧归属"| store
     person --> identity
     identity -->|"local mode"| local --> session
     identity -->|"oidc mode"| oidc --> session
@@ -290,7 +297,7 @@ flowchart TB
 
 | feature ID | 当前完整功能 | 设计状态 | 当前工作实现/检查（非全产品发布） | 最近发布 / 工作revision |
 | --- | --- | --- | --- | --- |
-| F-ORG-001 | 固定Business Group→Division→Department、全集团唯一员工工号/双语资料、雇佣/org级受控教育目录/单一岗位/直属主管(HOD)有效期历史 | DES-003/004完整并获批准；DEV-046已交付 | OP-ORG-01/04..10、P-ORG-01/02/03、canonical授权、18列XLSX类型兼容、可编辑重校验、显式学历追加及HOD复合格式/同批次顺序无关主管校验已实装 | 当前源码、v12/v18迁移、永久测试及页面smoke |
+| F-ORG-001 | 固定Business Group→Division→Department、全集团唯一员工工号/双语资料、雇佣/org级受控教育目录/单一岗位/直属主管(HOD)有效期历史 | DES-003/004完整并获批准；DEV-046已交付 | OP-ORG-01/04..10、P-ORG-01/02/03、canonical授权、18列XLSX类型兼容、可编辑重校验、显式学历追加及HOD复合格式/同批次顺序无关主管校验已实装；DEV-061 候选新增数字工号补零及受控升级，待审查/合并 | 当前源码、v12/v18迁移、永久测试及页面smoke |
 | F-INT-001 | 面谈版本、共享/经理私有/HR保密分区、行动项、历史权限与交接 | DES-001/002；DEV-008已交付 | 8 INT OP、P-INT-01、6 AC、typed对象、独立source批准、人工最小化和有限导出已实装 | 当前源码、v6迁移和永久测试 |
 | F-COMP-001 | 个人薪资条款/纠错、salary range、Normal/Special调薪批次及指定日期工资基线批次的录入/预览/显式提交/原子激活和历史 | DES-003/005/006；DEV-047已交付 | 个人5 OP保持；默认3行、Staff Code解析、手工/XLSX同构candidate、工资基线/调薪差异规则、参考预算、不可变历史及整批activation已实装 | 当前源码、v13/v19迁移、永久测试及页面smoke |
 | F-BONUS-001 | 奖金目标、批准奖励、支付记录与敏感扩展 | DES-001/002；业务口径须显式批准 | 8 OP、P-BONUS-01、目标/奖励/批准、支付/冲销/异常、有限扩展、签名游标及受控HMAC维护已实装 | 固定代码C [`1c769d0`](https://github.com/r404r/team-ledger-pub/commit/1c769d0d5781eaf6cc797c46ab4ffc11d3940c95) |

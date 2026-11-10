@@ -131,7 +131,7 @@ func TestAPIWorkforceHierarchyBuildsAcrossCatalogTransactions(t *testing.T) {
 			}
 			var detail organization.View
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodGet, "/api/v1/employees/"+employee.ID+"?as_of=2026-10-11&include_profile=true", "", ""), http.StatusOK, &detail)
-			if len(detail.Identifiers) != 1 || detail.Identifiers[0].StaffCode != "0007" || len(detail.Employment) != 1 || detail.Employment[0].LocationCode != "Shanghai" || len(detail.Education) != 1 || detail.Education[0].Institution == nil || *detail.Education[0].Institution != "Synthetic University" || len(detail.JobAssignments) != 1 || detail.JobAssignments[0].Position == nil || detail.JobAssignments[0].Position.Title != "Engineer" || detail.DirectManager == nil || detail.HOD == nil || detail.DirectManager.ID != detail.HOD.ID {
+			if len(detail.Identifiers) != 1 || detail.Identifiers[0].StaffCode != "000007" || len(detail.Employment) != 1 || detail.Employment[0].LocationCode != "Shanghai" || len(detail.Education) != 1 || detail.Education[0].Institution == nil || *detail.Education[0].Institution != "Synthetic University" || len(detail.JobAssignments) != 1 || detail.JobAssignments[0].Position == nil || detail.JobAssignments[0].Position.Title != "Engineer" || detail.DirectManager == nil || detail.HOD == nil || detail.DirectManager.ID != detail.HOD.ID {
 				t.Fatalf("workforce detail projection = %#v", detail)
 			}
 			var metadata organization.View
@@ -140,9 +140,9 @@ func TestAPIWorkforceHierarchyBuildsAcrossCatalogTransactions(t *testing.T) {
 				t.Fatalf("metadata detail leaked PII or hid workforce metadata = %#v", metadata)
 			}
 			var directory organization.DirectoryPage
-			query := fmt.Sprintf(`{"as_of":"2026-10-11","department_id":%q,"q":"0007","include_profile":true,"limit":10}`, units.Items[2].ID)
+			query := fmt.Sprintf(`{"as_of":"2026-10-11","department_id":%q,"q":"7","include_profile":true,"limit":10}`, units.Items[2].ID)
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/employees/query", query, ""), http.StatusOK, &directory)
-			if len(directory.Items) != 1 || directory.Items[0].ID != employee.ID || directory.Items[0].Identifiers[0].StaffCode != "0007" {
+			if len(directory.Items) != 1 || directory.Items[0].ID != employee.ID || directory.Items[0].Identifiers[0].StaffCode != "000007" {
 				t.Fatalf("department/staff-code directory = %#v", directory)
 			}
 			var tree organization.TreeView
