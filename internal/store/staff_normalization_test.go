@@ -241,6 +241,7 @@ func TestStaffNormalizationCancellationRollsBackAndCanResume(t *testing.T) {
 			ctx := context.Background()
 			seedLegacyStaff(t, f, "", "2213", "2020-01-01", nil)
 			seedLegacyStaff(t, f, "", "2214", "2020-01-01", nil)
+			syntheticV19(t, f)
 			report, err := f.Repo.NormalizeStaffCodes(ctx, f.Service.Cipher, legacyStaffMAC(f), store.StaffNormalizationOptions{})
 			if err != nil {
 				t.Fatal(err)
@@ -260,7 +261,8 @@ func TestStaffNormalizationCancellationRollsBackAndCanResume(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if f.Count(t, "workforce_payload") != before || f.Count(t, "staff_code_normalization") != 0 || f.Count(t, "staff_code_normalization_receipt") != 0 {
+			version, checkErr := f.Repo.CheckMaintenanceSchema(ctx)
+			if checkErr != nil || version != 19 || f.Count(t, "workforce_payload") != before {
 				t.Fatal("cancelled transaction left partial writes")
 			}
 			if _, err = f.Repo.NormalizeStaffCodes(ctx, f.Service.Cipher, legacyStaffMAC(f), store.StaffNormalizationOptions{Apply: true, ExpectedSnapshot: report.Snapshot}); err != nil {

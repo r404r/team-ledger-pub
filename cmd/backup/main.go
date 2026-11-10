@@ -178,11 +178,12 @@ var pgDumpBinary = "/usr/bin/pg_dump"
 
 var pgRestoreBinary = "/usr/bin/pg_restore"
 
-func serviceQuote(value string) (string, error) {
-	if value == "" || strings.ContainsAny(value, "\x00\r\n") {
+// Service files contain raw INI values, rather than conninfo string quoting.
+func serviceValue(value string) (string, error) {
+	if value == "" || strings.ContainsAny(value, "\x00\r\n") || strings.TrimSpace(value) != value {
 		return "", errors.New("invalid PostgreSQL service value")
 	}
-	return "'" + strings.ReplaceAll(strings.ReplaceAll(value, "\\", "\\\\"), "'", "\\'") + "'", nil
+	return value, nil
 }
 
 func pgPassEscape(value string) string {
@@ -195,7 +196,7 @@ func postgresClientFiles(dsn, caPath, directory string) (string, string, string,
 		return "", "", "", errors.New("invalid PostgreSQL URL")
 	}
 	password, ok := u.User.Password()
-	if !ok || password == "" {
+	if !ok || password == "" || strings.ContainsAny(password, "\x00\r\n") {
 		return "", "", "", errors.New("PostgreSQL password required")
 	}
 	query := u.Query()
@@ -241,7 +242,7 @@ func postgresClientFiles(dsn, caPath, directory string) (string, string, string,
 	}
 	values := []string{u.Hostname(), port, database, u.User.Username(), caCopy, passFile}
 	for i := range values {
-		values[i], e = serviceQuote(values[i])
+		values[i], e = serviceValue(values[i])
 		if e != nil {
 			return "", "", "", e
 		}
@@ -285,7 +286,9 @@ func createPostgres(ctx context.Context, dsn, caPath, archivePath string, keyd *
 		return e
 	}
 	dumpPath := filepath.Join(work, "database.dump")
-	args := []string{"--format=custom", "--serializable-deferrable", "--no-owner", "--no-acl", "--snapshot=" + snapshot, "--file=" + dumpPath, "--dbname=service=teamledger_backup"}
+	// The exporting transaction already acquired a serializable/deferrable snapshot.
+	// The importing pg_dump must use that snapshot without requesting DEFERRABLE.
+	args := []string{"--format=custom", "--no-owner", "--no-acl", "--snapshot=" + snapshot, "--file=" + dumpPath, "--dbname=service=teamledger_backup"}
 	if schema != "" {
 		args = append(args, "--schema="+schema)
 	}
