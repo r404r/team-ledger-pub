@@ -59,7 +59,11 @@ func (r *Repository) backupManifest(ctx context.Context, q queryer, created time
 	if size < 0 || len(digest) != 64 {
 		return backup.Manifest{}, fault.Invalid
 	}
-	manifest := backup.Manifest{FormatVersion: 1, Backend: r.Backend, SchemaVersion: currentSchemaVersion, CreatedAt: created.UTC().Truncate(time.Microsecond), DatabaseSize: size, DatabaseSHA256: digest, OrganizationIDs: []string{}, KeyDependencies: []backup.KeyDependency{}}
+	version, err := r.ledgerVersion(ctx, q)
+	if err != nil || (version != 19 && version != 20) {
+		return backup.Manifest{}, fault.Unavailable
+	}
+	manifest := backup.Manifest{FormatVersion: 1, Backend: r.Backend, SchemaVersion: version, CreatedAt: created.UTC().Truncate(time.Microsecond), DatabaseSize: size, DatabaseSHA256: digest, OrganizationIDs: []string{}, KeyDependencies: []backup.KeyDependency{}}
 	rows, err := q.QueryContext(ctx, "SELECT id FROM organization ORDER BY id")
 	if err != nil {
 		return backup.Manifest{}, safeError(err)

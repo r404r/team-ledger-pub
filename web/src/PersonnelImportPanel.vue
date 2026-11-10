@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, shallowRef } from 'vue'
+import { normalizeStaffCode } from './staffCode'
 import { normalizeHodStaffCode } from './hodStaffCode'
 
 type Session = {
@@ -134,12 +135,13 @@ const issueMessages: Record<string, string> = {
   unknown_catalog_code: '目录 Code 或显示名称在该入职日不存在',
   ambiguous_catalog_label: '显示名称匹配多项，请改填唯一目录 Code',
   organization_hierarchy_mismatch: 'Business Group、Division与Department层级不一致',
-  numeric_staff_code_coerced: '数字 Staff Code 已按原始十进制整数转为文本；Excel 已丢失的前导零无法恢复',
+  numeric_staff_code_coerced: '数字 Staff Code 已按原始十进制整数转为文本',
   numeric_cell_coerced: '数字单元格已保留其原始十进制表示并转为文本，请核对',
   excel_date_coerced: 'Excel 日期单元格已按工作簿日期系统转为 YYYY-MM-DD',
   date_text_normalized: '日期文本已规范化为 YYYY-MM-DD',
   location_case_normalized: 'Location 大小写已规范化',
   catalog_label_resolved: '已通过唯一目录显示名称匹配，并规范化为目录 Code',
+  staff_code_zero_padded: '纯数字工号不足 6 位，已在左侧补零到 6 位',
   hod_staff_code_extracted: '直属主管 Staff Code 含“-姓名”，已取第一个“-”之前的工号',
 }
 const workbookErrorMessages: Record<string, string> = {
@@ -705,7 +707,7 @@ onBeforeUnmount(() => stopOperation())
             <tbody>
               <tr v-for="row in executions" :key="row.row_number">
                 <td>{{ row.row_number }}</td>
-                <td><input v-model="row.staff_code" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.staff_code" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"><small v-if="normalizeStaffCode(row.staff_code) && normalizeStaffCode(row.staff_code) !== row.staff_code">将保存为 {{ normalizeStaffCode(row.staff_code) }}（以服务端校验为准）</small></td>
                 <td><input v-model="row.local_name" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
                 <td><input v-model="row.english_name" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
                 <td><input v-model="row.location" class="edit-input" list="personnel-locations" :disabled="busy || executionLocked" @input="markEdited"></td>
@@ -718,7 +720,7 @@ onBeforeUnmount(() => stopOperation())
                 <td><input v-model="row.position" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
                 <td><input v-model="row.job_family_code" class="edit-input" list="personnel-job-families" :disabled="busy || executionLocked" @input="markEdited"></td>
                 <td><input v-model="row.career_level_code" class="edit-input" list="personnel-career-levels" :disabled="busy || executionLocked" @input="markEdited"></td>
-                <td><input v-model="row.manager_staff_code" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
+                <td><input v-model="row.manager_staff_code" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"><small v-if="row.manager_staff_code && normalizeStaffCode(normalizeHodStaffCode(row.manager_staff_code)) && normalizeStaffCode(normalizeHodStaffCode(row.manager_staff_code)) !== row.manager_staff_code">将保存为 {{ normalizeStaffCode(normalizeHodStaffCode(row.manager_staff_code)) }}（以服务端校验为准）</small></td>
                 <td><input v-model="row.departure_date" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
                 <td><input v-model="row.email" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>
                 <td><input v-model="row.phone" class="edit-input" :disabled="busy || executionLocked" @input="markEdited"></td>

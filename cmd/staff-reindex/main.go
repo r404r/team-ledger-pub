@@ -71,6 +71,10 @@ func run(args []string) error {
 	if err = repo.CheckSchema(ctx); err != nil {
 		return err
 	}
+	sources, err := repo.StaffIndexSources(ctx)
+	if err != nil {
+		return err
+	}
 	manifestRaw, err := configfile.Read(*manifestFile, 1<<20, false)
 	if err != nil || len(manifestRaw) == 0 {
 		return fault.Invalid
@@ -98,10 +102,6 @@ func run(args []string) error {
 		return fault.Unavailable
 	}
 	cipher := sensitive.Cipher{Wrapper: wrapper}
-	sources, err := repo.StaffIndexSources(ctx)
-	if err != nil {
-		return err
-	}
 	replacements := make([]store.StaffIndexReplacement, 0, len(sources))
 	for _, source := range sources {
 		plain, openErr := cipher.Open(ctx, source.Envelope.Context, source.Envelope)

@@ -1,6 +1,7 @@
 # TeamLedger · 整体最新技术文档
 
-- 当前修订日期：**2026-10-25**（DEV-052 仅调整公开文档表述）。本文件与源码同属 `team-ledger`，提供当前架构、HTTP语义、安全边界和运行设计的公开技术说明。
+- 当前修订日期：**2026-11-10**（DEV-061 候选，待审查/合并）。本文件与源码同属 `team-ledger`，提供当前架构、HTTP语义、安全边界和运行设计的公开技术说明。
+- DEV-061 候选（2026-11-10，待审查/合并）：纯数字 Staff Code 补零、schema v20 兼容投影及受限升级 CLI；见下文和[维护说明](STAFF_CODE_UPGRADE.md)。
 - 当前实现基线：Go模块化单体、Vue、SQLite/PostgreSQL schema v19、本地keyd、local密码＋首次改密＋TOTP/OIDC互斥身份模式、standalone/Staff关联账号、org级受控学历目录、Normal/Special及指定日期工资基线批次、`identity.manage`用户管理、bootstrap管理员38项当前可委派authority、同库独立audit receiver及Docker Compose独立部署。
 - 历史Task ID用于说明实现阶段；历史私有计划、审查会话、本机路径及旧文档commit台账不属于public文档。实现事实以本仓库源码、v19迁移、永久测试和当前文档为准。
 - 功能/page/OP/AC登记见[功能规范](FUNCTIONAL_SPEC.md)，开发与验证门禁见[开发规则](DEVELOPMENT_RULES.md)，Docker操作见[README](../README.md)。
@@ -47,7 +48,7 @@ flowchart LR
     subgraph isolated["边界 E：独立受限进程/命令"]
         worker["assessment-worker<br/>无DB / KEK / cookie"]
         forwarder["audit-forwarder<br/>claim/fence/retry/验签ack"]
-        maintenance["key-rewrap / backup restore<br/>签名批准、停写、CAS、隔离目标"]
+        maintenance["key-rewrap / backup restore<br/>DEV-061候选 staff-normalize<br/>停写、恢复核验、原子投影及无正文receipt"]
     end
     provider["批准的allowlist HTTPS provider<br/>生产仍未批准"]
     browser -->|"HTTPS / cookie / CSRF；local或oidc"| proxy
@@ -146,13 +147,13 @@ DEV-028 T2的`OrganizationPage`继续只调用OP-ORG-04 `POST /orgs/:id/employee
 
 DEV-046后的`PersonnelImportPanel.vue`只在P-ORG-03创建态且当前session同时含org级organization/PII read/write时挂载。模板、XLSX preview和JSON review由`internal/httpapi/personnel_import.go`转入`internal/organization/personnel_import.go`；唯一`Employees`工作表固定18个双语表头。`internal/xlsx`先实施ZIP/XML/公式/宏/外部关系及size/count边界，再暴露Text/Number/OOXML Date/Boolean/Error语义类型、原始lexical value和`workbookPr@date1904`。结构拒绝以422 `workbook_error`＋request ID返回；行错误与安全转换分别进入`errors`/`warnings`，日志只含request ID/sheet/cell/row/field/code。
 
-人员parser仅把无符号十进制整数Staff Code转文本；decimal/scientific/sign值保留raw并阻断，Excel已丢失的前导零不猜恢复。J/O日期列接受既有确定文本格式、按实际1900/1904系统转换的整数serial及OOXML ISO date/零时刻datetime；1900 serial 60、fraction、负数或带非零时间阻断。其他numeric cell保留lexical值并警告；boolean/error与非日期列date保留raw但要求编辑。Location大小写可唯一规范；非空Branch/BG/Division/Department/Job Family/Career Level先按code，再按trim＋ASCII case-insensitive的唯一code/获准解密label解析，重名不猜。学历、职位、Job Family、Career Level为空时不报字段错误；前四项组织目录及Staff Code/姓名/Location/入职日仍必填。公式、宏、外部关系始终拒绝。
+人员parser仅把无符号十进制整数Staff Code转文本；decimal/scientific/sign值保留raw并阻断，DEV-061 候选统一经 `NormalizeStaffCode`：纯 ASCII 数字不足 6 位左补零到 6 位，6–10 位保留，超过 10 位拒绝；其他值沿用 UTF-8/NFC/64 字节规则。补零同时返回 `staff_code_zero_padded` warning。J/O日期列接受既有确定文本格式、按实际1900/1904系统转换的整数serial及OOXML ISO date/零时刻datetime；1900 serial 60、fraction、负数或带非零时间阻断。其他numeric cell保留lexical值并警告；boolean/error与非日期列date保留raw但要求编辑。Location大小写可唯一规范；非空Branch/BG/Division/Department/Job Family/Career Level先按code，再按trim＋ASCII case-insensitive的唯一code/获准解密label解析，重名不猜。学历、职位、Job Family、Career Level为空时不报字段错误；前四项组织目录及Staff Code/姓名/Location/入职日仍必填。公式、宏、外部关系始终拒绝。
 
 XLSX preview和`POST /orgs/:org/employees/import-review`都返回`rows/errors/warnings/education_levels`，并返回当前行入职日可用的`legal_entities/business_groups/divisions/departments/job_families/career_levels`候选并集。页面18字段均可编辑；任何input使preview dirty并禁用创建，review JSON不接受resolved ID，由服务端重新执行字段、重复工号、主管环、日期、目录、父链及revision解析。仅errors为0、revision齐全且最后一次编辑已重验时才放行`import-commit`整批事务流程。unknown education不自动写库；操作者须明确名称与1..10000唯一rank，通过OP-ORG-09追加当前org目录，再重验。
 
 DEV-048的目录适配不新增后端旁路：客户端仅从`unknown_catalog_code`聚合可编辑draft，先用当前preview revisions调用OP-ORG-09创建操作者确认的目录，再用回执ID和重新review后的resolved ID创建新Division/Department的父链，最后再次review。目录与父链是两个各自原子的CAS命令；网络结果不确定时不宣称成功、不开始员工创建，要求在组织树核对后重验。同一新子节点对应多个上级、任一409或仍有error均阻断。该流程复用既有structure change/receipt/audit，无schema migration。
 
-DEV-049在导入边界新增唯一的`organization.NormalizeHODStaffCode`（Web镜像为`web/src/hodStaffCode.ts`）：非空且含`-`时取第一个`-`之前并trim，其余值（含空值）原样返回；`validatePersonnelRow`在preview解析与`import-review`重验中都调用它，规范化结果再经`NormalizeStaffCode`校验，发生提取时返回`hod_staff_code_extracted` warning，前缀为空则`invalid_staff_code`。HOD列原始长度上限放宽为320字节以容纳`工号-姓名`，提取后的工号仍受64字节Staff Code上限约束。`validatePersonnelReferences`在构建本批次工号集合后报告`manager_self_reference`与`manager_cycle`；`Service.resolvePersonnelManagers`对不在本批次的主管经`staffCodeLookup`（与identifier写入共用的keyed MAC）调用只读`WorkforceReader.StaffCodeExists`，按`org_id、kind=staff_code、lookup_key_id/version、lookup_digest`查询`employee_business_identifier`，缺失则该行`manager_not_found`。该检查只读、不加锁，也不替代提交时按入职日对主管有效性的重新核对；preview/review不写库。页面提交`POST /orgs/:org/employees/import-commit`，JSON为`{rows, expected_catalog_revision, expected_graph_revision}`，rows同review契约，body≤5MiB，必须带UUID Idempotency-Key。服务先按OP-ORG-05授权，事务取得组织guard、graph和subject锁，重验授权、目录、行字段与冻结revision；先检查同key的回执，原命令精确重放，改参409。Pass 1按原行序创建所有employee/profile和initial workforce事实，建立完整`staff_code → employee_id`映射；Pass 2解析本批次映射和入职日有效的现有Staff Code（keyed MAC查询，不按姓名模糊认领），复用OP-ORG-10 endpoint/环/有效期验证统一绑定。返回201 workforce结果，其中`items`按输入顺序包含`{kind:"employee",id}`，`employee_revisions`覆盖整批；`id`指向真实structure change。整批回执复用`workforce_command_receipt`的OP-ORG-10空间，digest包含import入口区分，任何后续失败回滚全部员工、PII密文、事实、成功audit及receipt。Web保留单一冻结key/body，502/504/网络失败只重放整批，不显示部分成功；确定冲突显示整批未创建。无schema migration，不改既有migration。
+DEV-049在导入边界新增唯一的`organization.NormalizeHODStaffCode`（Web镜像为`web/src/hodStaffCode.ts`）：非空且含`-`时取第一个`-`之前并trim，其余值（含空值）原样返回；`validatePersonnelRow`在preview解析与`import-review`重验中都调用它，规范化结果再经`NormalizeStaffCode`校验，发生提取时返回`hod_staff_code_extracted` warning；DEV-061 候选在提取后再补零，`manager_staff_code` 的 `staff_code_zero_padded` 可与之同时返回；前缀为空则`invalid_staff_code`。HOD列原始长度上限放宽为320字节以容纳`工号-姓名`，提取后的工号仍受64字节Staff Code上限约束。`validatePersonnelReferences`在构建本批次工号集合后报告`manager_self_reference`与`manager_cycle`；`Service.resolvePersonnelManagers`对不在本批次的主管经`staffCodeLookup`（与identifier写入共用的keyed MAC）调用只读`WorkforceReader.StaffCodeExists`，按`org_id、kind=staff_code、lookup_key_id/version、lookup_digest`查询`employee_business_identifier`，缺失则该行`manager_not_found`。该检查只读、不加锁，也不替代提交时按入职日对主管有效性的重新核对；preview/review不写库。页面提交`POST /orgs/:org/employees/import-commit`，JSON为`{rows, expected_catalog_revision, expected_graph_revision}`，rows同review契约，body≤5MiB，必须带UUID Idempotency-Key。服务先按OP-ORG-05授权，事务取得组织guard、graph和subject锁，重验授权、目录、行字段与冻结revision；先检查同key的回执，原命令精确重放，改参409。Pass 1按原行序创建所有employee/profile和initial workforce事实，建立完整`staff_code → employee_id`映射；Pass 2解析本批次映射和入职日有效的现有Staff Code（keyed MAC查询，不按姓名模糊认领），复用OP-ORG-10 endpoint/环/有效期验证统一绑定。返回201 workforce结果，其中`items`按输入顺序包含`{kind:"employee",id}`，`employee_revisions`覆盖整批；`id`指向真实structure change。整批回执复用`workforce_command_receipt`的OP-ORG-10空间，digest包含import入口区分，任何后续失败回滚全部员工、PII密文、事实、成功audit及receipt。Web保留单一冻结key/body，502/504/网络失败只重放整批，不显示部分成功；确定冲突显示整批未创建。无schema migration，不改既有migration。
 
 DEV-049的验证收敛同时缓存SQLite的可信参考schema：仅按版本缓存本程序内嵌冻结migration成功生成的定义，每次`CheckSchema`/`Migrate`仍读取目标库的实际catalog、ledger与foreign key状态，drift仍拒绝且不自动修复。测试fixture可复制进程内的空schema字节，随后执行真实schema校验并独立创建组织、凭据和合成业务事实；真实升级测试仍执行DDL。API启动smoke编译实际程序并验证TLS/keyd接受与拒绝，service/API并发逻辑由race套件覆盖。SQLite身份事务取得mode writer后才读mode，继续按mode→org→subject顺序重验，以避免并发回调/拒绝审计之间的WAL读快照升级失败；PostgreSQL仍使用mode行FOR UPDATE。
 
@@ -199,6 +200,15 @@ DEV-047在同一批次聚合根中加入领域类型`baseline`。页面只提交
 R2-R5页面保持；R6a FollowupPage与R6b最小输入/job/result/source review、人审发布均已接通，P-SEC-02独立audit页面也已交付。审计页在session预检阶段区分近期MFA过期与缺少`audit.read`；前者只引导`audit.read` step-up，后者不调用事件API且不显示筛选工作台；查询后的403/404清空为授权变化。页面只显示获准事实/覆盖与明确生产阻断；真实provider质量、外传许可及生产设施未批准时调用disabled，不把“生产未启用”误写成机制未实装。
 
 全局仅保留安全 session/capabilities、非敏感筛选与 request generation；敏感 DTO 在对应页面短时内存，禁止 localStorage/sessionStorage/IndexedDB、service worker、跨页 Pinia缓存、分析 SDK/console/trace 截取正文。路由离开/登出/401/403/404/epoch变化清空；取消 fetch并以 generation＋employee ID 丢弃乱序旧响应，撤权提示不得被晚回包重新显示。`Cache-Control: no-store`；笔记/AI仅文本呈现，禁止模板解释/未经清洗 `v-html`。[S4] 这些降低残留，不承诺回收截图/下载或浏览器已获得明文。
+
+
+### DEV-061 候选：工号规范化与受限升级
+
+本次候选 schema v20；现有已合并基线仍为 v19。唯一服务端实现是 `organization.NormalizeStaffCode`，所有新建/换号、人员导入 Staff Code/HOD、Staff 账号关联及调薪查找复用它；Web `staffCode.ts` 只提供“将保存为”的显示提示。导入 preview/review 对同样原始输入返回相同规范值与 warning；短号搜索仍通过已授权的包含匹配命中规范值。新的调薪候选行同样保存规范工号，已有财务事实/receipt 不重写。
+
+新增 `cmd/staff-normalize` 受限维护入口，默认只读，显式 apply；全历史解密验证、聚合统计、源应用/完整 schema checksum/物理结构与 crypto_control 核对、恢复 DB/keys 实测和快照重验后，单事务追加规范密文、目标 HMAC owner、`staff_code_normalization` 投影与不可变 `staff_code_normalization_receipt`。`staff_code_identifier` 统一向详情、lookup、Staff 账号与调薪解析提供投影，原 identifier/密文/历史区间/change/receipt ID 不改，旧 owner 不释放。v20 安装到有存量的库时为 pending；API 拒绝启动，identifier 写被拦截。支持矩阵、权限、备份恢复、停写及失败处置见[升级维护说明](STAFF_CODE_UPGRADE.md)。
+
+未知源版本/checksum/密钥、坏密文、不同 owner 归一冲突、同员工归一后区间重叠和无法验证的永久保留 owner 都拒绝；非重叠同员工历史可共用规范值。精确重试须匹配持久 receipt 的结果快照，漂移与并发 apply 拒绝。存在规范化投影时旧 staff-reindex 在进入 key stage 前拒绝，当前版本未提供投影换键。此候选只在合成 SQLite WAL/PostgreSQL 验证，不代表实际目标环境升级或生产批准。
 
 ## 3. 共同值、协议与失败
 
@@ -359,7 +369,8 @@ OP-SEC-05批次请求只接受单个完整frozen batch，不能选择行或跳�
 | `organization` / `organization_guard` | 当前部署唯一active `org_id`就是corporate-group根/全部法分公司的所有权边界；timezone、lifecycle、graph/auth guards | SQLite/PG均以DB约束＋bootstrap事务拒绝第二active org；Branch是其下legal entity而非org。未来多集团须新设计隔离，不得另建Staff Code namespace绕开全集团唯一 |
 | `employee` / `employee_lifecycle` | active/inactive合法区间、profile_head_id、employee_guard_id | `(org,id)`；不以姓名作key；停用不删历史 |
 | `employee_profile_version` | employee_id、version_no、payload_id、supersedes_id、recorded_at；employee另存profile_revision/head | `(org,employee,version_no)`唯一；头指同employee版本；OP-ORG-05创建，OP-ORG-08 append完整替换payload＋profile头CAS，不改org graph |
-| `employee_business_identifier` / `employee_identifier_owner`（v12已实装） | identifier含employee_id、kind=`staff_code`、valid_from/to、encrypted exact text payload、lookup key/version/digest、revision；owner永久绑定规范Staff Code digest→employee_id | staff code接受NFC UTF-8 text 1..64，保留大小写、内部空格和前导零，拒首尾空白；唯一active org即整个集团，`(org,kind,key_version,digest)`跨全部历史只能绑定一个employee。页面初建经OP-ORG-05、后续换号经OP-ORG-10，二者复用同一owner和密文规则；本人可换号/rehire复用旧号且区间不重叠，owner永不转移/删除 |
+| `employee_business_identifier` / `employee_identifier_owner`（v12已实装） | identifier含employee_id、kind=`staff_code`、valid_from/to、encrypted exact text payload、lookup key/version/digest、revision；owner永久绑定规范Staff Code digest→employee_id | staff code接受NFC UTF-8 text 1..64 字节，拒首尾空白；DEV-061 候选对纯 ASCII 数字不足 6 位补零、6–10 位保留、超过 10 位拒绝，非数字保留大小写和内部空格；唯一active org即整个集团，`(org,kind,key_version,digest)`跨全部历史只能绑定一个employee。页面初建经OP-ORG-05、后续换号经OP-ORG-10，二者复用同一owner和密文规则；本人可换号/rehire复用旧号且区间不重叠，owner永不转移/删除 |
+| `staff_code_normalization` / `staff_code_normalization_state` / `staff_code_normalization_receipt`（DEV-061 v20候选） | 原 identifier ID → 规范密文及 HMAC/owner 投影；pending/ready 门禁；request UUID、源/结果 snapshot、聚合数量和时间的维护回执 | 投影与回执不可变；源事实和旧 owner 保留；`staff_code_identifier` 统一读取投影或原值；有存量时先 pending，单事务验证后 ready；漂移、未知源和归属/区间异常拒绝 |
 | `legal_entity` / `work_location`（v12已实装） | legal entity稳定code、`kind=branch_company`（界面业务名`法分公司`）、加密display name/lifecycle；location固定code/lifecycle/catalog revision | legal entity `(org,code)`唯一且kind不可变；location只允许`Shanghai`、`Wuxi`、`Tokyo`，大小写固定；未知值拒绝，停用不删除 |
 | `org_unit` / `org_unit_parent_history`（v12已实装） | type严格为`business_group`、`division`、`department`，含code、加密label、生命周期及typed父子有效期 | `(org,type,code)`唯一；只允许BG→Division、Division→Department；不得跳级/第四层；完整窗口无环/单父 |
 | `employment_spell`（v12已实装） | employee、legal_entity、work_location、valid_from/to、kind hire/rehire/transfer、recorded/change refs、revision | employee/date；同一时点仅一个primary spell；rehire保持新区间和同employee；first/current日期分开投影 |

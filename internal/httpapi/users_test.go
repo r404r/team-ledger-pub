@@ -142,7 +142,7 @@ func TestLocalUserAdministrationRequiresPermissionAndInitialPasswordChange(t *te
 	if !names["first.operator"] || !names["second.operator"] {
 		t.Fatal("paginated local user list lost an account", names)
 	}
-	staffCode, catalogRevision, graphRevision := "STAFF-ACCOUNT-001", "1", "1"
+	staffCode, catalogRevision, graphRevision := "002213", "1", "1"
 	employee, createErr := f.Service.Create(ctx, f.Request(f.Owner), f.OrgID, organization.CreateCommand{
 		Profile:   organization.Profile{LocalName: "合成员工账号"},
 		Lifecycle: organization.Lifecycle{ValidFrom: f.Now.Format("2006-01-02")},
@@ -151,7 +151,7 @@ func TestLocalUserAdministrationRequiresPermissionAndInitialPasswordChange(t *te
 	if createErr != nil {
 		t.Fatal("create staff candidate:", createErr)
 	}
-	staffBody := `{"username":"staff.operator","initial_password":"staff temporary password","account_type":"staff","staff_code":"STAFF-ACCOUNT-001"}`
+	staffBody := `{"username":"staff.operator","initial_password":"staff temporary password","account_type":"staff","staff_code":"2213"}`
 	staffResponse := send(f.Owner, http.MethodPost, "/api/v1/security/users", staffBody, "security_administration", value.NewID(), nil, "")
 	var staffUser identity.LocalUserResult
 	if staffResponse.Status != http.StatusCreated || json.Unmarshal(staffResponse.Body, &staffUser) != nil || staffUser.AccountType != "staff" || staffUser.EmployeeID != employee.ID {
@@ -222,7 +222,7 @@ func TestLocalUserAdministrationRequiresPermissionAndInitialPasswordChange(t *te
 	if _, listErr = f.Interviews.List(ctx, interview.Request{TokenHash: tokenHash[:], Purpose: "interview_followup", RequestID: value.NewID()}, peer.ID, interview.ListQuery{Limit: 20}); !errors.Is(listErr, fault.NotFound) {
 		t.Fatal("staff default exposed peer interview metadata", listErr)
 	}
-	duplicateStaff := send(f.Owner, http.MethodPost, "/api/v1/security/users", `{"username":"staff.duplicate","initial_password":"staff duplicate password","account_type":"staff","staff_code":"STAFF-ACCOUNT-001"}`, "security_administration", value.NewID(), nil, "")
+	duplicateStaff := send(f.Owner, http.MethodPost, "/api/v1/security/users", `{"username":"staff.duplicate","initial_password":"staff duplicate password","account_type":"staff","staff_code":"2213"}`, "security_administration", value.NewID(), nil, "")
 	if duplicateStaff.Status != http.StatusConflict || f.Count(t, "local_account") != 3 || f.Count(t, "staff_account_access") != 1 {
 		t.Fatal("duplicate staff binding left partial account", duplicateStaff.Status, string(duplicateStaff.Body))
 	}

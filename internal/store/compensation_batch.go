@@ -334,7 +334,7 @@ func (r *Repository) AdjustmentWorkforceByStaffCode(ctx context.Context, org, lo
 
 func (r *Repository) adjustmentWorkforceBasis(ctx context.Context, org, employee, lookupKeyID string, lookupVersion uint32, digest []byte, asOf string) (compensation.BatchWorkforceBasis, error) {
 	q := r.read()
-	query := "SELECT i.employee_id,i.id,i.revision,e.id,e.revision,e.legal_entity_id,e.location_code,a.id,a.revision,a.job_family_id,a.career_level_id FROM employee_business_identifier i JOIN employment_spell e ON e.org_id=i.org_id AND e.employee_id=i.employee_id JOIN job_assignment a ON a.org_id=i.org_id AND a.employee_id=i.employee_id WHERE i.org_id=? AND i.kind='staff_code' AND i.lookup_key_id=? AND i.lookup_key_version=? AND i.lookup_digest=? AND i.valid_from<=? AND (i.valid_to IS NULL OR i.valid_to>?) AND e.valid_from<=? AND (e.valid_to IS NULL OR e.valid_to>?) AND a.valid_from<=? AND (a.valid_to IS NULL OR a.valid_to>?)"
+	query := "SELECT i.employee_id,i.id,i.revision,e.id,e.revision,e.legal_entity_id,e.location_code,a.id,a.revision,a.job_family_id,a.career_level_id FROM staff_code_identifier i JOIN employment_spell e ON e.org_id=i.org_id AND e.employee_id=i.employee_id JOIN job_assignment a ON a.org_id=i.org_id AND a.employee_id=i.employee_id WHERE i.org_id=? AND i.kind='staff_code' AND i.lookup_key_id=? AND i.lookup_key_version=? AND i.lookup_digest=? AND i.valid_from<=? AND (i.valid_to IS NULL OR i.valid_to>?) AND e.valid_from<=? AND (e.valid_to IS NULL OR e.valid_to>?) AND a.valid_from<=? AND (a.valid_to IS NULL OR a.valid_to>?)"
 	args := []any{org, lookupKeyID, lookupVersion, digest, asOf, asOf, asOf, asOf, asOf, asOf}
 	if employee != "" {
 		query += " AND i.employee_id=?"

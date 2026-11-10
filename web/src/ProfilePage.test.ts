@@ -333,7 +333,8 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     await field(page, /邮箱|email/i).setValue('fixture-create@example.invalid')
     await field(page, /电话|phone/i).setValue('+00-000-0002')
     await field(page, /摘要|简介|profile_summary/i).setValue('合成创建摘要')
-    await field(page, /工号 · 必填/i).setValue('EMP-0007')
+    await field(page, /工号 · 必填/i).setValue('2213')
+    expect(page.text()).toContain('将保存为 002213')
     await fillRequiredWorkforce(page)
     await field(page, /直属主管|HOD/i).setValue(OTHER_EMPLOYEE_ID)
     await field(page, /退职日|Departure Date/i).setValue('')
@@ -349,7 +350,7 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
         profile_summary: '合成创建摘要',
       },
       lifecycle: { valid_from: VALID_FROM, valid_to: null },
-      staff_code: 'EMP-0007',
+      staff_code: '2213',
       employment: { legal_entity_id: LEGAL_ENTITY_ID, location_code: 'Shanghai' },
       education: { level: 'Master' },
       job_assignment: {
@@ -372,12 +373,12 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     reloaded.resolve(200, {
       ...employee({ ...ORIGINAL_PROFILE, local_name: '合成服务端读取结果丙' }),
       graph_revision: '10',
-      identifiers: [{ id: SUBJECT_ID, kind: 'staff_code', staff_code: 'EMP-0007', valid_from: VALID_FROM, valid_to: null }],
+      identifiers: [{ id: SUBJECT_ID, kind: 'staff_code', staff_code: '002213', valid_from: VALID_FROM, valid_to: null }],
       reporting_lines: [manager], direct_manager: manager, hod: manager,
     })
     await settled()
     expectDetails(page, '合成服务端读取结果丙', '1')
-    expect(page.text()).toContain('EMP-0007')
+    expect(page.text()).toContain('002213')
     expect(page.text()).toContain(OTHER_EMPLOYEE_ID)
     expect(page.text()).not.toContain(DRAFT_NAME)
     for (const request of api.requests) {
@@ -398,13 +399,14 @@ describe('F-ORG-001 / F-SEC-001: authorized profile consumers', () => {
     api.respond('POST', CREATE_PATH, status, {})
     const page = await openPage(`/?as_of=${AS_OF}`)
     await field(page, /本地姓名|local_name/i).setValue(DRAFT_NAME)
-    await field(page, /工号 · 必填/i).setValue('EMP-0007')
+    await field(page, /工号 · 必填/i).setValue('2213')
+    expect(page.text()).toContain('将保存为 002213')
     await fillRequiredWorkforce(page)
     if (selectManager) await field(page, /直属主管|HOD/i).setValue(OTHER_EMPLOYEE_ID)
     await submitProfile(page)
     expect(page.text()).toContain(expectedMessage)
     expect(field(page, /本地姓名|local_name/i).element.value).toBe(DRAFT_NAME)
-    expect(field(page, /工号 · 必填/i).element.value).toBe('EMP-0007')
+    expect(field(page, /工号 · 必填/i).element.value).toBe('2213')
     expect(window.location.pathname).toBe('/')
   })
 

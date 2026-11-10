@@ -129,6 +129,7 @@ describe('personnel batch import panel', () => {
     const page = mount(PersonnelImportPanel, { props: { session: SESSION, asOf: AS_OF } })
     await selectAndPreview(page)
     expect(page.text()).toContain('数字 Staff Code 已按原始十进制整数转为文本')
+    expect(page.text()).toContain('将保存为 007107')
     const create = page.findAll('button').find(button => button.text().includes('确认并批量创建'))!
     expect(create.attributes('disabled')).toBeDefined()
     await page.findAll('.edit-input')[9]!.setValue(AS_OF)

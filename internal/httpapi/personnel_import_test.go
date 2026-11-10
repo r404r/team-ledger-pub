@@ -64,7 +64,7 @@ func TestAPIPersonnelImportTemplateAndPreviewAreAuthorizedAndReadOnly(t *testing
 			for _, warning := range numericPreview.Warnings {
 				warningCodes[warning.Code] = true
 			}
-			if len(numericPreview.Errors) != 0 || numericPreview.Rows[0].StaffCode != "7107" || numericPreview.Rows[0].HireDate != "2026-10-16" || !warningCodes["numeric_staff_code_coerced"] || !warningCodes["excel_date_coerced"] {
+			if len(numericPreview.Errors) != 0 || numericPreview.Rows[0].StaffCode != "007107" || numericPreview.Rows[0].HireDate != "2026-10-16" || !warningCodes["numeric_staff_code_coerced"] || !warningCodes["excel_date_coerced"] {
 				t.Fatalf("numeric/date preview = %#v", numericPreview)
 			}
 
@@ -252,18 +252,18 @@ func TestAPIPersonnelImportResolvesHODCodesAcrossBatchAndExistingStaff(t *testin
 			}
 
 			// An existing employee is persisted before the import so the batch can report to it.
-			existing := review(hodReviewRow(2, "EXIST001", ""))
+			existing := review(hodReviewRow(2, "002213", ""))
 			var existingResult organization.Result
 			apiSend(t, f, apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/employees", hodImportCreateBody(existing.Rows[0], existing), value.NewID()), http.StatusCreated, &existingResult)
 
 			clean := review(
 				hodReviewRow(2, "SUB001", "MID001-Synthetic Mid"),
 				hodReviewRow(3, "MID001", "TOP001 - Synthetic Top"),
-				hodReviewRow(4, "TOP001", "EXIST001-Synthetic Existing"),
+				hodReviewRow(4, "TOP001", "2213-Synthetic Existing"),
 				hodReviewRow(5, "LEAF001", "SUB001"),
 			)
 			managers := []string{clean.Rows[0].ManagerStaffCode, clean.Rows[1].ManagerStaffCode, clean.Rows[2].ManagerStaffCode, clean.Rows[3].ManagerStaffCode}
-			if len(clean.Errors) != 0 || managers[0] != "MID001" || managers[1] != "TOP001" || managers[2] != "EXIST001" || managers[3] != "SUB001" {
+			if len(clean.Errors) != 0 || managers[0] != "MID001" || managers[1] != "TOP001" || managers[2] != "002213" || managers[3] != "SUB001" {
 				t.Fatalf("reverse-order batch with composite HOD = managers %v errors %#v", managers, clean.Errors)
 			}
 			extracted := map[string]bool{}
@@ -271,6 +271,15 @@ func TestAPIPersonnelImportResolvesHODCodesAcrossBatchAndExistingStaff(t *testin
 				if warning.Code == "hod_staff_code_extracted" {
 					extracted[warning.Cell] = true
 				}
+			}
+			padded := 0
+			for _, warning := range clean.Warnings {
+				if warning.Code == "staff_code_zero_padded" && warning.Field == "manager_staff_code" {
+					padded++
+				}
+			}
+			if padded != 1 {
+				t.Fatal("HOD padding warning missing")
 			}
 			if len(extracted) != 3 || !extracted["N2"] || !extracted["N3"] || !extracted["N4"] {
 				t.Fatalf("extraction warnings = %#v", clean.Warnings)
@@ -280,7 +289,7 @@ func TestAPIPersonnelImportResolvesHODCodesAcrossBatchAndExistingStaff(t *testin
 			}
 
 			invalid := review(
-				hodReviewRow(2, "OK001", "EXIST001-Synthetic Existing"),
+				hodReviewRow(2, "OK001", "2213-Synthetic Existing"),
 				hodReviewRow(3, "ORPHAN001", "GHOST999-Synthetic Ghost"),
 				hodReviewRow(4, "SELF001", "SELF001-Synthetic Self"),
 				hodReviewRow(5, "CYC001", "CYC002"),
@@ -302,18 +311,18 @@ func TestAPIPersonnelImportResolvesHODCodesAcrossBatchAndExistingStaff(t *testin
 
 			// Preview from an uploaded workbook takes the same HOD path as the editable review.
 			headers := []string{"工号 Staff Code", "姓名 Staff Name", "姓名 English Name", "地点 Location", "所在公司 Branch Code", "业务单元 Business Group Code", "目前事业部 Division Code", "目前部门 Department Code", "学历 Latest Education", "雇佣起始日 Date of Employment", "职位 Position", "职系 Job Family Code", "职级 Career Level Code", "直属主管 HOD Staff Code", "退职日 Departure Date", "业务邮箱 Work Email", "业务电话 Work Phone", "资料摘要 Profile Summary"}
-			workbookRow := []string{"UP001", "合成上传员工", "", "Shanghai", "BR", "BG", "DIV", "DEP", "", "2026-10-16", "", "", "", "EXIST001 - Synthetic Existing", "", "", "", ""}
+			workbookRow := []string{"UP001", "合成上传员工", "", "Shanghai", "BR", "BG", "DIV", "DEP", "", "2026-10-16", "", "", "", "2213 - Synthetic Existing", "", "", "", ""}
 			upload := apiRequest(t, f, f.Owner, http.MethodPost, "/api/v1/orgs/"+f.OrgID+"/employees/import-preview", string(batchWorkbook(t, headers, workbookRow)), "")
 			upload.Header.Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 			var uploaded organization.PersonnelImportPreview
 			apiSend(t, f, upload, http.StatusOK, &uploaded)
-			if len(uploaded.Errors) != 0 || uploaded.Rows[0].ManagerStaffCode != "EXIST001" {
+			if len(uploaded.Errors) != 0 || uploaded.Rows[0].ManagerStaffCode != "002213" {
 				t.Fatalf("uploaded composite HOD = %#v", uploaded)
 			}
 
 			// Commit: pass 1 creates every employee in file order (subordinate first), pass 2 binds all
 			// reporting lines from the complete staff_code -> employee_id map in one command.
-			ids := map[string]string{"EXIST001": existingResult.ID}
+			ids := map[string]string{"002213": existingResult.ID}
 			revisions := map[string]string{}
 			for index := range clean.Rows {
 				var created organization.Result
@@ -347,7 +356,7 @@ func TestAPIPersonnelImportCommitIsAtomicAndReplayable(t *testing.T) {
 			f := testsupport.NewHarness(t, backend)
 			seedCompleteEmployeeCatalogs(t, f)
 			path := "/api/v1/orgs/" + f.OrgID + "/employees/import-commit"
-			rows := []organization.PersonnelImportReviewRow{hodReviewRow(5, "SUB001", "MID001-Synthetic Mid"), hodReviewRow(80, "MID001", "TOP001 - Synthetic Top"), hodReviewRow(95, "TOP001", "")}
+			rows := []organization.PersonnelImportReviewRow{hodReviewRow(5, "SUB001", "002213-Synthetic Mid"), hodReviewRow(80, "2213", "TOP001 - Synthetic Top"), hodReviewRow(95, "TOP001", "")}
 			command := map[string]any{"rows": rows, "expected_catalog_revision": "3", "expected_graph_revision": "3"}
 			body := structureJSON(t, command)
 			key := value.NewID()

@@ -172,8 +172,8 @@ type WorkforceReader interface {
 	StaffCodeEmployeeID(ctx context.Context, org, lookupKeyID string, lookupVersion uint32, digest []byte, asOf string) (string, error)
 }
 
-// NormalizeStaffCode preserves case, internal whitespace and leading zeroes.
-// NFC is the only normalization; visually similar but byte-distinct codes stay distinct.
+// NormalizeStaffCode applies NFC and pads ASCII numeric codes to six digits.
+// Other codes preserve case and internal whitespace; numeric codes allow at most ten digits.
 func NormalizeStaffCode(code string) (string, bool) {
 	if !utf8.ValidString(code) || code == "" || strings.TrimSpace(code) != code {
 		return "", false
@@ -181,6 +181,14 @@ func NormalizeStaffCode(code string) (string, bool) {
 	code = norm.NFC.String(code)
 	if len(code) == 0 || len(code) > 64 {
 		return "", false
+	}
+	if strings.IndexFunc(code, func(r rune) bool { return r < '0' || r > '9' }) == -1 {
+		if len(code) > 10 {
+			return "", false
+		}
+		if len(code) < 6 {
+			code = strings.Repeat("0", 6-len(code)) + code
+		}
 	}
 	return code, true
 }

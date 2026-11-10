@@ -27,7 +27,7 @@ func protected(path string, limit int) ([]byte, error) { return configfile.Read(
 
 var keyEnvelopeMagic = [8]byte{'T', 'L', 'B', 'K', 'E', 'Y', 'D', 1}
 
-const supportedSchemaVersion = 19
+const supportedSchemaVersion = 20
 
 func writeArchiveKey(out io.Writer, key sensitive.WrappedKey) error {
 	if len(key.Data) != 150 {
@@ -369,7 +369,7 @@ func restore(ctx context.Context, archivePath, target string, keyd *sensitive.Ke
 	if closeErr != nil {
 		return closeErr
 	}
-	if manifest.Backend != "sqlite" || manifest.SchemaVersion != supportedSchemaVersion {
+	if manifest.Backend != "sqlite" || (manifest.SchemaVersion < 19 || manifest.SchemaVersion > supportedSchemaVersion) {
 		return errors.New("incompatible backup")
 	}
 	repo, e := store.Open(ctx, "sqlite", tempPath)
@@ -377,8 +377,8 @@ func restore(ctx context.Context, archivePath, target string, keyd *sensitive.Ke
 		return e
 	}
 	defer repo.Close()
-	if e = repo.CheckSchema(ctx); e != nil {
-		return e
+	if version, checkErr := repo.CheckMaintenanceSchema(ctx); checkErr != nil || version != manifest.SchemaVersion {
+		return errors.New("restored schema does not match backup")
 	}
 	wrappers, e := loadWrappers(keyd)
 	if e != nil {
@@ -493,7 +493,7 @@ func restorePostgres(ctx context.Context, archivePath, targetDSN, caPath string,
 	if closeErr != nil {
 		return closeErr
 	}
-	if manifest.Backend != "postgres" || manifest.SchemaVersion != supportedSchemaVersion {
+	if manifest.Backend != "postgres" || (manifest.SchemaVersion < 19 || manifest.SchemaVersion > supportedSchemaVersion) {
 		return errors.New("incompatible backup")
 	}
 	restoreList, e := postgresRestoreList(ctx, dumpPath, work)
@@ -521,8 +521,8 @@ func restorePostgres(ctx context.Context, archivePath, targetDSN, caPath string,
 		return e
 	}
 	defer repo.Close()
-	if e = repo.CheckSchema(ctx); e != nil {
-		return e
+	if version, checkErr := repo.CheckMaintenanceSchema(ctx); checkErr != nil || version != manifest.SchemaVersion {
+		return errors.New("restored schema does not match backup")
 	}
 	wrappers, e := loadWrappers(keyd)
 	if e != nil {
