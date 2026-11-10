@@ -33,6 +33,7 @@ docker exec "$container" chmod 600 /var/lib/postgresql/server.key
 docker exec -i "$container" psql -X -v ON_ERROR_STOP=1 -U postgres -d teamledger_test <<'SQL'
 CREATE ROLE teamledger_test LOGIN PASSWORD 'synthetic-ci-test' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
 ALTER DATABASE teamledger_test OWNER TO teamledger_test;
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_control_system() TO teamledger_test;
 ALTER SYSTEM SET ssl = on;
 ALTER SYSTEM SET ssl_cert_file = '/var/lib/postgresql/server.crt';
 ALTER SYSTEM SET ssl_key_file = '/var/lib/postgresql/server.key';

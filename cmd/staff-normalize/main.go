@@ -148,7 +148,7 @@ func sameDatabase(ctx context.Context, backend string, a, b *store.Repository, a
 	}
 	identity := func(r *store.Repository) (string, error) {
 		var s string
-		e := r.DB.QueryRowContext(ctx, "SELECT current_database()||':'||current_schema()||':'||inet_server_addr()::text||':'||inet_server_port()::text").Scan(&s)
+		e := r.DB.QueryRowContext(ctx, "SELECT c.system_identifier::text||':'||d.oid::text FROM pg_catalog.pg_control_system() AS c JOIN pg_catalog.pg_database AS d ON d.datname=pg_catalog.current_database()").Scan(&s)
 		return s, e
 	}
 	x, e := identity(a)

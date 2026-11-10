@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"github.com/r404r/team-ledger/internal/fault"
 	"github.com/r404r/team-ledger/internal/identity"
 	"github.com/r404r/team-ledger/internal/organization"
 	"github.com/r404r/team-ledger/internal/sensitive"
@@ -23,7 +24,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -201,6 +204,91 @@ func TestBuiltNormalizeCLIUpgradesRestoredV19WithRestoredOfflineKeys(t *testing.
 				t.Fatalf("restore proof failed: %v, %+v, source snapshot matches=%v", e, proof, proof.Snapshot == report.Snapshot)
 			}
 			applyArgs := append(append([]string{}, args...), "-apply", "-maintenance-confirmed", "-expected-snapshot", report.Snapshot, "-request-id", value.NewID(), "-restored-dsn-file", restoreFile, "-restored-keyd-socket", restoreKeys.Socket)
+			if backend == "postgres" {
+				t.Run("same_database_different_server_address", func(t *testing.T) {
+					alias := postgresLoopbackRelay(t, f.DSN)
+					other, err := store.Open(ctx, backend, alias)
+					if err != nil {
+						t.Fatal("relay connection failed")
+					}
+					defer other.Close()
+					var sourceAddress, aliasAddress, sourceID, aliasID string
+					identitySQL := "SELECT system_identifier::text||':'||oid::text FROM pg_catalog.pg_control_system(), pg_catalog.pg_database WHERE datname=current_database()"
+					if f.Repo.DB.QueryRowContext(ctx, "SELECT inet_server_addr()::text").Scan(&sourceAddress) != nil || other.DB.QueryRowContext(ctx, "SELECT inet_server_addr()::text").Scan(&aliasAddress) != nil || sourceAddress == aliasAddress {
+						t.Fatal("regression requires two different real server addresses")
+					}
+					if f.Repo.DB.QueryRowContext(ctx, identitySQL).Scan(&sourceID) != nil || other.DB.QueryRowContext(ctx, identitySQL).Scan(&aliasID) != nil || sourceID != aliasID {
+						t.Fatal("regression requires identical system identifier and database oid")
+					}
+					t.Log("verified different server addresses and identical cluster/database identity")
+					if os.WriteFile(restoreFile, []byte(alias), 0600) != nil {
+						t.Fatal("write alias DSN")
+					}
+					var output bytes.Buffer
+					if err = run(ctx, applyArgs, &output); err != fault.Invalid || output.Len() != 0 {
+						t.Errorf("same database alias apply must reject before writes: err=%v", err)
+					}
+					command := exec.Command(binary, applyArgs...)
+					var stderr bytes.Buffer
+					command.Stderr = &stderr
+					data, err := command.Output()
+					if err == nil || len(data) != 0 || stderr.String() != "staff_normalization_rejected\n" {
+						t.Error("built CLI must reject same database alias without private output")
+					}
+					// The full source snapshot includes encrypted rows, permanent
+					// owners and schema version; strict maintenance schema checking
+					// also verifies that no v20 DDL was installed.
+					after, err := f.Repo.NormalizeStaffCodes(ctx, f.Service.Cipher, f.Service.StaffCodeMAC, store.StaffNormalizationOptions{})
+					version, schemaErr := f.Repo.CheckMaintenanceSchema(ctx)
+					if err != nil || after.Snapshot != report.Snapshot || schemaErr != nil || version != 19 {
+						t.Error("rejected alias apply changed business data or schema")
+					}
+				})
+				if os.WriteFile(restoreFile, []byte(restoredDSN), 0600) != nil {
+					t.Fatal("restore proof DSN")
+				}
+				t.Run("same_database_different_search_path", func(t *testing.T) {
+					u, _ := url.Parse(f.DSN)
+					q := u.Query()
+					q.Set("search_path", "public")
+					u.RawQuery = q.Encode()
+					other, err := store.Open(ctx, backend, u.String())
+					if err != nil {
+						t.Fatal("schema alias connection failed")
+					}
+					defer other.Close()
+					if !sameDatabase(ctx, backend, f.Repo, other, f.DSN, u.String()) {
+						t.Error("different schema must still be the same database")
+					}
+				})
+				t.Run("unknown_database_identity", func(t *testing.T) {
+					u, _ := url.Parse(restoredDSN)
+					container := os.Getenv("TEAMLEDGER_TEST_POSTGRES_CONTAINER")
+					permission := func(verb string) {
+						t.Helper()
+						sql := verb + " EXECUTE ON FUNCTION pg_catalog.pg_control_system() "
+						if verb == "REVOKE" {
+							sql += "FROM PUBLIC, " + u.User.Username()
+						} else {
+							sql += "TO " + u.User.Username()
+						}
+						if exec.Command("docker", "exec", container, "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", strings.TrimPrefix(u.Path, "/"), "-c", sql).Run() != nil {
+							t.Fatal("test identity privilege change failed")
+						}
+					}
+					permission("REVOKE")
+					defer permission("GRANT")
+					var output bytes.Buffer
+					if err := run(ctx, applyArgs, &output); err != fault.Invalid || output.Len() != 0 {
+						t.Error("unreadable database identity must fail closed")
+					}
+					after, err := f.Repo.NormalizeStaffCodes(ctx, f.Service.Cipher, f.Service.StaffCodeMAC, store.StaffNormalizationOptions{})
+					version, schemaErr := f.Repo.CheckMaintenanceSchema(ctx)
+					if err != nil || after.Snapshot != report.Snapshot || schemaErr != nil || version != 19 {
+						t.Error("identity query failure changed business data or schema")
+					}
+				})
+			}
 			if !invoke(applyArgs, true).Applied {
 				t.Fatal("apply not acknowledged")
 			}
@@ -268,16 +356,74 @@ func restoreNormalizationDatabase(t *testing.T, f *testsupport.Fixture) string {
 	if bytes.Contains(dump, []byte("Synthetic Migration Employee")) || bytes.Contains(dump, []byte(`"staff_code":"2213"`)) {
 		t.Fatal("database dump contains decrypted markers")
 	}
-	dump = bytes.ReplaceAll(dump, []byte(source), []byte(target))
-	command := exec.Command("docker", "exec", "-i", container, "psql", "-X", "-v", "ON_ERROR_STOP=1", "--single-transaction", "-U", user, "-d", database)
+	if exec.Command("docker", "exec", container, "createdb", "-U", "postgres", "-O", user, target).Run() != nil {
+		t.Fatal("create independent restore database failed")
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "exec", container, "dropdb", "-U", "postgres", "--force", target).Run()
+	})
+	if exec.Command("docker", "exec", container, "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", target, "-c", "GRANT EXECUTE ON FUNCTION pg_catalog.pg_control_system() TO "+user).Run() != nil {
+		t.Fatal("grant minimal restore identity privilege failed")
+	}
+	command := exec.Command("docker", "exec", "-i", container, "psql", "-X", "-v", "ON_ERROR_STOP=1", "--single-transaction", "-U", user, "-d", target)
 	command.Stdin = bytes.NewReader(dump)
 	if _, err = command.Output(); err != nil {
 		t.Fatal("real PostgreSQL restore failed")
 	}
-	t.Cleanup(func() { _, _ = f.Repo.DB.ExecContext(ctx, "DROP SCHEMA "+target+" CASCADE") })
-	query := u.Query()
-	query.Set("search_path", target)
-	u.RawQuery = query.Encode()
+	u.Path = "/" + target
+	return u.String()
+}
+
+// Relay TLS bytes unchanged to the container's loopback listener. A normal
+// Docker-published connection reaches its network-interface listener instead.
+// This exercises genuinely different inet_server_addr values on one server.
+func postgresLoopbackRelay(t *testing.T, dsn string) string {
+	t.Helper()
+	container := os.Getenv("TEAMLEDGER_TEST_POSTGRES_CONTAINER")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil || container == "" {
+		t.Fatal("disposable PostgreSQL relay unavailable")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var connections sync.WaitGroup
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			connection, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			connections.Add(1)
+			go func() {
+				defer connections.Done()
+				defer connection.Close()
+				closed := make(chan struct{})
+				go func() {
+					select {
+					case <-ctx.Done():
+						connection.Close()
+					case <-closed:
+					}
+				}()
+				defer close(closed)
+				command := exec.CommandContext(ctx, "docker", "exec", "-i", container, "bash", "-c", `exec 3<>/dev/tcp/127.0.0.1/5432; cat <&3 & reader=$!; cat >&3; kill "$reader"; wait "$reader"`)
+				command.Stdin, command.Stdout = connection, connection
+				_ = command.Run()
+			}()
+		}
+	}()
+	t.Cleanup(func() {
+		cancel()
+		listener.Close()
+		<-done
+		connections.Wait()
+	})
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatal("invalid fixture DSN")
+	}
+	u.Host = net.JoinHostPort("localhost", strconv.Itoa(listener.Addr().(*net.TCPAddr).Port))
 	return u.String()
 }
 
